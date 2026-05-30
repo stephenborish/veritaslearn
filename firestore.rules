@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net (Strictly Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+    
+    // Helper Primitives & Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function emailVerified() {
+      return isSignedIn() && (request.auth.token.email_verified == true || request.auth.token.email == "stephenborish@gmail.com");
+    }
+
+    function isTeacher() {
+      return isSignedIn() && (
+        request.auth.token.email == "stephenborish@gmail.com" || 
+        request.auth.token.email.matches(".*\\+teacher@malvernprep\\.org$") ||
+        request.auth.token.email.matches(".*faculty.*@malvernprep\\.org$")
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // 1. Users collection rules
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create, update: if isTeacher() || isOwner(userId);
+      allow delete: if isTeacher();
+    }
+
+    // 2. Courses collection rules
+    match /courses/{courseId} {
+      allow read: if isSignedIn();
+      allow write: if isTeacher();
+    }
+
+    // 3. Lessons collection rules
+    match /lessons/{lessonId} {
+      allow read: if isSignedIn();
+      allow write: if isTeacher();
+    }
+
+    // 4. Lesson Blocks collection rules
+    match /blocks/{blockId} {
+      allow read: if isSignedIn();
+      allow write: if isTeacher();
+    }
+
+    // 5. Lesson Attempts collection rules
+    match /attempts/{attemptId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isSignedIn();
+      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow delete: if isTeacher();
+    }
+
+    // 6. Question Assignments collection rules
+    match /assignments/{assignmentId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isSignedIn();
+      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow delete: if isTeacher();
+    }
+
+    // 7. Student Responses collection rules
+    match /responses/{responseId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isSignedIn();
+      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow delete: if isTeacher();
+    }
+
+    // 8. Security Surveillance Signals collection rules
+    match /securitySignals/{signalId} {
+      allow read: if isTeacher();
+      allow create: if isSignedIn();
+      allow update, delete: if isTeacher();
+    }
+  }
+}

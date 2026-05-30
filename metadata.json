@@ -1,0 +1,6 @@
+{
+  "name": "Veritas Learn",
+  "description": "Secure AP classroom player, real-time activity metrics, and AI rubric grader for Malvern Prep.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

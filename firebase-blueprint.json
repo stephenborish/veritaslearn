@@ -1,0 +1,155 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profiles for teachers and students",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["teacher", "student"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "email", "role", "createdAt"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "Educational courses configured in the system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["id", "name", "teacherId", "code"]
+    },
+    "Lesson": {
+      "title": "Lesson",
+      "description": "High-level lesson configuration parameters and controls",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "courseId": { "type": "string" },
+        "estimatedMinutes": { "type": "number" },
+        "isPublished": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "description", "courseId", "estimatedMinutes", "isPublished", "createdAt"]
+    },
+    "LessonBlock": {
+      "title": "LessonBlock",
+      "description": "Sequential structural segments belonging to a lesson",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "order": { "type": "number" },
+        "type": { "type": "string", "enum": ["video", "reading", "question"] },
+        "title": { "type": "string" }
+      },
+      "required": ["id", "lessonId", "order", "type", "title"]
+    },
+    "LessonAttempt": {
+      "title": "LessonAttempt",
+      "description": "Active or completed attempt session by a student",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "seed": { "type": "number" },
+        "startedAt": { "type": "string" },
+        "completedAt": { "type": "string" },
+        "status": { "type": "string", "enum": ["started", "completed"] },
+        "currentBlockIndex": { "type": "number" },
+        "activeTimeSpent": { "type": "number" },
+        "inactiveTimeSpent": { "type": "number" }
+      },
+      "required": ["id", "lessonId", "studentId", "seed", "startedAt", "status", "currentBlockIndex", "activeTimeSpent", "inactiveTimeSpent"]
+    },
+    "QuestionAssignment": {
+      "title": "QuestionAssignment",
+      "description": "Assigned questions initialized from a specific attempt seed",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "attemptId": { "type": "string" },
+        "blockId": { "type": "string" },
+        "checkpointId": { "type": "string" },
+        "questionId": { "type": "string" }
+      },
+      "required": ["id", "attemptId", "blockId", "questionId"]
+    },
+    "StudentResponse": {
+      "title": "StudentResponse",
+      "description": "Student generated answer submissions for multiple choice or short answer questions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "attemptId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "blockId": { "type": "string" },
+        "checkpointId": { "type": "string" },
+        "questionId": { "type": "string" },
+        "type": { "type": "string", "enum": ["mc", "sa"] },
+        "score": { "type": "number" },
+        "activeTimeSpent": { "type": "number" }
+      },
+      "required": ["id", "attemptId", "studentId", "blockId", "questionId", "type", "score", "activeTimeSpent"]
+    },
+    "SecuritySignal": {
+      "title": "SecuritySignal",
+      "description": "Logs tracking security and focus events generated during play tests",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "attemptId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "eventType": { "type": "string" },
+        "severity": { "type": "string" },
+        "blockId": { "type": "string" },
+        "videoTimestamp": { "type": "number" }
+      },
+      "required": ["id", "attemptId", "studentId", "timestamp", "eventType", "severity"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Roster of authenticated classroom participants"
+    },
+    "courses/{courseId}": {
+      "schema": "Course",
+      "description": "Active classrooms and course subjects"
+    },
+    "lessons/{lessonId}": {
+      "schema": "Lesson",
+      "description": "Available syllabus curricula assessments"
+    },
+    "blocks/{blockId}": {
+      "schema": "LessonBlock",
+      "description": "Ordered segment chunks for video streams, readings, or quizzes"
+    },
+    "attempts/{attemptId}": {
+      "schema": "LessonAttempt",
+      "description": "Student workspace session state"
+    },
+    "assignments/{assignmentId}": {
+      "schema": "QuestionAssignment",
+      "description": "Scrambled question variants deterministically assigned to a student's attempt to deter sharing"
+    },
+    "responses/{responseId}": {
+      "schema": "StudentResponse",
+      "description": "Student submitted answers evaluated dynamically by auto-grader or rubric-matched AI"
+    },
+    "securitySignals/{signalId}": {
+      "schema": "SecuritySignal",
+      "description": "Surveillance events indicating copy-pastes, page blurs, full-screen egresses, or skips"
+    }
+  }
+}
