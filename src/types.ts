@@ -35,14 +35,41 @@ export interface Lesson {
 
 export type BlockType = 'video' | 'reading' | 'question';
 
+/** A single multiple-choice option. Stable `id` lets grading survive choice scrambling. */
+export interface ChoiceDefinition {
+  id: string;
+  text: string | RichContent;
+}
+
+/** A teacher-authored rubric category used for short-answer (AI/manual) grading. */
+export interface RubricCategory {
+  id: string;
+  name: string;
+  maxPoints: number;
+  description: string | RichContent;
+  fullCreditExample?: string | RichContent;
+  partialCreditExample?: string | RichContent;
+  noCreditExample?: string | RichContent;
+}
+
 export interface QuestionDefinition {
   id: string;
+  type?: 'mc' | 'sa';
   stem: string | RichContent;
-  choices?: (string | RichContent)[]; // for Multiple Choice (MC)
-  correctAnswerIndex?: number; // SECRET (not sent to student on graded)
-  explanation?: string | RichContent; // SECRET (not sent to student on graded)
+  studentInstructions?: string | RichContent; // visible to student
+  // --- Multiple choice ---
+  choices?: ChoiceDefinition[]; // stable-id options
+  correctChoiceId?: string; // SECRET — never sent to students for graded work
+  correctAnswerIndex?: number; // DEPRECATED legacy index; retained only for migration. SECRET.
+  explanation?: string | RichContent; // SECRET for graded; practice feedback delivered via submit response
+  // --- Short answer ---
+  rubricCategories?: RubricCategory[]; // SECRET descriptions for graded work
+  modelAnswer?: string | RichContent; // SECRET
+  answerKey?: string | RichContent; // SECRET
+  aiScoringGuidance?: string | RichContent; // SECRET
+  teacherNotes?: string | RichContent; // SECRET (teacher-only grading notes)
+  // --- Common ---
   points: number;
-  rubricCategories?: { name: string; maxPoints: number; description: string | RichContent }[]; // for Short Answer (SA)
 }
 
 export interface VideoCheckpoint {
@@ -50,6 +77,7 @@ export interface VideoCheckpoint {
   timestamp: number; // in seconds
   title: string;
   isRequired: boolean;
+  pauseVideo?: boolean; // pause the video when this checkpoint opens
   questionType: 'mc' | 'sa';
   isPractice: boolean;
   questions: QuestionDefinition[];
@@ -101,8 +129,8 @@ export interface QuestionAssignment {
   checkpointId?: string; // undefined if single question block
   questionId: string;
   selectedQuestion: QuestionDefinition; // Sanitized copy (no answer keys for graded)
-  scrambledChoices?: (string | RichContent)[];
-  scrambledToOriginalIndexMap?: number[];
+  scrambledChoices?: ChoiceDefinition[]; // delivered order (ids stable for grading)
+  scrambledToOriginalIndexMap?: number[]; // DEPRECATED — id-based grading no longer needs this
 }
 
 export interface StudentResponse {
@@ -113,7 +141,8 @@ export interface StudentResponse {
   checkpointId?: string; // undefined if single question block
   questionId: string;
   type: 'mc' | 'sa';
-  responseValue: string | number; // choice index for MC, text for SA
+  responseValue: string | number; // choice id for MC, text for SA
+  responseText?: string; // denormalized chosen choice text (MC) for teacher review display
   isCorrect?: boolean; // MC auto-graded
   score: number; // Final registered score for this response
   activeTimeSpent: number; // seconds spent focusing on this question
@@ -121,7 +150,7 @@ export interface StudentResponse {
     score: number;
     rationale: string;
     confidence: number;
-    status: 'pending' | 'success' | 'failed';
+    status: 'pending' | 'success' | 'failed' | 'needs_review';
     rubricBreakdown: { [category: string]: { score: number; feedback: string } };
     gradedAt: string;
   };
@@ -130,6 +159,30 @@ export interface StudentResponse {
     notes: string;
     gradedAt: string;
   };
+}
+
+/** Durable, structured record of an AI grading pass (stored separately from the response). */
+export interface AIGradingRecord {
+  id: string;
+  responseId: string;
+  provider: string;
+  model: string;
+  promptVersion: string;
+  rubricSnapshot: RubricCategory[];
+  guidanceSnapshot?: {
+    modelAnswer?: string | RichContent;
+    answerKey?: string | RichContent;
+    aiScoringGuidance?: string | RichContent;
+  };
+  inputHash: string;
+  rawOutput?: unknown;
+  parsedScore: number;
+  confidence: number;
+  rationale: string;
+  rubricBreakdown: { [category: string]: { score: number; feedback: string } };
+  status: 'pending' | 'success' | 'failed' | 'needs_review';
+  errorMessage?: string;
+  gradedAt?: string;
 }
 
 export interface SecuritySignal {
@@ -170,7 +223,9 @@ export interface DatabaseSchema {
   lessons: Lesson[];
   blocks: LessonBlock[];
   attempts: LessonAttempt[];
-  assignments: QuestionAssignment[];
+  /** Per-attempt deterministic question selections (renamed from the misleading `assignments`). */
+  questionAssignments: QuestionAssignment[];
   responses: StudentResponse[];
   securitySignals: SecuritySignal[];
+  aiGradingRecords: AIGradingRecord[];
 }

@@ -8,6 +8,17 @@ import { initializeApp as initializeAdminApp } from "firebase-admin/app";
 import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
 import multer from "multer";
+import { appError, sendAppError, fail } from "./server/data/errors";
+import {
+  migrateBlock,
+  migrateQuestionDefinition,
+  sanitizeLessonBlocksForStudent,
+  sanitizeQuestionForStudent,
+  gradeMc,
+  choiceTextById,
+  findLeakedSecretFields,
+} from "./server/data/sanitize";
+import { validateLessonBlocks } from "./server/data/validation";
 
 // Set default DNS resolution to ipv4 first to avoid localhost connections failing in dev
 dns.setDefaultResultOrder("ipv4first");
@@ -103,58 +114,65 @@ function sanitizeForFirestore(val: any): any {
   return val;
 }
 
+// Durable collections owned by VERITAS Learn.
+const DB_COLLECTIONS = [
+  "users",
+  "courses",
+  "lessons",
+  "blocks",
+  "attempts",
+  "questionAssignments",
+  "responses",
+  "securitySignals",
+  "aiGradingRecords",
+] as const;
+
+function emptyDb(): any {
+  const db: any = {};
+  for (const col of DB_COLLECTIONS) db[col] = [];
+  return db;
+}
+
+/**
+ * Ensure a loaded db has the expected shape:
+ *  - all collections exist
+ *  - the legacy `assignments` collection is migrated to `questionAssignments`
+ *  - every embedded question is normalized to the stable-choice-id model
+ * Mutates and returns `db`.
+ */
+function normalizeDb(db: any): any {
+  if (!db || typeof db !== "object") return emptyDb();
+  for (const col of DB_COLLECTIONS) {
+    if (!Array.isArray(db[col])) db[col] = [];
+  }
+  // Legacy rename: assignments -> questionAssignments
+  if (Array.isArray(db.assignments) && db.assignments.length && db.questionAssignments.length === 0) {
+    db.questionAssignments = db.assignments;
+  }
+  delete db.assignments;
+  // Normalize embedded questions to stable choice ids / correctChoiceId.
+  db.blocks = db.blocks.map((b: any) => migrateBlock(b));
+  return db;
+}
+
 // Cloud Synchronized Memory Cache
-let dbMemory: any = {
-  users: [],
-  courses: [],
-  lessons: [],
-  blocks: [],
-  attempts: [],
-  assignments: [],
-  responses: [],
-  securitySignals: [],
-  aiGradingRecords: []
-};
+let dbMemory: any = emptyDb();
 
 let lastSyncedMemory: string = "";
 
 function readLocalBackup() {
   try {
     if (!fs.existsSync(DB_FILE)) {
-      const emptyDb = {
-        users: [],
-        courses: [],
-        lessons: [],
-        blocks: [],
-        attempts: [],
-        assignments: [],
-        responses: [],
-        securitySignals: [],
-        aiGradingRecords: []
-      };
+      const seeded = emptyDb();
       fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-      fs.writeFileSync(DB_FILE, JSON.stringify(emptyDb, null, 2), "utf8");
-      return emptyDb;
+      fs.writeFileSync(DB_FILE, JSON.stringify(seeded, null, 2), "utf8");
+      return seeded;
     }
     const data = fs.readFileSync(DB_FILE, "utf8");
-    const parsed = JSON.parse(data);
-    if (!parsed.aiGradingRecords) {
-      parsed.aiGradingRecords = [];
-    }
-    return parsed;
+    return normalizeDb(JSON.parse(data));
   } catch (error) {
     console.error("Error reading local backup database file:", error);
-    return {
-      users: [],
-      courses: [],
-      lessons: [],
-      blocks: [],
-      attempts: [],
-      assignments: [],
-      responses: [],
-      securitySignals: [],
-      aiGradingRecords: []
-    };
+    return emptyDb();
   }
 }
 
@@ -169,8 +187,9 @@ function saveLocalBackup(data: any) {
 
 // Synced DB Reading
 function readDb() {
-  if (!dbMemory.aiGradingRecords) {
-    dbMemory.aiGradingRecords = [];
+  if (!dbMemory.aiGradingRecords) dbMemory.aiGradingRecords = [];
+  if (!Array.isArray(dbMemory.questionAssignments)) {
+    dbMemory.questionAssignments = Array.isArray(dbMemory.assignments) ? dbMemory.assignments : [];
   }
   return dbMemory;
 }
@@ -197,28 +216,61 @@ function mergeResponsesWithAiGrading(responses: any[], db: any) {
   });
 }
 
-// Synced DB Writing with asynchronous Write-Through to Cloud Firestore
+/**
+ * Persistence mode is decided once at boot.
+ *  - "firestore": the configured Cloud Firestore is the durable source of truth.
+ *  - "preview-memory": PREVIEW/DEMO ONLY — durable home is the local data/db.json file.
+ *    Used only when no Firestore Admin credentials are reachable (e.g. this sandbox).
+ */
+let persistenceMode: "firestore" | "preview-memory" = "preview-memory";
+
+// Best-effort write-through used by NON-slice routes (progress/heartbeats/signals).
+// Slice routes that hold teacher-authored content or student work must use commitDb().
 function writeDb(data: any) {
   dbMemory = data;
   saveLocalBackup(data);
-  syncToFirestore(data);
+  if (persistenceMode === "firestore") {
+    syncToFirestore(data).catch((e) => console.error("VERITAS Learn - background sync failed:", e));
+  }
 }
 
-// Reconciles and uploads updates to cloud Firestore collections in background
-async function syncToFirestore(newState: any) {
-  if (!firestoreDb) return;
+/**
+ * Durable, awaited commit for teacher-authored content and student work.
+ * In Firestore mode this AWAITS the cloud write and throws AppError(DATABASE_WRITE_FAILED)
+ * on failure — it NEVER silently falls back to memory/local file for real content.
+ * In preview-memory mode the durable home is data/db.json.
+ */
+async function commitDb(data: any): Promise<void> {
+  dbMemory = data;
+  if (persistenceMode === "firestore") {
+    if (!firestoreDb) {
+      throw appError("DATABASE_UNAVAILABLE", "Durable database is not available. Your change was not saved.");
+    }
+    try {
+      await syncToFirestore(data, true);
+    } catch (err) {
+      throw appError(
+        "DATABASE_WRITE_FAILED",
+        "Failed to persist to the durable database. Your change was not saved.",
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+    saveLocalBackup(data); // local mirror for fast reads; Firestore remains source of truth
+    return;
+  }
+  // Preview/demo mode — durable home is the local JSON file.
+  saveLocalBackup(data);
+}
+
+// Reconciles and uploads updates to cloud Firestore collections.
+// `strict` => surface write failures (used by commitDb) instead of swallowing them.
+async function syncToFirestore(newState: any, strict = false) {
+  if (!firestoreDb) {
+    if (strict) throw appError("DATABASE_UNAVAILABLE", "Firestore is not configured.");
+    return;
+  }
   try {
-    const collectionsList = [
-      "users",
-      "courses",
-      "lessons",
-      "blocks",
-      "attempts",
-      "assignments",
-      "responses",
-      "securitySignals",
-      "aiGradingRecords"
-    ];
+    const collectionsList = DB_COLLECTIONS as readonly string[];
 
     let oldState: any = {};
     try {
@@ -261,14 +313,27 @@ async function syncToFirestore(newState: any) {
     }
     lastSyncedMemory = JSON.stringify(newState);
   } catch (syncErr) {
+    if (strict) throw syncErr;
     console.error("VERITAS Learn - Cloud syncing execution failed:", syncErr);
   }
+}
+
+// Loud banner so it is unmistakable that real student work would NOT be durably
+// stored in a real deployment while running in preview-memory mode.
+function announcePreviewMemoryMode(reason: string) {
+  persistenceMode = "preview-memory";
+  console.warn("============================================================");
+  console.warn("VERITAS Learn - PREVIEW/DEMO PERSISTENCE MODE");
+  console.warn(`  Reason: ${reason}`);
+  console.warn("  Durable home is the local file data/db.json (NOT Firestore).");
+  console.warn("  Do NOT treat this as production-durable student-record storage.");
+  console.warn("============================================================");
 }
 
 // Retrieves complete cloud state on boot
 async function loadDatabaseFromFirestore() {
   if (!firestoreDb) {
-    console.warn("VERITAS Learn - Cloud database not configured. Working in simple local storage mode.");
+    announcePreviewMemoryMode("No Firestore Admin credentials configured.");
     dbMemory = readLocalBackup();
     return;
   }
@@ -279,8 +344,8 @@ async function loadDatabaseFromFirestore() {
   } catch (permissionErr: any) {
     const isPermissionError = permissionErr?.message?.includes("PERMISSION_DENIED") || permissionErr?.code === 7;
     if (isPermissionError) {
-      console.warn("VERITAS Learn - Cloud Firestore connection is not authorized in current sandbox environment (7 PERMISSION_DENIED). Falling back gracefully to local persistent storage (data/db.json).");
       firestoreDb = null;
+      announcePreviewMemoryMode("Firestore reachable but not authorized in this sandbox (7 PERMISSION_DENIED).");
       dbMemory = readLocalBackup();
       return;
     }
@@ -288,17 +353,7 @@ async function loadDatabaseFromFirestore() {
 
   console.log("VERITAS Learn - Recovering academic data from Cloud Firestore...");
   try {
-    const collectionsList = [
-      "users",
-      "courses",
-      "lessons",
-      "blocks",
-      "attempts",
-      "assignments",
-      "responses",
-      "securitySignals",
-      "aiGradingRecords"
-    ];
+    const collectionsList = DB_COLLECTIONS as readonly string[];
 
     const tempMemory: any = {};
     let cloudIsEmpty = true;
@@ -318,16 +373,17 @@ async function loadDatabaseFromFirestore() {
       }
     }
 
+    persistenceMode = "firestore";
+
     if (cloudIsEmpty) {
       console.log("VERITAS Learn - Cloud DB is empty. Propagating initial templates and seed data...");
-      const fallbackDb = readLocalBackup();
-      dbMemory = fallbackDb;
+      dbMemory = normalizeDb(readLocalBackup());
       lastSyncedMemory = JSON.stringify(dbMemory);
       await syncToFirestore(dbMemory);
       console.log("VERITAS Learn - Seeding Cloud database finished.");
     } else {
       console.log("VERITAS Learn - Successfully restored data models. Database synced with Cloud Firestore.");
-      dbMemory = tempMemory;
+      dbMemory = normalizeDb(tempMemory);
       lastSyncedMemory = JSON.stringify(dbMemory);
       saveLocalBackup(dbMemory);
     }
@@ -342,6 +398,7 @@ async function loadDatabaseFromFirestore() {
 
   } catch (error) {
     console.error("VERITAS Learn - Failure restoring cloud states. Using survivors from local backup storage:", error);
+    announcePreviewMemoryMode("Firestore restore failed; using local backup.");
     dbMemory = readLocalBackup();
   }
 }
@@ -386,6 +443,66 @@ function shuffleWithSeed<T>(array: T[], randFn: () => number): T[] {
     result[j] = temp;
   }
   return result;
+}
+
+// Coerce a string | RichContent value into plain text for AI prompts/logging.
+function asPlainText(v: any): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "object") {
+    if (typeof v.text === "string") return v.text;
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  }
+  return String(v);
+}
+
+// Stable, dependency-free hash for AIGradingRecord.inputHash (audit/dedupe aid).
+function simpleHash(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  }
+  return "h" + h.toString(16);
+}
+
+// Build the short-answer grading prompt from the teacher-authored rubric + guidance.
+function buildShortAnswerPrompt(lesson: any, q: any, responseValue: any, maxPoints: number): string {
+  const rubricLines = (q.rubricCategories || [])
+    .map((c: any, i: number) => {
+      const parts = [
+        `  ${i + 1}. ${asPlainText(c.name)} (max ${c.maxPoints} pts): ${asPlainText(c.description)}`,
+      ];
+      if (c.fullCreditExample) parts.push(`     Full-credit example: ${asPlainText(c.fullCreditExample)}`);
+      if (c.partialCreditExample) parts.push(`     Partial-credit example: ${asPlainText(c.partialCreditExample)}`);
+      if (c.noCreditExample) parts.push(`     No-credit example: ${asPlainText(c.noCreditExample)}`);
+      return parts.join("\n");
+    })
+    .join("\n");
+
+  const optional = (label: string, val: any) => (val ? `\n${label}:\n${asPlainText(val)}\n` : "");
+
+  return [
+    `You are assisting a teacher in grading a written response for "${asPlainText(lesson.title)}" at Malvern Prep.`,
+    `Use ONLY the teacher-authored rubric and guidance below. Your score is a suggestion for teacher review.`,
+    ``,
+    `Question / prompt:`,
+    `"${asPlainText(q.stem)}"`,
+    optional("Model / expected answer", q.modelAnswer),
+    optional("Answer key", q.answerKey),
+    optional("AI scoring guidance", q.aiScoringGuidance),
+    `Rubric categories (total max ${maxPoints} points):`,
+    rubricLines || "  (no rubric categories provided)",
+    ``,
+    `Student's submission:`,
+    `"${asPlainText(responseValue)}"`,
+    ``,
+    `Grade against the rubric. Return a total score between 0 and ${maxPoints}, a confidence in [0,1],`,
+    `a brief rationale, and per-category feedback. Do not exceed the maximum points.`,
+  ].join("\n");
 }
 
 // Core authentication helper — verifies Firebase ID token only. No fallbacks.
@@ -604,159 +721,142 @@ app.get("/api/lessons/:id", requireAuth, (req, res) => {
     .filter((b: any) => b.lessonId === id)
     .sort((a: any, b: any) => a.order - b.order);
 
-  // SECRET MITIGATION: Strip correct answers/explanations for grade-relevant segments if user is a student!
+  // SECURITY: students receive an explicitly sanitized payload — every embedded
+  // question is stripped of correct answers, rubrics, model answers, AI scoring
+  // guidance, and teacher notes (graded AND practice). Feedback is delivered
+  // separately via the submit response when the feedback policy allows.
   if (user.role === "student") {
-    blocks = blocks.map((b: any) => {
-      const cell = { ...b };
-      
-      // Sanitizing Single Question Block
-      if (cell.type === "question" && !cell.isPractice) {
-        if (cell.singleQuestion) {
-          const sq = { ...cell.singleQuestion };
-          delete sq.correctAnswerIndex;
-          delete sq.explanation;
-          cell.singleQuestion = sq;
-        }
-        if (cell.questionPool) {
-          const qPool = { ...cell.questionPool };
-          qPool.questions = qPool.questions.map((q: any) => {
-            const sq = { ...q };
-            delete sq.correctAnswerIndex;
-            delete sq.explanation;
-            return sq;
-          });
-          cell.questionPool = qPool;
-        }
-      }
-
-      // Sanitizing Embedded video checkpoints
-      if (cell.type === "video" && cell.videoCheckpoints) {
-        cell.videoCheckpoints = cell.videoCheckpoints.map((cp: any) => {
-          if (!cp.isPractice) {
-            const sanitizedCp = { ...cp };
-            sanitizedCp.questions = sanitizedCp.questions.map((q: any) => {
-              const sq = { ...q };
-              delete sq.correctAnswerIndex;
-              delete sq.explanation;
-              return sq;
-            });
-            return sanitizedCp;
-          }
-          return cp;
-        });
-      }
-
-      return cell;
-    });
+    blocks = sanitizeLessonBlocksForStudent(blocks);
+    const leaks = findLeakedSecretFields(blocks);
+    if (leaks.length > 0) {
+      console.error("VERITAS Learn - SECURITY: sanitized lesson payload still leaked fields:", leaks);
+      res.status(500).json({ error: "Sanitization failed." });
+      return;
+    }
   }
 
   res.json({ lesson, blocks });
 });
 
 // Teacher: Create Lesson
-app.post("/api/lessons", requireTeacher, (req, res) => {
-  const db = readDb();
-  const { title, description, courseId, estimatedMinutes, settings, blocks } = req.body;
+app.post("/api/lessons", requireTeacher, async (req, res) => {
+  try {
+    const db = readDb();
+    const { title, description, courseId, estimatedMinutes, settings, blocks, isPublished } = req.body;
 
-  const newLesson = {
-    id: "lesson_" + Math.random().toString(36).substring(2, 9),
-    title: title || "New Untitled AP Lesson",
-    description: description || "",
-    courseId: courseId || "course_1",
-    estimatedMinutes: Number(estimatedMinutes) || 30,
-    isPublished: false,
-    createdAt: new Date().toISOString(),
-    settings: {
-      restrictSeeking: settings?.restrictSeeking ?? true,
-      requireFullscreen: settings?.requireFullscreen ?? true,
-      allowRetakes: settings?.allowRetakes ?? false,
-      randomizeChoices: settings?.randomizeChoices ?? true,
-      immediateFeedback: settings?.immediateFeedback ?? false
-    }
-  };
+    const willPublish = isPublished ?? false;
+    // Trusted re-validation: published lessons must contain valid graded questions.
+    if (willPublish) validateLessonBlocks(blocks);
 
-  db.lessons.push(newLesson);
+    const newLesson = {
+      id: "lesson_" + Math.random().toString(36).substring(2, 9),
+      title: title || "New Untitled AP Lesson",
+      description: description || "",
+      courseId: courseId || "course_1",
+      estimatedMinutes: Number(estimatedMinutes) || 30,
+      isPublished: willPublish,
+      createdAt: new Date().toISOString(),
+      settings: {
+        restrictSeeking: settings?.restrictSeeking ?? true,
+        requireFullscreen: settings?.requireFullscreen ?? true,
+        allowRetakes: settings?.allowRetakes ?? false,
+        randomizeChoices: settings?.randomizeChoices ?? true,
+        immediateFeedback: settings?.immediateFeedback ?? false
+      }
+    };
 
-  // Write blocks if supplied
-  if (Array.isArray(blocks)) {
-    blocks.forEach((b: any, index: number) => {
-      const blockId = b.id || "block_" + Math.random().toString(36).substring(2, 9);
-      db.blocks.push({
-        id: blockId,
-        lessonId: newLesson.id,
-        order: index + 1,
-        type: b.type,
-        title: b.title || `Segment ${index + 1}`,
-        videoUrl: b.videoUrl || "",
-        videoCheckpoints: b.videoCheckpoints || [],
-        content: b.content || "",
-        questionType: b.questionType || "mc",
-        isPractice: b.isPractice ?? false,
-        questionPool: b.questionPool || null,
-        singleQuestion: b.singleQuestion || null
+    db.lessons.push(newLesson);
+
+    if (Array.isArray(blocks)) {
+      blocks.forEach((b: any, index: number) => {
+        const rawBlock = {
+          id: b.id || "block_" + Math.random().toString(36).substring(2, 9),
+          lessonId: newLesson.id,
+          order: index + 1,
+          type: b.type,
+          title: b.title || `Segment ${index + 1}`,
+          videoUrl: b.videoUrl || "",
+          videoCheckpoints: b.videoCheckpoints || [],
+          content: b.content || "",
+          questionType: b.questionType || "mc",
+          isPractice: b.isPractice ?? false,
+          questionPool: b.questionPool || null,
+          singleQuestion: b.singleQuestion || null
+        };
+        // Normalize embedded questions to the stable choice-id model before persisting.
+        db.blocks.push(migrateBlock(rawBlock));
       });
-    });
-  }
+    }
 
-  writeDb(db);
-  res.status(201).json({ success: true, lesson: newLesson });
+    await commitDb(db);
+    res.status(201).json({ success: true, lesson: newLesson });
+  } catch (err) {
+    sendAppError(res, err);
+  }
 });
 
 // Teacher: Edit Lesson Title & Settings & Blocks
-app.put("/api/lessons/:id", requireTeacher, (req, res) => {
-  const { id } = req.params;
-  const db = readDb();
+app.put("/api/lessons/:id", requireTeacher, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = readDb();
 
-  const lessonIdx = db.lessons.findIndex((l: any) => l.id === id);
-  if (lessonIdx === -1) {
-    res.status(404).json({ error: "Lesson not found." });
-    return;
-  }
-
-  const { title, description, estimatedMinutes, isPublished, settings, blocks } = req.body;
-
-  const currentLesson = db.lessons[lessonIdx];
-  db.lessons[lessonIdx] = {
-    ...currentLesson,
-    title: title ?? currentLesson.title,
-    description: description ?? currentLesson.description,
-    estimatedMinutes: estimatedMinutes !== undefined ? Number(estimatedMinutes) : currentLesson.estimatedMinutes,
-    isPublished: isPublished ?? currentLesson.isPublished,
-    settings: {
-      restrictSeeking: settings?.restrictSeeking ?? currentLesson.settings.restrictSeeking,
-      requireFullscreen: settings?.requireFullscreen ?? currentLesson.settings.requireFullscreen,
-      allowRetakes: settings?.allowRetakes ?? currentLesson.settings.allowRetakes,
-      randomizeChoices: settings?.randomizeChoices ?? currentLesson.settings.randomizeChoices,
-      immediateFeedback: settings?.immediateFeedback ?? currentLesson.settings.immediateFeedback
+    const lessonIdx = db.lessons.findIndex((l: any) => l.id === id);
+    if (lessonIdx === -1) {
+      fail(res, "NOT_FOUND", "Lesson not found.");
+      return;
     }
-  };
 
-  if (Array.isArray(blocks)) {
-    // Delete existing old blocks for this lesson
-    db.blocks = db.blocks.filter((b: any) => b.lessonId !== id);
+    const { title, description, estimatedMinutes, isPublished, settings, blocks } = req.body;
 
-    // Repopulate blocks
-    blocks.forEach((b: any, index: number) => {
-      const bType = b.type;
-      db.blocks.push({
-        id: b.id || "block_" + Math.random().toString(36).substring(2, 9),
-        lessonId: id,
-        order: index + 1,
-        type: bType,
-        title: b.title || "Untitled block",
-        videoUrl: bType === "video" ? b.videoUrl : undefined,
-        videoCheckpoints: bType === "video" ? b.videoCheckpoints || [] : undefined,
-        content: bType === "reading" ? b.content : undefined,
-        questionType: bType === "question" ? b.questionType : undefined,
-        isPractice: bType === "question" ? b.isPractice : undefined,
-        questionPool: bType === "question" ? b.questionPool : undefined,
-        singleQuestion: bType === "question" ? b.singleQuestion : undefined
+    const currentLesson = db.lessons[lessonIdx];
+    const willPublish = isPublished ?? currentLesson.isPublished;
+    if (willPublish && Array.isArray(blocks)) validateLessonBlocks(blocks);
+
+    db.lessons[lessonIdx] = {
+      ...currentLesson,
+      title: title ?? currentLesson.title,
+      description: description ?? currentLesson.description,
+      estimatedMinutes: estimatedMinutes !== undefined ? Number(estimatedMinutes) : currentLesson.estimatedMinutes,
+      isPublished: willPublish,
+      settings: {
+        restrictSeeking: settings?.restrictSeeking ?? currentLesson.settings.restrictSeeking,
+        requireFullscreen: settings?.requireFullscreen ?? currentLesson.settings.requireFullscreen,
+        allowRetakes: settings?.allowRetakes ?? currentLesson.settings.allowRetakes,
+        randomizeChoices: settings?.randomizeChoices ?? currentLesson.settings.randomizeChoices,
+        immediateFeedback: settings?.immediateFeedback ?? currentLesson.settings.immediateFeedback
+      }
+    };
+
+    if (Array.isArray(blocks)) {
+      // Replace this lesson's blocks.
+      db.blocks = db.blocks.filter((b: any) => b.lessonId !== id);
+
+      blocks.forEach((b: any, index: number) => {
+        const bType = b.type;
+        const rawBlock = {
+          id: b.id || "block_" + Math.random().toString(36).substring(2, 9),
+          lessonId: id,
+          order: index + 1,
+          type: bType,
+          title: b.title || "Untitled block",
+          videoUrl: bType === "video" ? b.videoUrl : undefined,
+          videoCheckpoints: bType === "video" ? b.videoCheckpoints || [] : undefined,
+          content: bType === "reading" ? b.content : undefined,
+          questionType: bType === "question" ? b.questionType : undefined,
+          isPractice: bType === "question" ? b.isPractice : undefined,
+          questionPool: bType === "question" ? b.questionPool : undefined,
+          singleQuestion: bType === "question" ? b.singleQuestion : undefined
+        };
+        db.blocks.push(migrateBlock(rawBlock));
       });
-    });
-  }
+    }
 
-  writeDb(db);
-  res.json({ success: true, lesson: db.lessons[lessonIdx] });
+    await commitDb(db);
+    res.json({ success: true, lesson: db.lessons[lessonIdx] });
+  } catch (err) {
+    sendAppError(res, err);
+  }
 });
 
 // Teacher: Duplicate a lesson
@@ -810,163 +910,131 @@ app.delete("/api/lessons/:id", requireTeacher, (req, res) => {
 // ==========================================
 // Student Progress and Player Execution APIs
 // ==========================================
-// Start Lesson Attempt (deterministic seed questions generation)
-app.post("/api/attempts", requireAuth, (req, res) => {
-  const user = (req as any).user;
-  const { lessonId } = req.body;
-  const db = readDb();
 
-  const lesson = db.lessons.find((l: any) => l.id === lessonId);
-  if (!lesson) {
-    res.status(404).json({ error: "Lesson not found." });
-    return;
+/**
+ * Build a single deterministic, student-safe question assignment.
+ * The question is migrated (stable choice ids), choices are optionally scrambled
+ * deterministically, and the delivered snapshot is sanitized (no answer keys).
+ */
+function buildQuestionAssignment(
+  attemptId: string,
+  block: any,
+  checkpointId: string | undefined,
+  rawQuestion: any,
+  idSuffix: string,
+  randomizeChoices: boolean,
+  randFn: () => number
+): any {
+  const q = migrateQuestionDefinition(rawQuestion);
+  let deliveredChoices = Array.isArray(q.choices) ? [...q.choices] : undefined;
+  if (deliveredChoices && randomizeChoices) {
+    deliveredChoices = shuffleWithSeed(deliveredChoices, randFn);
   }
-
-  // Handle existing incomplete attempt or check retake policy
-  const existingAttempts = db.attempts.filter((a: any) => a.lessonId === lessonId && a.studentId === user.id);
-  const activeAttempt = existingAttempts.find((a: any) => a.status === "started");
-  
-  if (activeAttempt) {
-    res.json({ attempt: activeAttempt });
-    return;
-  }
-
-  if (existingAttempts.length > 0 && !lesson.settings.allowRetakes && user.role !== "teacher") {
-    res.status(400).json({ error: "Retakes are disabled for this lesson assessment." });
-    return;
-  }
-
-  // Create new Attempt
-  const seed = Math.floor(Math.random() * 900000) + 100000;
-  const newAttempt = {
-    id: "attempt_" + Math.random().toString(36).substring(2, 9),
-    lessonId,
-    studentId: user.id,
-    seed,
-    startedAt: new Date().toISOString(),
-    status: "started",
-    currentBlockIndex: 0,
-    furthestVideoTimestamps: {},
-    activeTimeSpent: 0,
-    inactiveTimeSpent: 0
+  // Sanitize, delivering the (possibly scrambled) id-stable choice order.
+  const selectedQuestion = sanitizeQuestionForStudent(q, deliveredChoices);
+  return {
+    id: `asgn_${attemptId}_${idSuffix}`,
+    attemptId,
+    blockId: block.id,
+    ...(checkpointId ? { checkpointId } : {}),
+    questionId: q.id,
+    selectedQuestion,
+    scrambledChoices: selectedQuestion.choices,
   };
+}
 
-  db.attempts.push(newAttempt);
+// Start Lesson Attempt (deterministic seed questions generation)
+app.post("/api/attempts", requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { lessonId } = req.body;
+    const db = readDb();
 
-  // Generate and lock deterministic question assignments from pools
-  const randFn = lcg(seed);
-  const lessonBlocks = db.blocks.filter((b: any) => b.lessonId === lessonId);
+    const lesson = db.lessons.find((l: any) => l.id === lessonId);
+    if (!lesson) {
+      fail(res, "NOT_FOUND", "Lesson not found.");
+      return;
+    }
 
-  lessonBlocks.forEach((block: any) => {
-    // Check points
-    // 1. Single Question MC or SA
-    if (block.type === "question") {
-      if (block.singleQuestion) {
-        const dQ = { ...block.singleQuestion };
-        let finalChoices = dQ.choices ? [...dQ.choices] : undefined;
-        let originalMap: number[] | undefined;
-        
-        if (finalChoices && lesson.settings.randomizeChoices) {
-          // Track choice maps for MC choice matching
-          const pairs = dQ.choices.map((choice: string, idx: number) => ({ choice, index: idx }));
-          const shuffledPairs = shuffleWithSeed<{ choice: string; index: number }>(pairs, randFn);
-          finalChoices = shuffledPairs.map(p => p.choice);
-          originalMap = shuffledPairs.map(p => p.index);
+    // Handle existing incomplete attempt or check retake policy
+    const existingAttempts = db.attempts.filter((a: any) => a.lessonId === lessonId && a.studentId === user.id);
+    const activeAttempt = existingAttempts.find((a: any) => a.status === "started");
+
+    if (activeAttempt) {
+      res.json({ attempt: activeAttempt });
+      return;
+    }
+
+    if (existingAttempts.length > 0 && !lesson.settings.allowRetakes && user.role !== "teacher") {
+      fail(res, "VALIDATION_ERROR", "Retakes are disabled for this lesson assessment.");
+      return;
+    }
+
+    const seed = Math.floor(Math.random() * 900000) + 100000;
+    const newAttempt = {
+      id: "attempt_" + Math.random().toString(36).substring(2, 9),
+      lessonId,
+      studentId: user.id,
+      seed,
+      startedAt: new Date().toISOString(),
+      status: "started",
+      currentBlockIndex: 0,
+      furthestVideoTimestamps: {},
+      activeTimeSpent: 0,
+      inactiveTimeSpent: 0
+    };
+
+    db.attempts.push(newAttempt);
+
+    // Generate and lock deterministic, sanitized question assignments.
+    const randFn = lcg(seed);
+    const randomize = !!lesson.settings.randomizeChoices;
+    const lessonBlocks = db.blocks.filter((b: any) => b.lessonId === lessonId);
+
+    lessonBlocks.forEach((block: any) => {
+      if (block.type === "question") {
+        if (block.singleQuestion) {
+          db.questionAssignments.push(
+            buildQuestionAssignment(newAttempt.id, block, undefined, block.singleQuestion, block.id, randomize, randFn)
+          );
+        } else if (block.questionPool && Array.isArray(block.questionPool.questions)) {
+          const shuffledPool = shuffleWithSeed(block.questionPool.questions, randFn);
+          const count = Math.min(block.questionPool.numToSelect || 1, shuffledPool.length);
+          shuffledPool.slice(0, count).forEach((q: any, qi: number) => {
+            db.questionAssignments.push(
+              buildQuestionAssignment(newAttempt.id, block, undefined, q, `${block.id}_p${qi}`, randomize, randFn)
+            );
+          });
         }
+      }
 
-        db.assignments.push({
-          id: `asgn_${newAttempt.id}_${block.id}`,
-          attemptId: newAttempt.id,
-          blockId: block.id,
-          questionId: dQ.id,
-          selectedQuestion: {
-            id: dQ.id,
-            stem: dQ.stem,
-            choices: finalChoices,
-            points: dQ.points,
-            rubricCategories: dQ.rubricCategories
-          },
-          scrambledChoices: finalChoices,
-          scrambledToOriginalIndexMap: originalMap
-        });
-      } else if (block.questionPool) {
-        // Select deterministically from pool
-        const shuffledPool = shuffleWithSeed(block.questionPool.questions, randFn);
-        const count = Math.min(block.questionPool.numToSelect || 1, shuffledPool.length);
-        const selectedSet = shuffledPool.slice(0, count);
-
-        selectedSet.forEach((q: any, qi: number) => {
-          let finalChoices = q.choices ? [...q.choices] : undefined;
-          let originalMap: number[] | undefined;
-
-          if (finalChoices && lesson.settings.randomizeChoices) {
-            const pairs = q.choices.map((choice: string, idx: number) => ({ choice, index: idx }));
-            const shuffledPairs = shuffleWithSeed<{ choice: string; index: number }>(pairs, randFn);
-            finalChoices = shuffledPairs.map(p => p.choice);
-            originalMap = shuffledPairs.map(p => p.index);
-          }
-
-          db.assignments.push({
-            id: `asgn_${newAttempt.id}_${block.id}_p${qi}`,
-            attemptId: newAttempt.id,
-            blockId: block.id,
-            questionId: q.id,
-            selectedQuestion: {
-              id: q.id,
-              stem: q.stem,
-              choices: finalChoices,
-              points: q.points,
-              rubricCategories: q.rubricCategories
-            },
-            scrambledChoices: finalChoices,
-            scrambledToOriginalIndexMap: originalMap
+      if (block.type === "video" && Array.isArray(block.videoCheckpoints)) {
+        block.videoCheckpoints.forEach((cp: any) => {
+          const shuffledCpQuestions = shuffleWithSeed(cp.questions || [], randFn);
+          const cpCount = Math.min(cp.numToSelect || 1, shuffledCpQuestions.length);
+          shuffledCpQuestions.slice(0, cpCount).forEach((q: any, qi: number) => {
+            db.questionAssignments.push(
+              buildQuestionAssignment(newAttempt.id, block, cp.id, q, `${block.id}_cp_${cp.id}_q${qi}`, randomize, randFn)
+            );
           });
         });
       }
+    });
+
+    // Defensive: never deliver an assignment payload that leaks secret fields.
+    const myAssignments = db.questionAssignments.filter((a: any) => a.attemptId === newAttempt.id);
+    const leaks = findLeakedSecretFields(myAssignments);
+    if (leaks.length > 0) {
+      console.error("VERITAS Learn - SECURITY: question assignment leaked fields:", leaks);
+      fail(res, "VALIDATION_ERROR", "Question delivery sanitization failed.");
+      return;
     }
 
-    // 2. Video block checkpoints randomizer pools
-    if (block.type === "video" && block.videoCheckpoints) {
-      block.videoCheckpoints.forEach((cp: any) => {
-        // Shuffle checkpoint questions
-        const shuffledCpQuestions = shuffleWithSeed(cp.questions, randFn);
-        const cpCount = Math.min(cp.numToSelect || 1, shuffledCpQuestions.length);
-        const selectedCps = shuffledCpQuestions.slice(0, cpCount);
-
-        selectedCps.forEach((q: any, qi: number) => {
-          let finalChoices = q.choices ? [...q.choices] : undefined;
-          let originalMap: number[] | undefined;
-
-          if (finalChoices && lesson.settings.randomizeChoices) {
-            const pairs = q.choices.map((choice: string, idx: number) => ({ choice, index: idx }));
-            const shuffledPairs = shuffleWithSeed<{ choice: string; index: number }>(pairs, randFn);
-            finalChoices = shuffledPairs.map(p => p.choice);
-            originalMap = shuffledPairs.map(p => p.index);
-          }
-
-          db.assignments.push({
-            id: `asgn_${newAttempt.id}_${block.id}_cp_${cp.id}_q${qi}`,
-            attemptId: newAttempt.id,
-            blockId: block.id,
-            checkpointId: cp.id,
-            questionId: q.id,
-            selectedQuestion: {
-              id: q.id,
-              stem: q.stem,
-              choices: finalChoices,
-              points: q.points,
-              rubricCategories: q.rubricCategories
-            },
-            scrambledChoices: finalChoices,
-            scrambledToOriginalIndexMap: originalMap
-          });
-        });
-      });
-    }
-  });
-
-  writeDb(db);
-  res.status(201).json({ attempt: newAttempt });
+    await commitDb(db);
+    res.status(201).json({ attempt: newAttempt });
+  } catch (err) {
+    sendAppError(res, err);
+  }
 });
 
 // Fetch detailed single attempt with deterministic assigned questions and responses
@@ -988,7 +1056,7 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
   }
 
   const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
-  const assignments = db.assignments.filter((asg: any) => asg.attemptId === id);
+  const questionAssignments = db.questionAssignments.filter((asg: any) => asg.attemptId === id);
   const rawResponses = db.responses.filter((r: any) => r.attemptId === id);
   const responses = mergeResponsesWithAiGrading(rawResponses, db);
   const signals = db.securitySignals.filter((s: any) => s.attemptId === id);
@@ -996,7 +1064,10 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
   res.json({
     attempt,
     lesson,
-    assignments,
+    // `questionAssignments` is the canonical key; `assignments` retained as a
+    // deprecated alias for backward compatibility with older clients.
+    questionAssignments,
+    assignments: questionAssignments,
     responses,
     signals
   });
@@ -1233,111 +1304,130 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
 
 // Submit Student response (Auto-grades MC, Triggers Server AI Grading for SA)
 app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
-  const { id } = req.params;
-  const { blockId, checkpointId, questionId, responseValue, activeTimeSpent } = req.body;
-  const db = readDb();
+  try {
+    const { id } = req.params;
+    const { blockId, checkpointId, questionId, responseValue, activeTimeSpent } = req.body;
+    const db = readDb();
 
-  const attempt = db.attempts.find((a: any) => a.id === id);
-  if (!attempt) {
-    res.status(404).json({ error: "Attempt not found." });
-    return;
-  }
-
-  // Students can only submit to their own attempts
-  const submitUser = (req as any).user;
-  if (submitUser?.role === "student" && attempt.studentId !== submitUser?.id) {
-    res.status(403).json({ error: "Access denied." });
-    return;
-  }
-
-  const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
-  if (!lesson) {
-    res.status(404).json({ error: "Associated lesson configuration missing." });
-    return;
-  }
-
-  // Find exact locked assignment to retrieve genuine values safely
-  const assignment = db.assignments.find((asg: any) => 
-    asg.attemptId === id && 
-    asg.blockId === blockId && 
-    asg.questionId === questionId &&
-    (checkpointId ? asg.checkpointId === checkpointId : true)
-  );
-
-  if (!assignment) {
-    res.status(400).json({ error: "Deterministic question assignment block not detected for this instance." });
-    return;
-  }
-
-  const block = db.blocks.find((b: any) => b.id === blockId);
-  let isMC = false;
-  let originalQuestion: any = null;
-
-  // Retrieve the original question definition from db to check answers
-  if (checkpointId && block.videoCheckpoints) {
-    const cp = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
-    if (cp) {
-      isMC = cp.questionType === "mc";
-      originalQuestion = cp.questions.find((q: any) => q.id === questionId);
-    }
-  } else {
-    isMC = block.questionType === "mc";
-    originalQuestion = block.singleQuestion || (block.questionPool && block.questionPool.questions.find((q: any) => q.id === questionId));
-  }
-
-  if (!originalQuestion) {
-    res.status(404).json({ error: "Original question keys not found." });
-    return;
-  }
-
-  // Remove previous existing responses for this specific question to support edits before final submission
-  db.responses = db.responses.filter((r: any) => 
-    !(r.attemptId === id && r.blockId === blockId && r.questionId === questionId && (checkpointId ? r.checkpointId === checkpointId : true))
-  );
-
-  const newResponse: any = {
-    id: "resp_" + Math.random().toString(36).substring(2, 9),
-    attemptId: id,
-    studentId: attempt.studentId,
-    blockId,
-    checkpointId,
-    questionId,
-    type: isMC ? "mc" : "sa",
-    responseValue,
-    score: 0,
-    activeTimeSpent: Number(activeTimeSpent) || 0
-  };
-
-  if (isMC) {
-    // MULTIPLE CHOICE SECURE AUTO-GRADING
-    const submittedScrambledIndex = Number(responseValue);
-    let originalIndex = submittedScrambledIndex;
-
-    // Map scrambled back if relevant
-    if (assignment.scrambledToOriginalIndexMap) {
-      originalIndex = assignment.scrambledToOriginalIndexMap[submittedScrambledIndex] ?? submittedScrambledIndex;
+    const attempt = db.attempts.find((a: any) => a.id === id);
+    if (!attempt) {
+      fail(res, "NOT_FOUND", "Attempt not found.");
+      return;
     }
 
-    const correctIndex = originalQuestion.correctAnswerIndex;
-    const isCorrect = originalIndex === correctIndex;
+    // Students can only submit to their own attempts
+    const submitUser = (req as any).user;
+    if (submitUser?.role === "student" && attempt.studentId !== submitUser?.id) {
+      fail(res, "FORBIDDEN", "You cannot submit to another student's attempt.");
+      return;
+    }
 
-    newResponse.isCorrect = isCorrect;
-    newResponse.score = isCorrect ? originalQuestion.points : 0;
+    const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
+    if (!lesson) {
+      fail(res, "NOT_FOUND", "Associated lesson configuration missing.");
+      return;
+    }
 
-    db.responses.push(newResponse);
-    writeDb(db);
-    res.json({ success: true, gradedImmediate: true, isCorrect, score: newResponse.score, explanation: lesson.settings.immediateFeedback || (checkpointId && block.videoCheckpoints.find((cp: any) => cp.id === checkpointId)?.isPractice) ? originalQuestion.explanation : undefined });
-  } else {
-    // SHORT ANSWER AI GRADING WITH TEACHER RUBRIC
-    const gradingRecordId = "aigr_" + Math.random().toString(36).substring(2, 9);
-    const newGradingRecord = {
-      id: gradingRecordId,
+    // The locked assignment proves this question was actually delivered to this attempt.
+    const assignment = db.questionAssignments.find((asg: any) =>
+      asg.attemptId === id &&
+      asg.blockId === blockId &&
+      asg.questionId === questionId &&
+      (checkpointId ? asg.checkpointId === checkpointId : true)
+    );
+
+    if (!assignment) {
+      fail(res, "INVALID_ATTEMPT", "This question was not assigned to your attempt.");
+      return;
+    }
+
+    const block = db.blocks.find((b: any) => b.id === blockId);
+    if (!block) {
+      fail(res, "NOT_FOUND", "Block not found.");
+      return;
+    }
+
+    let checkpoint: any = null;
+    let rawOriginal: any = null;
+    if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+      checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+      if (checkpoint) rawOriginal = (checkpoint.questions || []).find((q: any) => q.id === questionId);
+    } else {
+      rawOriginal =
+        block.singleQuestion ||
+        (block.questionPool && block.questionPool.questions.find((q: any) => q.id === questionId));
+    }
+
+    if (!rawOriginal) {
+      fail(res, "NOT_FOUND", "Original question definition not found.");
+      return;
+    }
+
+    // Normalize to the stable choice-id model (idempotent) so grading uses correctChoiceId.
+    const originalQuestion = migrateQuestionDefinition(rawOriginal);
+    const declaredType = checkpoint ? checkpoint.questionType : block.questionType;
+    const isMC =
+      declaredType === "mc" ? true : declaredType === "sa" ? false : originalQuestion.type === "mc";
+    const isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
+
+    // Idempotent: replace any prior response for this exact question (never double-count score).
+    db.responses = db.responses.filter(
+      (r: any) =>
+        !(r.attemptId === id && r.blockId === blockId && r.questionId === questionId && (checkpointId ? r.checkpointId === checkpointId : true))
+    );
+
+    const newResponse: any = {
+      id: "resp_" + Math.random().toString(36).substring(2, 9),
+      attemptId: id,
+      studentId: attempt.studentId,
+      blockId,
+      checkpointId,
+      questionId,
+      type: isMC ? "mc" : "sa",
+      responseValue,
+      score: 0,
+      activeTimeSpent: Number(activeTimeSpent) || 0
+    };
+
+    if (isMC) {
+      // MC AUTO-GRADING by stable choice id (scramble-proof; client score is never trusted).
+      const { isCorrect } = gradeMc(originalQuestion, responseValue);
+      newResponse.isCorrect = isCorrect;
+      newResponse.score = isCorrect ? Number(originalQuestion.points) || 0 : 0;
+      newResponse.responseText = choiceTextById(originalQuestion, responseValue);
+
+      db.responses.push(newResponse);
+      await commitDb(db);
+
+      const feedbackAllowed = !!lesson.settings.immediateFeedback || isPracticeQuestion;
+      res.json({
+        success: true,
+        gradedImmediate: true,
+        isCorrect,
+        score: newResponse.score,
+        explanation: feedbackAllowed ? originalQuestion.explanation : undefined
+      });
+      return;
+    }
+
+    // ---- SHORT ANSWER: AI grading using teacher-authored rubric + guidance ----
+    const maxPoints = Number(originalQuestion.points) || 0;
+    const guidanceSnapshot = {
+      modelAnswer: originalQuestion.modelAnswer,
+      answerKey: originalQuestion.answerKey,
+      aiScoringGuidance: originalQuestion.aiScoringGuidance
+    };
+    const promptContent = buildShortAnswerPrompt(lesson, originalQuestion, responseValue, maxPoints);
+
+    const newGradingRecord: any = {
+      id: "aigr_" + Math.random().toString(36).substring(2, 9),
       responseId: newResponse.id,
       provider: "google",
       model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
-      promptVersion: "1.0",
+      promptVersion: "2.0",
       rubricSnapshot: originalQuestion.rubricCategories || [],
-      inputHash: "",
+      guidanceSnapshot,
+      inputHash: simpleHash(promptContent),
       parsedScore: 0,
       confidence: 0,
       rationale: "Contacting Veritas AI assessor layer...",
@@ -1346,48 +1436,27 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       gradedAt: new Date().toISOString()
     };
 
-    if (!db.aiGradingRecords) {
-      db.aiGradingRecords = [];
-    }
     db.aiGradingRecords.push(newGradingRecord);
     db.responses.push(newResponse);
-    writeDb(db);
+    await commitDb(db);
 
-    // Call Gemini asynchronously to avoid blocking user response
+    // Grade asynchronously so the student isn't blocked on the model round-trip.
     (async () => {
       try {
         const ai = getAI();
-        const rubricText = JSON.stringify(originalQuestion.rubricCategories || []);
-        
-        const promptContent = `
-          You are grading an academic written response for ${lesson.title} at Malvern Prep.
-          
-          Question Stem/Prompt:
-          "${originalQuestion.stem}"
-          
-          Teacher Rubric:
-          ${rubricText}
-          
-          Points Maxim: ${originalQuestion.points} points.
-          
-          Student's Written Submission:
-          "${responseValue}"
-          
-          Task: Grade this submission strictly but fairly based solely on the rubric categories. Return a score out of ${originalQuestion.points}. For each category, deduct points if expectations are missing or weak, or write an encouraging note for high quality.
-        `;
-
         const response = await ai.models.generateContent({
           model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
           contents: promptContent,
           config: {
-            systemInstruction: "You are Veritas AI, the official automated rubric assessor. You must strictly output JSON matching the requested structure.",
+            systemInstruction:
+              "You are Veritas AI, an assistive rubric grader. Your score is a suggestion for a teacher to review, not a final grade. Output strictly the requested JSON.",
             responseMimeType: "application/json",
             responseSchema: {
               type: Type.OBJECT,
               properties: {
-                score: { type: Type.NUMBER, description: "Total score earned, must be proportional to rubric categories and not exceed max points." },
-                confidence: { type: Type.NUMBER },
-                rationale: { type: Type.STRING, description: "A summary explanation of structural strengths and areas of improvements." },
+                score: { type: Type.NUMBER, description: "Total points earned; must not exceed the maximum." },
+                confidence: { type: Type.NUMBER, description: "0..1 confidence in this assessment." },
+                rationale: { type: Type.STRING, description: "Brief justification grounded in the rubric and guidance." },
                 rubricBreakdown: {
                   type: Type.ARRAY,
                   items: {
@@ -1406,10 +1475,9 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           }
         });
 
-        const rawJsonText = response.text.trim();
+        const rawJsonText = (response.text || "").trim();
         const geminiResult = JSON.parse(rawJsonText);
 
-        // Map array schema back to object format for easier usage
         const rubricObject: any = {};
         if (Array.isArray(geminiResult.rubricBreakdown)) {
           geminiResult.rubricBreakdown.forEach((item: any) => {
@@ -1417,63 +1485,62 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           });
         }
 
-        // Apply grades safely
+        // Clamp the suggested score into the valid range.
+        const clampedScore = Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
+        const confidence = Number(geminiResult.confidence) || 0;
+        const tooShort = typeof responseValue === "string" ? responseValue.trim().length <= 5 : false;
+        const finalStatus = confidence < 0.75 || tooShort ? "needs_review" : "success";
+
         const freshDb = readDb();
         const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
-        const freshGradIdx = freshDb.aiGradingRecords?.findIndex((g: any) => g.responseId === newResponse.id);
-
-        // Determine if AI is uncertain and flag for teacher review
-        let finalStatus = "success";
-        if (geminiResult.confidence < 0.75 || responseValue.trim().length <= 5) {
-          finalStatus = "needs_review";
-        }
+        const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === newResponse.id);
 
         if (freshRespIdx !== -1) {
-          freshDb.responses[freshRespIdx].score = Math.min(geminiResult.score, originalQuestion.points);
-          
-          if (freshGradIdx !== undefined && freshGradIdx !== -1) {
+          // The AI suggested score becomes the working score, but the raw response is never overwritten.
+          freshDb.responses[freshRespIdx].score = clampedScore;
+          if (freshGradIdx !== -1) {
             freshDb.aiGradingRecords[freshGradIdx] = {
               ...freshDb.aiGradingRecords[freshGradIdx],
-              parsedScore: Math.min(geminiResult.score, originalQuestion.points),
+              rawOutput: rawJsonText,
+              parsedScore: clampedScore,
               rationale: geminiResult.rationale,
-              confidence: geminiResult.confidence,
+              confidence,
               status: finalStatus,
               rubricBreakdown: rubricObject,
               gradedAt: new Date().toISOString()
             };
           }
-          writeDb(freshDb);
-          console.log(`VERITAS Learn - Successful AI Grade logged separate from student response. Status: ${finalStatus}. Score: ${geminiResult.score}/${originalQuestion.points}`);
+          await commitDb(freshDb);
+          console.log(`VERITAS Learn - AI grade stored (status=${finalStatus}, score=${clampedScore}/${maxPoints}).`);
         }
       } catch (error: any) {
         console.error("VERITAS Learn - AI Grading failed:", error);
         const freshDb = readDb();
-        const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
-        const freshGradIdx = freshDb.aiGradingRecords?.findIndex((g: any) => g.responseId === newResponse.id);
-        
-        if (freshRespIdx !== -1) {
-          if (freshGradIdx !== undefined && freshGradIdx !== -1) {
-            freshDb.aiGradingRecords[freshGradIdx] = {
-              ...freshDb.aiGradingRecords[freshGradIdx],
-              parsedScore: 0,
-              rationale: "AI engine connection failed. Awaiting manual grading override.",
-              confidence: 0,
-              status: "failed",
-              rubricBreakdown: {},
-              gradedAt: new Date().toISOString()
-            };
-          }
-          writeDb(freshDb);
+        const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === newResponse.id);
+        if (freshGradIdx !== -1) {
+          freshDb.aiGradingRecords[freshGradIdx] = {
+            ...freshDb.aiGradingRecords[freshGradIdx],
+            parsedScore: 0,
+            rationale: "AI grading could not complete. Sent to the review queue for manual grading.",
+            confidence: 0,
+            status: "needs_review",
+            errorMessage: error instanceof Error ? error.message : String(error),
+            rubricBreakdown: {},
+            gradedAt: new Date().toISOString()
+          };
+          await commitDb(freshDb).catch((e) => console.error("VERITAS Learn - failed to persist AI failure record:", e));
         }
       }
     })();
 
-    res.json({ success: true, gradedImmediate: false, message: "Awaiting asynchronous AI grading report." });
+    res.json({ success: true, gradedImmediate: false, message: "Your response was saved and sent for grading." });
+  } catch (err) {
+    sendAppError(res, err);
   }
 });
 
 // Complete Attempt
-app.post("/api/attempts/:id/complete", requireAuth, (req, res) => {
+app.post("/api/attempts/:id/complete", requireAuth, async (req, res) => {
   const { id } = req.params;
   const db = readDb();
 
@@ -1492,7 +1559,12 @@ app.post("/api/attempts/:id/complete", requireAuth, (req, res) => {
 
   db.attempts[attemptIdx].completedAt = new Date().toISOString();
   db.attempts[attemptIdx].status = "completed";
-  writeDb(db);
+  try {
+    await commitDb(db);
+  } catch (err) {
+    sendAppError(res, err);
+    return;
+  }
 
   res.json({ success: true, attempt: db.attempts[attemptIdx] });
 });
@@ -1545,28 +1617,32 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
   });
 });
 
-// Teacher: Gradebook Score Overrides
-app.post("/api/responses/:id/override", requireTeacher, (req, res) => {
-  const { id } = req.params;
-  const { score, notes } = req.body;
-  const db = readDb();
+// Teacher: Gradebook Score Overrides (teacher override is the final authority).
+app.post("/api/responses/:id/override", requireTeacher, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { score, notes } = req.body;
+    const db = readDb();
 
-  const responseIdx = db.responses.findIndex((r: any) => r.id === id);
-  if (responseIdx === -1) {
-    res.status(404).json({ error: "Student response record not found." });
-    return;
+    const responseIdx = db.responses.findIndex((r: any) => r.id === id);
+    if (responseIdx === -1) {
+      fail(res, "NOT_FOUND", "Student response record not found.");
+      return;
+    }
+
+    db.responses[responseIdx].score = Number(score);
+    db.responses[responseIdx].teacherOverride = {
+      score: Number(score),
+      notes: notes || "Manual grade modification applied.",
+      gradedAt: new Date().toISOString()
+    };
+
+    await commitDb(db);
+    const mergedResp = mergeResponsesWithAiGrading([db.responses[responseIdx]], db)[0];
+    res.json({ success: true, response: mergedResp });
+  } catch (err) {
+    sendAppError(res, err);
   }
-
-  db.responses[responseIdx].score = Number(score);
-  db.responses[responseIdx].teacherOverride = {
-    score: Number(score),
-    notes: notes || "Manual grade modification applied.",
-    gradedAt: new Date().toISOString()
-  };
-
-  writeDb(db);
-  const mergedResp = mergeResponsesWithAiGrading([db.responses[responseIdx]], db)[0];
-  res.json({ success: true, response: mergedResp });
 });
 
 // Unmatched API routes fallback to avoid serving SPA HTML
