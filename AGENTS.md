@@ -1325,6 +1325,132 @@ Future-agent warning:
 Current status:
 
 ```text
+Date: 2026-05-31
+Agent: Claude Code (Opus 4.8)
+Task: Make the core vertical slice real — Teacher authors MC + short-answer questions ->
+      persist durably -> student receives sanitized payload -> answers -> backend grades
+      securely -> teacher reviews. Plus data-access boundary, sanitization, terminology.
+
+REALITY AUDIT (verified directly, not from prior claims):
+  - dbMemory was the operational source of truth; writeDb() wrote memory -> data/db.json ->
+    background syncToFirestore(); on Firestore permission-denied at boot, firestoreDb was set
+    null and ALL writes thereafter hit only memory+local file. This sandbox has NO Firestore
+    Admin credentials, so live Firestore could not be (and cannot be) exercised here.
+  - Auth was already clean: Firebase Admin verifyIdToken; role from TEACHER_EMAILS env or the
+    persisted user doc. No +teacher/faculty/personal-email logic in code or firestore.rules.
+    Unsafe email-pattern rules survived ONLY in security_spec.md (a DRAFT) and "Surveillance"
+    wording in firebase-blueprint.json — both now fixed.
+  - Biggest real gap: LessonsBuilder question blocks were STEM-ONLY (no choices, correct answer,
+    points, explanation, rubric, model answer, AI guidance, or checkpoint authoring).
+  - `assignments` meant per-attempt question selections (misnamed). The per-attempt
+    selectedQuestion snapshot leaked rubricCategories to students. AI grading used only the
+    rubric (no model answer/answer key/scoring guidance).
+
+WHAT CHANGED:
+  Data model (src/types.ts): ChoiceDefinition (stable ids), correctChoiceId, RubricCategory
+    (+ full/partial/no-credit examples), modelAnswer/answerKey/aiScoringGuidance/teacherNotes/
+    studentInstructions, AIGradingRecord (guidanceSnapshot/inputHash/rawOutput/needs_review),
+    DatabaseSchema.assignments -> questionAssignments (+ aiGradingRecords).
+  New data-service modules:
+    - server/data/errors.ts      structured AppError + required codes + serializer
+    - server/data/sanitize.ts    question migration, student-payload sanitizers, id-based MC
+                                 grading, leak detector
+    - server/data/validation.ts  trusted re-validation of graded questions
+  Server (server.ts):
+    - questionAssignments collection (legacy `assignments` auto-migrated on load).
+    - GET /api/lessons/:id and POST /api/attempts deliver explicitly sanitized payloads with a
+      leak-detection guard (no answer keys / rubrics / model answers / guidance / notes).
+    - Submit: id-based scramble-proof MC grading; SA AI grading driven by rubric + model answer +
+      answer key + scoring guidance; full AIGradingRecord; score clamp; low-confidence/failure ->
+      needs_review; teacher override remains final; raw response never overwritten.
+    - Durable commit boundary: commitDb() awaits the write and throws DATABASE_WRITE_FAILED in
+      Firestore mode (NO silent fallback). Preview-memory mode is announced loudly at boot.
+    - Boot hardening: Firestore preflight is timeout-bounded (6s) so missing creds / unreachable
+      Firestore can no longer hang startup.
+  Frontend:
+    - src/components/TeacherDashboard/QuestionEditor.tsx (new): full MC + SA authoring with
+      inline validation and a no-leak Student Preview.
+    - LessonsBuilder.tsx: integrates QuestionEditor; adds direct video-checkpoint authoring
+      (timestamp/required/pause/practice + embedded question); publish gate blocks invalid
+      graded questions.
+    - FocusedPlayer.tsx: renders {id,text} choices, submits the stable choice id.
+    - Terminology: LiveMonitor ("FLAGGED"->"NEEDS REVIEW", "Telemetry Signals"->"focus events",
+      "Shield Active"->"No review flags"), StudentDossierModal ("Security Telemetry Alert
+      Chronology"->"Focus & Activity Log"; chosen MC option now shown as text), App header.
+  Docs/config: security_spec.md DRAFT rules (personal-email + `+teacher` patterns) replaced with
+    role-from-user-doc approach; firebase-blueprint.json "Surveillance" -> "Integrity signals".
+
+ROUTE / DATA INVENTORY (persistence: PM = preview-memory file in this sandbox; FS = Firestore
+  source-of-truth when Admin creds present; both via the SAME in-memory cache so no dual truth):
+  | Route / op                         | Persist before | Persist after        | Auth          | Student-sanitized | Remaining risk |
+  |------------------------------------|----------------|----------------------|---------------|-------------------|----------------|
+  | POST /api/auth/login, GET /me      | mem+file       | unchanged (writeDb)  | verifyIdToken | n/a               | low |
+  | GET /api/lessons                   | mem read       | mem read             | requireAuth   | list only         | low |
+  | GET /api/lessons/:id               | mem read       | mem read             | requireAuth   | YES (sanitizer+guard) | low |
+  | POST/PUT /api/lessons              | writeDb(mem)   | commitDb (FS strict) | requireTeacher| n/a (teacher)     | low |
+  | POST /api/lessons/:id/duplicate    | writeDb        | writeDb (documented) | requireTeacher| n/a               | not durable in FS mode* |
+  | DELETE /api/lessons/:id            | writeDb        | writeDb (documented) | requireTeacher| n/a               | not durable in FS mode* |
+  | POST /api/attempts                 | writeDb        | commitDb (FS strict) | requireAuth   | YES (snapshot+guard) | low |
+  | GET /api/attempts/:id              | mem read       | mem read             | requireAuth+owner | own data      | low |
+  | POST /api/attempts/:id/progress    | writeDb        | writeDb (best-effort)| requireAuth+owner | n/a           | non-slice; mem-backed* |
+  | POST /api/attempts/:id/block       | writeDb        | writeDb (best-effort)| requireAuth+owner | n/a           | non-slice; mem-backed* |
+  | POST /api/attempts/:id/submit      | writeDb        | commitDb (FS strict) | requireAuth+owner | grade server-side | low |
+  | POST /api/attempts/:id/complete    | writeDb        | commitDb (FS strict) | requireAuth+owner | n/a           | low |
+  | POST /api/integrity-signals        | writeDb        | writeDb (best-effort)| requireAuth   | create-only       | non-slice; mem-backed* |
+  | GET /api/analytics                 | mem read       | mem read             | requireTeacher| teacher feed      | low |
+  | POST /api/responses/:id/override   | writeDb        | commitDb (FS strict) | requireTeacher| n/a               | low |
+  | POST /api/video/upload             | disk           | disk (unchanged)     | requireTeacher| n/a               | local disk, not Firebase Storage* |
+  (* documented remaining work, below.)
+
+PERSISTENCE STATUS:
+  - The durable-commit boundary (commitDb) is wired into the vertical-slice WRITE routes
+    (lesson create/update, attempt create, submit, complete, override). In Firestore mode these
+    await the write and surface DATABASE_WRITE_FAILED rather than silently falling back.
+  - In THIS sandbox there are no Firestore Admin credentials, so the app runs in preview-memory
+    mode (durable home = data/db.json) and prints a loud banner. This is the documented, honest
+    fallback — NOT a claim that Firestore-first is verified at runtime here.
+
+REMAINING dbMemory / data/db.json USAGE (and why):
+  - dbMemory remains the in-memory READ cache for all routes (hydrated from Firestore at boot in
+    FS mode); this is intentional for fast reads and keeps a single source of truth.
+  - data/db.json is the durable home ONLY in preview-memory mode (no FS creds). Seed/demo content
+    lives there and is normalized (legacy choices -> stable ids) on load.
+  - Non-slice routes (progress, block, integrity-signals) still use best-effort writeDb; in FS
+    mode their writes are background-synced (not strictly awaited). Documented as next-PR work.
+
+STUDENT PAYLOAD SANITIZATION STATUS: Enforced server-side via sanitizeQuestionForStudent /
+  sanitizeBlockForStudent and the per-attempt snapshot, with findLeakedSecretFields guards on
+  both delivery paths. Graded payloads never include correctChoiceId/correctAnswerIndex/
+  explanation/rubricCategories/modelAnswer/answerKey/aiScoringGuidance/teacherNotes.
+
+VERIFICATION:
+  Commands: npm install; npm run lint; npm run build; npm run verify:slice; (npm run dev to boot)
+  Results:
+    - lint (tsc --noEmit): PASS
+    - build (vite + esbuild): PASS
+    - verify:slice (scripts/verify-slice.ts, 20 checks): 20 passed / 0 failed — covers legacy
+      migration, zero-leak sanitization (MC + SA + checkpoint block), id-based scramble-proof MC
+      grading, trusted validation rejection of invalid graded questions, structured error shape.
+    - Boot: server starts in ~1s, prints PREVIEW/DEMO banner (Firestore unreachable, 6s timeout),
+      unauthenticated routes return structured 401s.
+  NOT verified (environment limits): live authenticated HTTP round-trip and live Firestore writes
+    are impossible here (no Firebase Admin creds / no valid client token). The author->deliver->
+    answer->grade->review LOGIC is verified by verify:slice against the real server modules.
+
+KNOWN ISSUES / REMAINING WORK:
+  - Question-pool authoring UI is intentionally out of scope (pool path hidden in builder);
+    backend pool delivery still works for seeded pools.
+  - duplicate/delete lesson, progress, block, integrity-signal routes not yet on commitDb.
+  - Video upload stores to local /uploads disk, not durable Firebase Storage metadata.
+  - SA draft autosave not implemented (resume from submitted responses works).
+  - Full course/section/Assignment workflow, lesson/question versioning: not in this PR.
+
+NEXT RECOMMENDED PR: Provision Firestore Admin credentials and verify the full live round-trip;
+  migrate the remaining non-slice routes to commitDb; add SA draft autosave; then build the real
+  course/section Assignment workflow (open/due/close) and immutable lesson-version references.
+```
+
+```text
 Date: 2026-05-29
 Agent: Gemini Code Agent
 Task: Align navigation branding, text padding/sizes, header heights, and curriculum card status dimensions

@@ -338,17 +338,32 @@ async function loadDatabaseFromFirestore() {
     return;
   }
 
-  // Pre-flight permission verification to handle unauthenticated container sandboxes gracefully
+  // Pre-flight check, bounded by a timeout so a missing-credentials / unreachable
+  // Firestore (e.g. this sandbox, or a misconfigured preview) cannot hang boot.
   try {
-    await firestoreDb.collection("users").limit(1).get();
-  } catch (permissionErr: any) {
-    const isPermissionError = permissionErr?.message?.includes("PERMISSION_DENIED") || permissionErr?.code === 7;
-    if (isPermissionError) {
+    const preflight = firestoreDb.collection("users").limit(1).get();
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("FIRESTORE_PREFLIGHT_TIMEOUT")), 6000)
+    );
+    await Promise.race([preflight, timeout]);
+  } catch (preflightErr: any) {
+    const msg = preflightErr?.message || "";
+    const isPermissionError = msg.includes("PERMISSION_DENIED") || preflightErr?.code === 7;
+    const isTimeout = msg.includes("FIRESTORE_PREFLIGHT_TIMEOUT");
+    const isCredError = msg.includes("Could not load the default credentials") || msg.includes("credential");
+    if (isPermissionError || isTimeout || isCredError) {
       firestoreDb = null;
-      announcePreviewMemoryMode("Firestore reachable but not authorized in this sandbox (7 PERMISSION_DENIED).");
+      announcePreviewMemoryMode(
+        isPermissionError
+          ? "Firestore reachable but not authorized in this sandbox (7 PERMISSION_DENIED)."
+          : isTimeout
+          ? "Firestore did not respond within 6s (unreachable in this environment)."
+          : "Firestore Admin credentials are not available."
+      );
       dbMemory = readLocalBackup();
       return;
     }
+    // Unknown error — fall through; the main load below will catch and fall back.
   }
 
   console.log("VERITAS Learn - Recovering academic data from Cloud Firestore...");

@@ -92,13 +92,13 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
           {/* Section 2: Integrity Signals list */}
           <div className="bg-white border border-slate-200 p-5 rounded shadow-sm">
             <h4 className="text-xs font-bold text-slate-800 border-b border-slate-100 pb-2 mb-3 flex items-center gap-2 uppercase tracking-wide">
-              <AlertTriangle className="w-4 h-4 text-amber-600" /> Security Telemetry Alert Chronology
+              <AlertTriangle className="w-4 h-4 text-amber-600" /> Focus &amp; Activity Log
             </h4>
 
             {sSignals.length === 0 ? (
               <div className="py-4 text-xs font-medium text-emerald-800 bg-emerald-50 rounded px-4 flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4" />
-                <span>Zero suspicious behaviors recorded. Exemplary academic integrity parameters maintained.</span>
+                <span>No review flags recorded for this attempt.</span>
               </div>
             ) : (
               <div className="border border-slate-200 rounded divide-y divide-slate-100 max-h-48 overflow-y-auto pr-1">
@@ -156,7 +156,7 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
                           <div className="p-3 bg-slate-50 border border-slate-250 border-slate-200 rounded">
                             <span className="text-[9px] font-bold font-mono uppercase text-slate-400 block mb-1 tracking-wider">Submitted Answer</span>
                             <p className="font-bold text-slate-800">
-                              {bResponse.type === "mc" ? `Choice selection: ${bResponse.responseValue}` : bResponse.responseValue}
+                              {bResponse.type === "mc" ? `Selected: ${bResponse.responseText || bResponse.responseValue}` : bResponse.responseValue}
                             </p>
                             <div className="mt-2 flex items-center gap-2">
                               {bResponse.type === "mc" ? (
@@ -196,7 +196,7 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
                                 cpResp.map((cr) => (
                                   <div key={cr.id} className="p-2.5 bg-white border border-slate-200 rounded mt-2">
                                     <p className="font-bold text-slate-800">
-                                      {cr.type === "mc" ? `Selection index: ${cr.responseValue}` : `Written Essay: ${cr.responseValue}`}
+                                      {cr.type === "mc" ? `Selected: ${cr.responseText || cr.responseValue}` : `Written Essay: ${cr.responseValue}`}
                                     </p>
                                     <div className="mt-2 text-[9px] text-slate-500 font-mono flex items-center gap-2 font-bold">
                                       {cr.type === "mc" ? (

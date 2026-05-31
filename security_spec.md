@@ -56,80 +56,31 @@ Below are twelve high-risk payloads designed to test rules against Identity, Int
 
 ---
 
-## 3. Fortress Rule Blueprint (DRAFT_firestore.rules)
+## 3. Authorization Rule Approach
+
+The authoritative rules live in `firestore.rules`. Teacher authorization MUST be
+derived from the user's role stored in the Firestore `users` document — never from
+email text patterns, `+teacher` tags, or personal-email exceptions.
 
 ```javascript
-rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    
-    // Default Catch-All Deny Net
-    match /{document=**} {
-      allow read, write: if false;
-    }
-    
-    // Core custom functions
-    function isSignedIn() {
-      return request.auth != null;
-    }
-    
-    function emailVerified() {
-      return request.auth.token.email_verified == true;
-    }
-
-    function isTeacher() {
-      return isSignedIn() && (
-        request.auth.token.email == "stephenborish@gmail.com" || 
-        request.auth.token.email.matches(".*\\+teacher@malvernprep\\.org$")
-      );
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    // Rules matching each collection mapping
-    match /users/{userId} {
-      allow read: if isSignedIn();
-      allow create, update: if isTeacher() || isOwner(userId);
-    }
-
-    match /courses/{courseId} {
-      allow read: if isSignedIn();
-      allow write: if isTeacher();
-    }
-
-    match /lessons/{lessonId} {
-      allow read: if isSignedIn();
-      allow write: if isTeacher();
-    }
-
-    match /blocks/{blockId} {
-      allow read: if isSignedIn();
-      allow write: if isTeacher();
-    }
-
-    match /attempts/{attemptId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-      allow create: if isSignedIn();
-      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-    }
-
-    match /assignments/{assignmentId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-      allow write: if isTeacher() || (isSignedIn() && request.resource.data.studentId == request.auth.uid);
-    }
-
-    match /responses/{responseId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-      allow write: if isTeacher() || (isSignedIn() && request.resource.data.studentId == request.auth.uid);
-    }
-
-    match /securitySignals/{signalId} {
-      allow read: if isTeacher();
-      allow create: if isSignedIn();
-      allow update, delete: if isTeacher();
-    }
-  }
+// Role comes from the trusted user document, not from email text.
+function isTeacher() {
+  return isSignedIn()
+    && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+    && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
 }
 ```
+
+Key requirements (see `firestore.rules` for the full, deployed ruleset):
+
+- Default deny (`match /{document=**} { allow read, write: if false; }`).
+- Students may read/write only their own attempts, responses, drafts, and progress.
+- Students may **create** integrity signals but may not read/update/delete them.
+- Students may not read graded answer keys, model answers, AI scoring guidance, or
+  teacher rubrics/notes (these are excluded from student payloads server-side and are
+  teacher-only in the rules).
+- AI grading internals are teacher-only unless explicitly released to the student.
+
+> Note: a previous draft of this file proposed `isTeacher()` based on a hard-coded
+> personal email and a `+teacher@malvernprep.org` pattern. That approach is explicitly
+> rejected and has been removed.

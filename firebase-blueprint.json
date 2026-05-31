@@ -167,7 +167,7 @@
     },
     "securitySignals/{signalId}": {
       "schema": "SecuritySignal",
-      "description": "Surveillance events indicating copy-pastes, page blurs, full-screen egresses, or skips"
+      "description": "Integrity signals / activity records: copy-paste blocks, focus events, fullscreen changes, or seek attempts"
     },
     "aiGradingRecords/{recordId}": {
       "schema": "AIGradingRecord",
