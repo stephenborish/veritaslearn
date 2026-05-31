@@ -54,7 +54,11 @@ export default function PracticeDashboard({ lessons, attempts, onStartAttempt, o
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-slate-500 mt-2 line-clamp-2 leading-relaxed">{lesson.description || "Introductory history readings & interactive checks."}</p>
+                    <p className="text-xs text-slate-500 mt-2 line-clamp-2 leading-relaxed">
+                      {typeof lesson.description === "object"
+                        ? (lesson.description.plainText || (lesson.description.html ? lesson.description.html.replace(/<[^>]*>/g, "") : ""))
+                        : (lesson.description || "Introductory history readings & interactive checks.")}
+                    </p>
                   </div>
 
                   <div className="bg-slate-50 border-t border-slate-150 px-5 py-3.5 flex justify-between items-center">

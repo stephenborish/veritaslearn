@@ -190,7 +190,7 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
   };
 
   return (
-    <div className="space-y-6 select-none font-sans">
+    <div className="space-y-6 font-sans">
       {!selectedLesson ? (
         // Standard listings
         <div className="space-y-6">
@@ -218,7 +218,11 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
                       {lesson.isPublished ? "Published":"Draft"}
                     </span>
                   </div>
-                  <p className="text-xs text-slate-500 mt-2 line-clamp-2">{lesson.description || "No description provided."}</p>
+                  <p className="text-xs text-slate-500 mt-2 line-clamp-2">
+                    {typeof lesson.description === "object"
+                      ? (lesson.description.plainText || (lesson.description.html ? lesson.description.html.replace(/<[^>]*>/g, "") : ""))
+                      : (lesson.description || "No description provided.")}
+                  </p>
                 </div>
 
                 <div className="mt-4 border-t border-slate-100 pt-4 flex justify-between items-center text-[10px] text-slate-400 font-semibold">

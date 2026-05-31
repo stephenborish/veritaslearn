@@ -35,7 +35,7 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
   const lessonBlocks = blocks.filter((b) => b.lessonId === lesson.id);
 
   return (
-    <div className="fixed inset-0 bg-[#000]/45 backdrop-blur-xs flex items-center justify-center p-4 z-50 select-none font-sans">
+    <div className="fixed inset-0 bg-[#000]/45 backdrop-blur-xs flex items-center justify-center p-4 z-50 font-sans">
       <div className="bg-white border border-slate-200 text-slate-800 shadow-xl rounded w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden">
         {/* Modal Header */}
         <div className="bg-slate-50 border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">

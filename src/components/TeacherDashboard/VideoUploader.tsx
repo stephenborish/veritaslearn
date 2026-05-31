@@ -294,7 +294,7 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, onVideoUploaded 
   const activeThumbnail = thumbnailUrl || extractedThumbnail;
 
   return (
-    <div className="space-y-4 font-sans select-none" id="block-video-uploader-container">
+    <div className="space-y-4 font-sans" id="block-video-uploader-container">
       {/* Isolated stylesheet for high-fidelity striped progress bar keyframes */}
       <style>{`
         @keyframes uploaderStripes {

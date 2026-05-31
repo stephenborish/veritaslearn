@@ -405,7 +405,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col items-center justify-center font-sans select-none">
+      <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col items-center justify-center font-sans">
         <RefreshCw className="w-8 h-8 animate-spin text-[#0A192F] mb-3" />
         <span className="text-[10px] font-mono font-bold tracking-widest text-slate-400 uppercase">Verifying Academic Handshake...</span>
       </div>
@@ -416,7 +416,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const assignedSet = assignments.filter((asg) => asg.blockId === activeBlock?.id);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col md:flex-row relative overflow-hidden select-none">
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col md:flex-row relative overflow-hidden">
       
       {/* Full screen Integrity Enforcement Overlay */}
       <AnimatePresence>

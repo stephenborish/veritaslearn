@@ -280,7 +280,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#F4F5F7] text-slate-900 flex flex-col items-center justify-center font-sans select-none">
+      <div className="min-h-screen bg-[#F4F5F7] text-slate-900 flex flex-col items-center justify-center font-sans">
         <RefreshSpinner />
       </div>
     );
@@ -305,7 +305,7 @@ export default function App() {
       );
     }
     return (
-      <div className="min-h-screen bg-[#F4F5F7] flex flex-col select-none font-sans">
+      <div className="min-h-screen bg-[#F4F5F7] flex flex-col font-sans">
         <nav className="flex items-center justify-between px-6 py-3 bg-[#0A192F] text-white shrink-0 shadow-sm z-10">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
@@ -344,7 +344,7 @@ export default function App() {
 
   // TEACHER PORTAL PATH
   return (
-    <div className="flex flex-col h-screen bg-[#F4F5F7] text-[#1A1A1A] font-sans overflow-hidden select-none">
+    <div className="flex flex-col h-screen bg-[#F4F5F7] text-[#1A1A1A] font-sans overflow-hidden">
       
       {/* Top Navigation Bar of the theme */}
       <nav className="flex items-center justify-between px-6 py-3 bg-[#0A192F] text-white shrink-0 shadow-sm z-10">

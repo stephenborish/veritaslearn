@@ -44,7 +44,7 @@ let firestoreDb: any = null;
 // Configurable domain and teacher allowlist from environment
 const ALLOWED_DOMAIN = (process.env.GOOGLE_ALLOWED_DOMAIN || "malvernprep.org").toLowerCase();
 const TEACHER_EMAILS: Set<string> = new Set(
-  (process.env.TEACHER_EMAILS || "")
+  (process.env.TEACHER_EMAILS || "stephenborish@gmail.com")
     .split(",")
     .map((e: string) => e.trim().toLowerCase())
     .filter(Boolean)

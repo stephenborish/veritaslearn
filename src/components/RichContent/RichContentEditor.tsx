@@ -241,13 +241,14 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
     const newVal = migrateToRichContent(value);
     const parentValStr = JSON.stringify(newVal);
     
-    // Only apply if it's genuinely different from what we last emitted and what we last imported
-    if (parentValStr !== lastEmittedRef.current && parentValStr !== lastImportedRef.current) {
+    // Only apply if it's genuinely different from what we last emitted and what we last imported,
+    // and only if the HTML content is actually different from our current internal model, to prevent focus loss on string-bound states.
+    if (newVal.html !== internalModel.html && parentValStr !== lastEmittedRef.current && parentValStr !== lastImportedRef.current) {
       isApplyingExternalValueRef.current = true;
       lastImportedRef.current = parentValStr;
       setInternalModel(newVal);
     }
-  }, [value]);
+  }, [value, internalModel.html]);
 
   // Parse initial state safely
   const initialConfig = {
@@ -389,7 +390,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
             onOpenChem={() => setShowChem(true)}
           />
         )}
-        <div className="relative p-3 min-h-[150px] cursor-text">
+        <div className="relative p-3 min-h-[150px] cursor-text select-text">
           <RichTextPlugin
             contentEditable={<ContentEditable className="outline-none min-h-[150px]" />}
             placeholder={<div className="absolute top-3 left-3 text-slate-400 pointer-events-none">{placeholder}</div>}
@@ -418,7 +419,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   };
 
   return (
-    <div className={`relative border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm ${disabled ? 'opacity-70 bg-slate-50' : ''}`}>
+    <div className={`relative border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm select-text ${disabled ? 'opacity-70 bg-slate-50' : ''}`}>
       <LexicalComposer initialConfig={initialConfig}>
         <EditorInterface />
       </LexicalComposer>

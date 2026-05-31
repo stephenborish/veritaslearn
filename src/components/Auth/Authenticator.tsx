@@ -38,7 +38,7 @@ export default function Authenticator({ onLoginSuccess }: AuthenticatorProps) {
   };
 
   return (
-    <div className="min-h-screen bg-[#F4F5F7] text-[#1A1A1A] flex flex-col items-center justify-center p-6 select-none font-sans">
+    <div className="min-h-screen bg-[#F4F5F7] text-[#1A1A1A] flex flex-col items-center justify-center p-6 font-sans">
       <motion.div 
         initial={{ opacity: 0, y: 15 }}
         animate={{ opacity: 1, y: 0 }}
