@@ -60,7 +60,7 @@ export default function Authenticator({ onLoginSuccess }: AuthenticatorProps) {
           Durable Firebase Protection
         </span>
         <p className="text-xs text-slate-600 leading-relaxed mb-6">
-          Security is verified at the API boundary. Access is restricted strictly to authorized faculty, program administrators, or `@malvernprep.org` student Google accounts.
+          Authentication is verified server-side. Access is restricted to authorized Malvern Prep accounts. Contact your administrator if you need access.
         </p>
 
         {errorText && (
@@ -90,7 +90,7 @@ export default function Authenticator({ onLoginSuccess }: AuthenticatorProps) {
             Authentication Conditions
           </div>
           <p className="text-[10px] text-slate-550 leading-relaxed">
-            Please log in with <strong className="text-[#0A192F]">stephenborish@gmail.com</strong> or your registered school address. All attempts are auditable under FERPA guidelines.
+            Sign in with your authorized Malvern Prep Google account. All activity is logged under FERPA guidelines.
           </p>
         </div>
       </motion.div>

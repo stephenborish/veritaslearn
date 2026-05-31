@@ -1664,3 +1664,338 @@ Known issues: none
 Remaining work: Expand RichContent fields into complex properties (choices/explanations).
 Future-agent warning: Do not use CKEditor, TinyMCE, or MathType. Video upload must remain handled by existing VERITAS systems.
 ```
+
+---
+
+## AUDIT SESSION — 2026-05-31
+
+```text
+Date: 2026-05-31
+Agent: Claude (claude-sonnet-4-6)
+Task: Full codebase audit, Phase 1 build stabilization, Phase 2 auth cleanup,
+      Phase 13 gradebook fix, Phase 16 Firestore rules hardening, Phase 17 UI language cleanup.
+
+=== AUDIT FINDINGS ===
+
+1. FILE STRUCTURE (verified)
+   server.ts               — Express backend, 1669 lines
+   src/App.tsx             — Main app shell (teacher + student portals)
+   src/types.ts            — Type definitions (outdated vs AGENTS.md model)
+   src/lib/firebase.ts     — Firebase client init (correct)
+   src/components/Auth/Authenticator.tsx
+   src/components/RichContent/* — Lexical-based rich text editor
+   src/components/StudentPortal/FocusedPlayer.tsx
+   src/components/StudentPortal/PracticeDashboard.tsx
+   src/components/TeacherDashboard/LiveMonitor.tsx
+   src/components/TeacherDashboard/LessonsBuilder.tsx
+   src/components/TeacherDashboard/Gradebook.tsx
+   src/components/TeacherDashboard/AIReview.tsx
+   src/components/TeacherDashboard/StudentDossierModal.tsx
+   src/components/TeacherDashboard/VideoUploader.tsx
+   data/db.json            — LOCAL JSON FILE used as primary persistence (not Firestore)
+   firestore.rules         — Firestore client-SDK rules (repaired)
+   firebase-applet-config.json — Real Firebase project config
+
+2. AUTH FLOW (pre-fix, was broken)
+   CRITICAL: Three dangerous auth fallbacks existed in server.ts getSessionUser():
+   (a) Plain email bearer token: if token contains "@" and is not a JWT, treat as plain email —
+       this allowed anyone who knows a valid email to impersonate users.
+   (b) Unverified JWT fallback: if verifyIdToken() fails (e.g. expired token), the server
+       decoded the JWT payload WITHOUT cryptographic verification and used it for auth —
+       a critical security vulnerability.
+   (c) Hardcoded teacher: stephenborish@gmail.com was hardcoded as teacher in 6+ places.
+   (d) Same unsafe fallbacks existed in /api/auth/login.
+   (e) handleFirestoreError() logged stephenborish@gmail.com in error payloads.
+   (f) Firestore rules: isTeacher() used email text patterns (+teacher, faculty, personal email).
+
+3. DATA PERSISTENCE FLOW (still problematic — Phase 3 not yet fully implemented)
+   - dbMemory (in-memory array) is the primary data source on every request.
+   - db.json is loaded on boot and is the authoritative seed source.
+   - syncToFirestore() runs fire-and-forget after every writeDb() — errors are caught but
+     only logged, not surfaced to callers. Failed syncs are silent.
+   - Firestore is a background sync target, not the source of truth.
+   - If Firestore is inaccessible (PERMISSION_DENIED on boot), falls back to db.json entirely.
+   - THIS IS THE ARCHITECTURE: db.json / dbMemory is still the real production storage.
+   - Phase 3 (Firestore as source of truth) is NOT yet implemented — too large to do safely
+     in one session without Firestore access testing.
+
+4. FIRESTORE USAGE (pre-fix)
+   - Firestore sync was attempted but teacher detection in rules was broken.
+   - Rules allowed teacher access via +teacher email patterns and faculty text patterns.
+
+5. FIRESTORE RULES (pre-fix)
+   - emailVerified() had special case: request.auth.token.email == "stephenborish@gmail.com"
+   - isTeacher() checked: stephenborish@gmail.com OR +teacher@ OR faculty@
+   - securitySignals collection referenced by hostile-sounding name
+
+6. LESSON/ATTEMPT/RESPONSE MODELS (gap analysis)
+   - types.ts lacks: lessonVersionId, assignmentId (course delivery), LessonVersion,
+     QuestionVersion, Assignment (course delivery), AssignmentSettings, GradingPolicy,
+     FeedbackPolicy, CompletionPolicy, AttemptSession, VideoProgressRecord, ResponseDraft,
+     IntegritySignal (only SecuritySignal exists), GradebookEntry, ReadinessReport
+   - LessonAttempt missing: lessonVersionId, assignmentId, attemptNumber, submittedAt,
+     in_progress/submitted/abandoned/closed statuses
+   - QuestionDefinition uses: correctAnswerIndex (fragile index) instead of stable choice IDs
+   - No QuestionVersion — questions graded against mutable definitions
+
+7. VIDEO UPLOAD/STORAGE
+   - VideoUploader.tsx uploads to /uploads/ local folder via multer
+   - Files stored locally on server disk (not Firebase Storage)
+   - No Firebase Storage integration — files would be lost if container restarts
+   - videoDuration was hardcoded to 60 seconds for video completion check
+
+8. STUDENT PLAYER FLOW
+   - FocusedPlayer.tsx fetches attempt, then lesson blocks
+   - Used unsafe email bearer fallback in getAuthHeader()
+   - Logged events to /api/telemetry (wrong endpoint name)
+   - "Security Protocol Compromised" message shown on fullscreen exit
+   - Periodic progress sync every 10s (correct, but uses old endpoint)
+   - Student attempt auto-created on dashboard load for every published lesson (wrong behavior)
+
+9. GRADING FLOW
+   - MC grading: uses correctAnswerIndex (fragile, index-based)
+   - Uses scrambledToOriginalIndexMap to map back to original index
+   - Short answer triggers AI grading asynchronously
+   - No ownership check prevented any student from submitting to any attempt by ID
+
+10. AI GRADING FLOW
+    - Hardcoded model: "gemini-3.5-flash" (not configurable)
+    - AI output parsed as JSON (good)
+    - Low confidence → needs_review status (good)
+    - Score clamped to max points (good)
+    - Model name appeared in 3 places in server.ts
+
+11. TEACHER DASHBOARD FLOW
+    - LiveMonitor shows student cards (some live-monitor-first assumptions)
+    - Gradebook had hardcoded maxScore = 40
+    - Polling interval was 4 seconds (too aggressive for async platform)
+    - Tab label "Lesson Tracking" rendered LiveMonitor component
+    - Header still showed "Dr. Stephen Borish" hardcoded
+
+12. TERMINOLOGY PROBLEMS (pre-fix)
+    - /api/telemetry endpoint
+    - "Security Protocol Compromised" in FocusedPlayer
+    - "Security Flags" in teacher header
+    - "surveillance" in PracticeDashboard student info text
+    - "stephenborish@gmail.com" in Authenticator.tsx UI
+    - "Dr. Stephen Borish" hardcoded in teacher nav
+
+13. BUILD STATUS (verified)
+    - npm install: clean (608 packages)
+    - npm run lint: PASS (0 errors)
+    - npm run build: PASS (0 errors, 1 chunk size warning — not an error)
+
+14. HIGHEST-RISK SECURITY/DATA GAPS (pre-fix)
+    HIGH: Plain email bearer token accepted as auth (anyone could impersonate)
+    HIGH: Unverified JWT accepted after expiry (signature bypass)
+    HIGH: Teacher role assigned purely from email text pattern
+    HIGH: No ownership check on /api/attempts/:id — any user could read any attempt
+    HIGH: No ownership check on /api/attempts/:id/submit — any user could submit to any attempt
+    MEDIUM: Firestore rules used personal email and text patterns for teacher role
+    MEDIUM: AI model name hardcoded (can't deploy different model without code change)
+    MEDIUM: videoDuration = 60 hardcoded (video completion check was wrong for all real videos)
+    MEDIUM: Gradebook maxScore = 40 hardcoded (wrong for any real lesson)
+
+=== IMPLEMENTATION STATUS ===
+
+Phase 1 (Build Stabilization): COMPLETE
+  - npm install, lint, and build all pass before and after changes
+
+Phase 2 (Auth Boundary Cleanup): COMPLETE
+  Files changed:
+    - server.ts: Removed decodeJwtUnverified function entirely
+    - server.ts: Removed plain email bearer token fallback from getSessionUser
+    - server.ts: Removed unverified JWT fallback from getSessionUser
+    - server.ts: Removed stephenborish@gmail.com hardcoded teacher role in getSessionUser
+    - server.ts: Removed stephenborish@gmail.com hardcoded teacher role in /api/auth/login
+    - server.ts: Removed stephenborish@gmail.com from handleFirestoreError (email: null)
+    - server.ts: Added ALLOWED_DOMAIN (from GOOGLE_ALLOWED_DOMAIN env var, default malvernprep.org)
+    - server.ts: Added TEACHER_EMAILS Set (from TEACHER_EMAILS env var, comma-separated)
+    - server.ts: Teacher role now requires: (a) email in TEACHER_EMAILS env OR
+                 (b) existing user document in DB with role='teacher'
+    - server.ts: Added ownership check to GET /api/attempts/:id
+    - server.ts: Added ownership check to POST /api/attempts/:id/progress
+    - server.ts: Added ownership check to POST /api/attempts/:id/submit
+    - server.ts: Added ownership check to POST /api/attempts/:id/complete
+    - src/components/Auth/Authenticator.tsx: Removed stephenborish@gmail.com reference
+    - src/App.tsx: Removed hardcoded "Dr. Stephen Borish" — now uses currentUser.name
+    - src/components/StudentPortal/FocusedPlayer.tsx: Removed email bearer fallback in getAuthHeader
+
+  Trusted data operations changed:
+    - getSessionUser: Now ONLY accepts verified Firebase ID tokens. No fallbacks.
+    - /api/auth/login: ONLY accepts verified Firebase ID tokens. No fallbacks.
+    - All protected routes now share the same secure auth boundary
+
+  Verification completed:
+    - grep confirms: no stephenborish, no decodeJwtUnverified, no "gemini-3.5-flash" hardcoded,
+      no /api/telemetry, no videoDuration = 60, no maxScore = 40
+    - npm run lint: PASS
+    - npm run build: PASS
+
+Phase 3 (Firestore/Persistence Architecture): NOT YET IMPLEMENTED
+  - dbMemory + db.json is still the primary persistence layer
+  - Firestore sync is still fire-and-forget background sync
+  - Reason: Requires Firestore access to test end-to-end. Too risky to refactor blindly.
+  - TODO: Create data service layer (src/services/db.ts) that abstracts all data access
+  - TODO: Make all writes await Firestore directly (not as background sync)
+  - TODO: Remove silent fallback to local storage for real production data
+
+Phase 10 (Video Progress): PARTIALLY COMPLETE
+  Files changed:
+    - server.ts: Removed hardcoded videoDuration = 60. Now uses blockToCheck.videoDuration.
+    - If videoDuration is null/undefined on the block, the timestamp-based check is skipped.
+  Still needed:
+    - Store videoDuration on video blocks when uploading
+    - VideoUploader needs to extract and store video duration
+    - Real VideoProgressRecord schema (per AGENTS.md §8.6) not yet implemented
+
+Phase 13 (Gradebook): PARTIAL
+  Files changed:
+    - src/components/TeacherDashboard/Gradebook.tsx:
+      Added blocks prop, removed hardcoded maxScore = 40.
+      Now calculates max points from non-practice question blocks.
+    - src/App.tsx: Now passes blocks prop to Gradebook
+  Still needed:
+    - GradebookEntry model and server-side recalculation not implemented
+    - Missing/excused/pending states not distinct
+    - Export must match visible gradebook
+
+Phase 14 (AI Grading Governance): PARTIAL
+  Files changed:
+    - server.ts: AI model now uses process.env.AI_GRADING_MODEL || "gemini-2.0-flash"
+      (was hardcoded "gemini-3.5-flash" in 3 places)
+    - .env.example: Added AI_GRADING_MODEL variable
+  Still needed:
+    - inputHash not computed (field is empty string)
+    - rawOutput not stored
+    - promptVersion should be tied to actual prompt content
+    - Feedback release mechanism not implemented
+
+Phase 16 (Firestore Rules Hardening): COMPLETE
+  Files changed:
+    - firestore.rules: Completely rewritten
+      - Removed stephenborish@gmail.com from emailVerified and isTeacher
+      - Removed +teacher email pattern
+      - Removed faculty email pattern
+      - isTeacher() now uses: get(users/{uid}).data.role == 'teacher'
+      - Added integritySignals collection (students create only, teachers read/manage)
+      - Added gradebookEntries collection (student can read own, teacher read/write)
+      - Added auditLogs collection (teacher read only, no client writes)
+      - securitySignals collection retained for backward compat with current code
+      - AI grading records: students can only read if feedbackReleasedAt is set
+
+Phase 17 (UI Language Cleanup): COMPLETE
+  Files changed:
+    - src/components/StudentPortal/FocusedPlayer.tsx:
+      - "Security Protocol Compromised" → "Focus Mode Interrupted"
+      - logTelemetry() function → logIntegritySignal()
+      - /api/telemetry endpoint → /api/integrity-signals
+      - "Stephen Borish requires fullscreen" → generic message
+      - getAuthHeader() email fallback removed
+    - server.ts: /api/telemetry → /api/integrity-signals
+    - src/App.tsx:
+      - "Security Flags" → "Integrity Signals"
+      - "Live Monitor" header → "Assignment Progress"
+      - Polling interval 4s → 60s (async-first platform)
+      - Hardcoded "Dr. Stephen Borish" → currentUser.name
+    - src/components/StudentPortal/PracticeDashboard.tsx:
+      - "surveillance" language removed
+    - src/components/Auth/Authenticator.tsx:
+      - stephenborish@gmail.com reference removed
+      - "authorized faculty" → "authorized Malvern Prep accounts"
+    - .env.example: Added TEACHER_EMAILS, GOOGLE_ALLOWED_DOMAIN, AI_GRADING_MODEL
+
+Files changed this session:
+  server.ts
+  src/App.tsx
+  src/components/Auth/Authenticator.tsx
+  src/components/StudentPortal/FocusedPlayer.tsx
+  src/components/StudentPortal/PracticeDashboard.tsx
+  src/components/TeacherDashboard/Gradebook.tsx
+  firestore.rules
+  .env.example
+  AGENTS.md
+
+Trusted data operations changed:
+  - getSessionUser: Secure. Verifies Firebase ID token only. No fallbacks.
+  - /api/auth/login: Secure. Verifies Firebase ID token only. No fallbacks.
+  - All attempt endpoints: Ownership enforced for student role.
+  - /api/integrity-signals: Renamed from /api/telemetry.
+  - AI grading model: Now configurable via AI_GRADING_MODEL env var.
+  - Video completion check: No longer hardcoded to 60 seconds.
+
+Models changed:
+  - Gradebook component now accepts blocks prop and calculates maxScore from blocks.
+  - Firestore rules now enforce role from user document, not email patterns.
+
+Verification steps completed:
+  - grep: No stephenborish, no decodeJwtUnverified, no email bearer fallback,
+    no /api/telemetry, no videoDuration=60, no maxScore=40, no logTelemetry
+  - npm run lint: PASS (0 TypeScript errors)
+  - npm run build: PASS (0 build errors)
+
+Results:
+  - Auth boundary is now secure: only verified Firebase ID tokens accepted
+  - Teacher role requires explicit TEACHER_EMAILS env var or existing user document
+  - Student ownership enforced on all attempt endpoints
+  - Firestore rules no longer allow teacher access via email text patterns
+  - AI model is now configurable
+  - All hostile/surveillance UI language removed or replaced
+  - Gradebook maxScore calculated from lesson blocks
+
+Known issues:
+  1. DATA PERSISTENCE: dbMemory + db.json is still the primary persistence layer.
+     Firestore is background sync only. Student work WILL be lost if server restarts
+     and db.json is not present. This is the most critical remaining risk.
+  2. NO ASSIGNMENT WORKFLOW: Students start raw lessons. No course-level assignment
+     with open/due/close dates exists yet (Phase 4).
+  3. NO LESSON VERSIONING: Editing a lesson still deletes and recreates blocks,
+     which can corrupt active attempts (Phase 5).
+  4. NO QUESTION VERSIONING: Questions graded against mutable definitions (Phase 6).
+  5. MC GRADING: Still uses correctAnswerIndex (fragile) instead of stable choice IDs.
+  6. NO AUTOSAVE/DRAFTS: ResponseDraft not implemented (Phase 8).
+  7. NO ATTEMPT SESSIONS: AttemptSession not implemented (Phase 9).
+  8. VIDEO DURATION: videoDuration field not stored on blocks by VideoUploader yet.
+     The server-side check only fires if the block has videoDuration set.
+  9. STUDENT DASHBOARD: Auto-creates attempts for every published lesson on page load.
+     This is wrong behavior — should only show assigned lessons.
+  10. GRADEBOOK: Missing/excused/pending states not distinct. No server-side recalc.
+  11. AI GRADING: inputHash not computed; rawOutput not stored; promptVersion static.
+  12. FIREBASE STORAGE: Videos stored locally on server disk (not Firebase Storage).
+      Files will be lost on container restart.
+  13. TEACHER PORTAL: Still "Lesson Tracking" tab but shows LiveMonitor component.
+      Assignment-centered workflow not yet implemented.
+  14. TYPES: src/types.ts still uses old compressed models. AGENTS.md models not yet
+      reflected in the type system.
+
+Remaining work (in priority order):
+  1. [CRITICAL] Phase 3: Firestore as source of truth — replace dbMemory pattern
+  2. [HIGH] Phase 4: Real assignment workflow (course-level assignment with dates)
+  3. [HIGH] Phase 5: Lesson versioning (immutable LessonVersion on publish)
+  4. [HIGH] Phase 6: Question versioning (stable choice IDs, QuestionVersion)
+  5. [HIGH] Phase 8: Autosave and draft responses
+  6. [HIGH] Phase 9: Attempt sessions
+  7. [MEDIUM] Phase 10: Store videoDuration on blocks; full VideoProgressRecord
+  8. [MEDIUM] Phase 11: Completion validation (validate all requirements server-side)
+  9. [MEDIUM] Phase 12: Rebuild teacher dashboard (assignment-centered, not live-monitor)
+  10. [MEDIUM] Phase 13: Full gradebook (server-side recalc, distinct states)
+  11. [MEDIUM] Phase 15: Firebase Storage for video/image assets
+  12. [LOW] Fix src/types.ts to match AGENTS.md data models fully
+  13. [LOW] Fix student dashboard to show only assigned lessons (not auto-create)
+  14. [LOW] MC grading: migrate to stable choice IDs
+
+Future-agent warning:
+  - TEACHER_EMAILS env var is now required for any teacher to access the portal.
+    Without it set, even legitimate faculty with a @malvernprep.org email will be
+    created as students on first sign-in. Set TEACHER_EMAILS in the Secrets panel.
+  - db.json still contains seeded demo data. If Firestore becomes the source of truth,
+    the seeding strategy must be revisited.
+  - The FocusedPlayer auto-creates attempts via POST /api/attempts when a student
+    clicks "Begin" — this is correct. But App.tsx fetchLmsPayload also auto-creates
+    attempts for every published lesson on student login — this is WRONG. Fix in Phase 4.
+  - Do not restore email bearer token or unverified JWT fallbacks. If auth fails in dev,
+    configure Firebase Admin credentials properly or use the TEACHER_EMAILS env var.
+  - The "assignments" collection in Firestore/dbMemory currently stores QUESTION
+    ASSIGNMENTS (deterministic question picks), not course-level assignments.
+    Rename to "questionAssignments" when implementing Phase 4.
+```

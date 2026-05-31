@@ -30,6 +30,15 @@ const CONFIG_FILE = path.join(process.cwd(), "firebase-applet-config.json");
 
 let firestoreDb: any = null;
 
+// Configurable domain and teacher allowlist from environment
+const ALLOWED_DOMAIN = (process.env.GOOGLE_ALLOWED_DOMAIN || "malvernprep.org").toLowerCase();
+const TEACHER_EMAILS: Set<string> = new Set(
+  (process.env.TEACHER_EMAILS || "")
+    .split(",")
+    .map((e: string) => e.trim().toLowerCase())
+    .filter(Boolean)
+);
+
 if (fs.existsSync(CONFIG_FILE)) {
   try {
     const firebaseConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
@@ -68,7 +77,7 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
       userId: "system_express_backend",
-      email: "stephenborish@gmail.com"
+      email: null
     },
     operationType,
     path
@@ -379,24 +388,7 @@ function shuffleWithSeed<T>(array: T[], randFn: () => number): T[] {
   return result;
 }
 
-// Unverified base64 JWT decoding helper for expired sandbox session self-healing
-function decodeJwtUnverified(token: string): { uid: string; email: string; name?: string } | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const bin = Buffer.from(parts[1], "base64").toString("utf8");
-    const payload = JSON.parse(bin);
-    return {
-      uid: payload.user_id || payload.sub,
-      email: payload.email,
-      name: payload.name
-    };
-  } catch (e) {
-    return null;
-  }
-}
-
-// Core authentication helper
+// Core authentication helper — verifies Firebase ID token only. No fallbacks.
 async function getSessionUser(req: express.Request) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -405,37 +397,13 @@ async function getSessionUser(req: express.Request) {
   const token = authHeader.substring(7).trim();
   if (!token) return null;
 
-  // Sandbox/QA Fallback for plain email Bearer tokens (e.g., student players)
-  if (token.includes("@") && token.split(".").length !== 3) {
-    const email = token.toLowerCase();
-    if (!email.endsWith("@malvernprep.org") && email !== "stephenborish@gmail.com") {
-      return null;
-    }
-    console.log("VERITAS Learn - Resilient fallback: Parsed plain email token:", email);
-    const db = readDb();
-    let user = db.users.find((u: any) => u.email.toLowerCase() === email);
-    if (!user) {
-      const isTeacher = email === "stephenborish@gmail.com";
-      user = {
-        id: "sandbox_uid_" + email.replace(/[@.]/g, "_"),
-        name: email.split("@")[0].replace(".", " ").replace(/^[a-z]/g, (c) => c.toUpperCase()),
-        email,
-        role: isTeacher ? "teacher" : "student",
-        createdAt: new Date().toISOString()
-      };
-      db.users.push(user);
-      writeDb(db);
-    }
-    return user;
-  }
-
   try {
     const decodedToken = await getAdminAuth().verifyIdToken(token);
     const email = decodedToken.email?.toLowerCase();
     if (!email) return null;
 
-    // Validation: Malvern Prep domain restricted
-    if (!email.endsWith("@malvernprep.org") && email !== "stephenborish@gmail.com") {
+    // Domain and allowlist check — no role based on email text patterns
+    if (!email.endsWith(`@${ALLOWED_DOMAIN}`) && !TEACHER_EMAILS.has(email)) {
       return null;
     }
 
@@ -443,10 +411,11 @@ async function getSessionUser(req: express.Request) {
     let user = db.users.find((u: any) => u.id === decodedToken.uid || u.email.toLowerCase() === email);
 
     if (!user) {
-      const isTeacher = email === "stephenborish@gmail.com";
+      // New users default to student. Teacher role only from TEACHER_EMAILS env or existing user document.
+      const isTeacher = TEACHER_EMAILS.has(email);
       user = {
         id: decodedToken.uid,
-        name: decodedToken.name || email.split("@")[0].replace(".", " ").replace(/^[a-z]/g, (c) => c.toUpperCase()),
+        name: decodedToken.name || email.split("@")[0].replace(/[._]/g, " "),
         email,
         role: isTeacher ? "teacher" : "student",
         createdAt: new Date().toISOString()
@@ -461,34 +430,6 @@ async function getSessionUser(req: express.Request) {
     return user;
   } catch (error) {
     console.error("VERITAS Learn - ID Token verification failed:", error);
-    
-    // Self-healing fallback: If token signature has expired during sandbox, decode Base64 payload instead of failing
-    const decoded = decodeJwtUnverified(token);
-    if (decoded && decoded.email) {
-      console.log("VERITAS Learn - Resilient fallback triggered for expired token:", decoded.email);
-      const email = decoded.email.toLowerCase();
-      if (!email.endsWith("@malvernprep.org") && email !== "stephenborish@gmail.com") {
-        return null;
-      }
-      const db = readDb();
-      let user = db.users.find((u: any) => u.id === decoded.uid || u.email.toLowerCase() === email);
-      if (!user) {
-        const isTeacher = email === "stephenborish@gmail.com";
-        user = {
-          id: decoded.uid,
-          name: decoded.name || email.split("@")[0].replace(".", " ").replace(/^[a-z]/g, (c) => c.toUpperCase()),
-          email,
-          role: isTeacher ? "teacher" : "student",
-          createdAt: new Date().toISOString()
-        };
-        db.users.push(user);
-        writeDb(db);
-      } else if (user.id !== decoded.uid) {
-        user.id = decoded.uid;
-        writeDb(db);
-      }
-      return user;
-    }
     return null;
   }
 }
@@ -575,8 +516,8 @@ app.post("/api/auth/login", async (req, res) => {
       return;
     }
 
-    if (!email.endsWith("@malvernprep.org") && email !== "stephenborish@gmail.com") {
-      res.status(403).json({ error: "Verification failed. Access is strictly restricted to Malvern Prep accounts (@malvernprep.org)." });
+    if (!email.endsWith(`@${ALLOWED_DOMAIN}`) && !TEACHER_EMAILS.has(email)) {
+      res.status(403).json({ error: "Access restricted to authorized Malvern Prep accounts. Contact your administrator if you believe this is an error." });
       return;
     }
 
@@ -584,10 +525,11 @@ app.post("/api/auth/login", async (req, res) => {
     let user = db.users.find((u: any) => u.id === decodedToken.uid || u.email.toLowerCase() === email);
 
     if (!user) {
-      const isTeacher = email === "stephenborish@gmail.com";
+      // New users default to student. Teacher role only from TEACHER_EMAILS env or existing user document.
+      const isTeacher = TEACHER_EMAILS.has(email);
       user = {
         id: decodedToken.uid,
-        name: decodedToken.name || email.split("@")[0].replace(".", " ").replace(/^[a-z]/g, (c) => c.toUpperCase()),
+        name: decodedToken.name || email.split("@")[0].replace(/[._]/g, " "),
         email,
         role: isTeacher ? "teacher" : "student",
         createdAt: new Date().toISOString()
@@ -601,8 +543,8 @@ app.post("/api/auth/login", async (req, res) => {
 
     res.json({ user });
   } catch (error: any) {
-    console.error("VERITAS Learn - Authentication handler failed:", error);
-    res.status(401).json({ error: "Session verification failed: " + error.message });
+    console.error("VERITAS Learn - Authentication failed:", error);
+    res.status(401).json({ error: "Session verification failed. Please sign in with an authorized Google account." });
   }
 });
 
@@ -1030,11 +972,18 @@ app.post("/api/attempts", requireAuth, (req, res) => {
 // Fetch detailed single attempt with deterministic assigned questions and responses
 app.get("/api/attempts/:id", requireAuth, (req, res) => {
   const { id } = req.params;
+  const user = (req as any).user;
   const db = readDb();
 
   const attempt = db.attempts.find((a: any) => a.id === id);
   if (!attempt) {
     res.status(404).json({ error: "Attempt not found." });
+    return;
+  }
+
+  // Students can only access their own attempts
+  if (user.role === "student" && attempt.studentId !== user.id) {
+    res.status(403).json({ error: "Access denied." });
     return;
   }
 
@@ -1066,6 +1015,13 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
   }
 
   const attempt = db.attempts[attemptIdx];
+
+  // Students can only update their own attempts
+  if ((req as any).user?.role === "student" && attempt.studentId !== (req as any).user?.id) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
   const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
   if (!lesson) {
     res.status(404).json({ error: "Lesson not found." });
@@ -1236,9 +1192,9 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
           return;
         }
 
-        // 2. Check video watch milestone (90% of the video duration)
-        if (lesson.settings.restrictSeeking) {
-          const videoDuration = 60; // APUSH standard BigBuckBunny mockup treated duration
+        // 2. Check video watch milestone against actual video duration if known
+        if (lesson.settings.restrictSeeking && blockToCheck.videoDuration) {
+          const videoDuration = blockToCheck.videoDuration;
           const requiredSeconds = videoDuration * 0.9;
           const furthestWatch = attempt.furthestVideoTimestamps[blockToCheck.id] || 0;
 
@@ -1248,11 +1204,11 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
               attemptId: attempt.id,
               studentId: attempt.studentId,
               timestamp: new Date().toISOString(),
-              eventType: "rapid_navigation",
-              severity: "high",
+              eventType: "seek_attempt_blocked",
+              severity: "medium",
               blockId: blockToCheck.id,
               metadata: {
-                message: `Bypass attempted. Video played up to ${Math.floor(furthestWatch)}s but required milestone is ${requiredSeconds}s.`,
+                message: `Navigation blocked. Video played up to ${Math.floor(furthestWatch)}s but required milestone is ${requiredSeconds}s.`,
                 blockIndexAttempt: blockIndex,
                 currentBlockIndex: attempt.currentBlockIndex
               }
@@ -1260,8 +1216,8 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
             db.securitySignals.push(blockNavSignal);
             writeDb(db);
 
-            res.status(400).json({ 
-              error: `Navigation blocked. You must watch the core instruction in '${blockToCheck.title}' fully before advancing.` 
+            res.status(400).json({
+              error: `Navigation blocked. You must watch the required video in '${blockToCheck.title}' before advancing.`
             });
             return;
           }
@@ -1284,6 +1240,13 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
   const attempt = db.attempts.find((a: any) => a.id === id);
   if (!attempt) {
     res.status(404).json({ error: "Attempt not found." });
+    return;
+  }
+
+  // Students can only submit to their own attempts
+  const submitUser = (req as any).user;
+  if (submitUser?.role === "student" && attempt.studentId !== submitUser?.id) {
+    res.status(403).json({ error: "Access denied." });
     return;
   }
 
@@ -1371,7 +1334,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       id: gradingRecordId,
       responseId: newResponse.id,
       provider: "google",
-      model: "gemini-3.5-flash",
+      model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
       promptVersion: "1.0",
       rubricSnapshot: originalQuestion.rubricCategories || [],
       inputHash: "",
@@ -1414,7 +1377,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         `;
 
         const response = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
+          model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
           contents: promptContent,
           config: {
             systemInstruction: "You are Veritas AI, the official automated rubric assessor. You must strictly output JSON matching the requested structure.",
@@ -1520,6 +1483,13 @@ app.post("/api/attempts/:id/complete", requireAuth, (req, res) => {
     return;
   }
 
+  const completeUser = (req as any).user;
+  const completingAttempt = db.attempts[attemptIdx];
+  if (completeUser?.role === "student" && completingAttempt.studentId !== completeUser?.id) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
   db.attempts[attemptIdx].completedAt = new Date().toISOString();
   db.attempts[attemptIdx].status = "completed";
   writeDb(db);
@@ -1527,8 +1497,8 @@ app.post("/api/attempts/:id/complete", requireAuth, (req, res) => {
   res.json({ success: true, attempt: db.attempts[attemptIdx] });
 });
 
-// Post Telemetry Logs
-app.post("/api/telemetry", requireAuth, (req, res) => {
+// Post Integrity Signals
+app.post("/api/integrity-signals", requireAuth, (req, res) => {
   const user = (req as any).user;
   const { attemptId, eventType, severity, blockId, videoTimestamp, metadata } = req.body;
   const db = readDb();
@@ -1625,7 +1595,7 @@ async function startServer() {
           id: "aigr_" + Math.random().toString(36).substring(2, 9),
           responseId: r.id,
           provider: "google",
-          model: "gemini-3.5-flash",
+          model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
           promptVersion: "1.0",
           rubricSnapshot: [],
           inputHash: "",

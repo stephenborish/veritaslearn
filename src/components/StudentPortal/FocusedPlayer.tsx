@@ -42,19 +42,17 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [navigationError, setNavigationError] = useState<string | null>(null);
 
   // Helper to retrieve current active authentication headers
-  const getAuthHeader = async () => {
-    let token = user?.email || "";
-    if (auth.currentUser) {
-      try {
-        const freshToken = await auth.currentUser.getIdToken();
-        if (freshToken) {
-          token = freshToken;
-        }
-      } catch (err) {
-        console.warn("FocusedPlayer - failed to fetch fresh idToken. Falling back to email bearer:", err);
-      }
+  const getAuthHeader = async (): Promise<Record<string, string>> => {
+    if (!auth.currentUser) {
+      return {};
     }
-    return { "Authorization": `Bearer ${token}` };
+    try {
+      const token = await auth.currentUser.getIdToken();
+      return { "Authorization": `Bearer ${token}` };
+    } catch (err) {
+      console.error("FocusedPlayer - failed to retrieve ID token:", err);
+      return {};
+    }
   };
 
   // Fetch full structured data on mount
@@ -134,14 +132,14 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       if (!isFull && requireFullscreenOpt) {
         setIsLocked(true);
         setLockMessage("Veritas requires fullscreen focus. Please enter secure fullscreen to continue.");
-        logTelemetry("fullscreen_exited", "high", { detail: "User exited fullscreen mode." });
+        logIntegritySignal("fullscreen_exited", "high", { detail: "User exited fullscreen mode." });
       }
     };
 
     // Tab blurs check
     const handleWindowBlur = () => {
       setActiveTab(false);
-      logTelemetry("blur_focus_lost", "medium", { detail: "Window lost focus / Tab changed." });
+      logIntegritySignal("blur_focus_lost", "medium", { detail: "Window lost focus / Tab changed." });
     };
 
     const handleWindowFocus = () => {
@@ -150,31 +148,31 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        logTelemetry("visibility_hidden", "high", { detail: "Document hidden, tab switched." });
+        logIntegritySignal("visibility_hidden", "high", { detail: "Document hidden, tab switched." });
       }
     };
 
     // Clipboard copies blocks
     const handleCopy = (e: ClipboardEvent) => {
       e.preventDefault();
-      logTelemetry("copy_blocked", "high", { detail: "Attempted word selection copy shorthand." });
+      logIntegritySignal("copy_blocked", "high", { detail: "Attempted word selection copy shorthand." });
     };
 
     const handlePaste = (e: ClipboardEvent) => {
       e.preventDefault();
-      logTelemetry("paste_blocked", "high", { detail: "Attempted paste action." });
+      logIntegritySignal("paste_blocked", "high", { detail: "Attempted paste action." });
     };
 
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
-      logTelemetry("context_menu_blocked", "medium", { detail: "Attempted right click context inspection." });
+      logIntegritySignal("context_menu_blocked", "medium", { detail: "Attempted right click context inspection." });
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Catch copy keyboard shortcuts: Cmd+C (Meta+C) or Ctrl+C
       if ((e.ctrlKey || e.metaKey) && e.key === "c") {
         e.preventDefault();
-        logTelemetry("copy_blocked", "high", { detail: "Captured copy shortcut Ctrl+C / Cmd+C" });
+        logIntegritySignal("copy_blocked", "high", { detail: "Captured copy shortcut Ctrl+C / Cmd+C" });
       }
     };
 
@@ -191,7 +189,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     // Initial fullscreen prompt if required
     if (requireFullscreenOpt && !document.fullscreenElement) {
       setIsLocked(true);
-      setLockMessage("Stephen Borish requires fullscreen focus-mode to complete this history lesson.");
+      setLockMessage("This lesson requires fullscreen focus mode. Please enter fullscreen to continue.");
     }
 
     // Every second engagement profile sync
@@ -203,7 +201,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       }
     }, 1000);
 
-    // Synchronize time spent telemetry to backend every 10 seconds
+    // Synchronize time spent to backend every 10 seconds
     const syncTimeSpent = setInterval(() => {
       if (activeTimeRef.current > 0 || inactiveTimeRef.current > 0) {
         getAuthHeader().then((authHeader) => {
@@ -241,11 +239,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     };
   }, [loading, attemptData, currentBlockIndex]);
 
-  // Log strict security incident to telemetry API
-  const logTelemetry = async (eventType: string, severity: string, metadata: any = {}) => {
+  // Log activity and integrity signal to API
+  const logIntegritySignal = async (eventType: string, severity: string, metadata: any = {}) => {
     try {
       const authHeader = await getAuthHeader();
-      await fetch("/api/telemetry", {
+      if (!authHeader.Authorization) return;
+      await fetch("/api/integrity-signals", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -258,7 +257,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           blockId: blocks[currentBlockIndex]?.id,
           videoTimestamp: videoRef.current ? Math.floor(videoRef.current.currentTime) : undefined,
           metadata: {
-            message: metadata.detail || "Suspicious blur activity captured.",
+            message: metadata.detail || "Focus event recorded.",
             ...metadata
           }
         })
@@ -283,7 +282,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       if (currentTime > furthestMaxTimestamp + allowedGap) {
         // Violations! Skip back!
         video.currentTime = furthestMaxTimestamp;
-        logTelemetry("seek_attempt_blocked", "high", {
+        logIntegritySignal("seek_attempt_blocked", "high", {
           detail: "Attempted bypass skipping forward in required video instruction.",
           requestedSeekPosition: Math.floor(currentTime),
           furthestAllowedValue: furthestMaxTimestamp
@@ -310,7 +309,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       if (checkpoint && !activeCheckpoint) {
         video.pause();
         setActiveCheckpoint(checkpoint);
-        logTelemetry("checkpoint_triggered", "medium", {
+        logIntegritySignal("checkpoint_triggered", "medium", {
           detail: `Entering required timestamp question checkpoint: ${checkpoint.title}`,
           checkpointId: checkpoint.id
         });
@@ -429,10 +428,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             className="fixed inset-0 bg-[#0A192F]/95 text-white z-50 flex flex-col items-center justify-center p-6 text-center"
           >
             <ShieldAlert className="w-16 h-16 text-[#E5B53B] mb-4 animate-pulse" />
-            <h2 className="text-xl font-bold tracking-wider uppercase">Security Protocol Compromised</h2>
-            
+            <h2 className="text-xl font-bold tracking-wider uppercase">Focus Mode Interrupted</h2>
+
             <p className="text-xs text-slate-300 max-w-sm my-4 leading-relaxed font-sans">
-              {lockMessage || "A violation is detected. Focused Fullscreen mode is strict for verified classroom evaluations."}
+              {lockMessage || "This lesson requires fullscreen focus mode. Please re-enter fullscreen to continue."}
             </p>
 
             <button
