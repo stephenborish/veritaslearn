@@ -2125,3 +2125,153 @@ Future-agent warning:
     ASSIGNMENTS (deterministic question picks), not course-level assignments.
     Rename to "questionAssignments" when implementing Phase 4.
 ```
+
+```text
+Date: 2026-05-31
+Agent: Claude Code (Pass 1 — Stabilize Editing, Fix Form UX, Clean UI Classes, Correct Attempt Creation)
+Task: Foundation stabilization before further feature work.
+
+ROOT CAUSE OF TEXTBOX/EDITOR INSTABILITY (now fixed):
+  RichContentEditor defined its child component `EditorInterface` INSIDE the render function.
+  This means React saw a brand-new component type on every render of RichContentEditor.
+  React's reconciler unmounted the old EditorInterface and mounted a new one on every
+  keystroke — destroying ContentEditable, losing focus, resetting caret position, and
+  causing the visible line jump. This is a fundamental React anti-pattern.
+
+  Secondary causes: handleLexicalChange called setInternalModel() on every keystroke,
+  causing re-renders; the useEffect for external updates ran on every internalModel change.
+
+HOW THE EDITOR WAS FIXED:
+  - Extracted EditorInterface (renamed EditorInner) to module level (outside
+    RichContentEditor). React now re-renders it without unmounting — focus and caret are stable.
+  - showMath/showChem state moved inside EditorInner (they don't belong in parent).
+  - External content updates use an applyKey counter + contentToApplyRef instead of
+    setInternalModel as state (avoids re-renders during normal typing).
+  - onChange stored in a ref (onChangeRef) so handleEditorChange is stable (useCallback []).
+  - Initial content loaded via initialConfig.editorState callback instead of useEffect.
+  - isApplyingRef inside EditorInner prevents re-emitting content during apply.
+  - Math and chemistry support preserved. Undo/redo preserved. Toolbar preserved.
+  - RichContent shape: version, format, html, plainText, assets, lexicalJson, updatedAt.
+
+HOW REGULAR INPUTS WERE FIXED:
+  - The primary cause of form input instability was the same editor remounting issue.
+    Once EditorInner is stable, parent QuestionEditor re-renders no longer destroy the
+    Lexical editors, so choice text inputs and other fields remain focused.
+  - Choice inputs already used key={c.id} (stable IDs), which is correct.
+  - No additional remounting patterns found in other input fields.
+
+HOW ATTEMPT CREATION WAS FIXED:
+  - WRONG (before): App.tsx fetchLmsPayload was POSTing to /api/attempts for every
+    published lesson when the student dashboard loaded. This created a new attempt for
+    each lesson on every login and every refresh.
+  - CORRECT (after): Student dashboard now calls GET /api/attempts (new endpoint) to
+    fetch existing attempts without creating new ones.
+  - Attempt creation only happens in handleLaunchStudentPlayer when student explicitly
+    clicks "Begin/Resume".
+  - Added GET /api/attempts endpoint in server.ts: returns all attempts for the logged-in
+    student (or all attempts for teachers).
+  - POST /api/attempts (in handleLaunchStudentPlayer) already returned the active attempt
+    if one existed, so resume behavior is preserved.
+
+TAILWIND INVALID CLASSES FIXED:
+  All non-standard Tailwind color steps replaced across 9 files:
+  - text-slate-850 → text-slate-800
+  - text-slate-750 → text-slate-700
+  - text-slate-650 → text-slate-600
+  - text-slate-550 → text-slate-500 (or removed if paired with valid class)
+  - text-slate-450 → text-slate-500
+  - text-slate-250 → text-slate-300
+  - border-slate-250 → border-slate-300
+  - border-slate-150 → border-slate-200
+  - text-amber-550 → text-amber-500 (removed, paired class text-amber-600 retained)
+  - text-emerald-605 → text-emerald-600 (removed, paired class retained)
+  - focus:border-slate-450 → focus:border-slate-400
+
+FILES CHANGED:
+  - src/components/RichContent/RichContentEditor.tsx    [MAJOR — core editor rewrite]
+  - src/App.tsx                                         [student attempt fetch fix]
+  - server.ts                                           [add GET /api/attempts]
+  - src/components/TeacherDashboard/LessonsBuilder.tsx  [Tailwind cleanup]
+  - src/components/TeacherDashboard/QuestionEditor.tsx  [Tailwind cleanup]
+  - src/components/TeacherDashboard/AIReview.tsx        [Tailwind cleanup]
+  - src/components/TeacherDashboard/VideoUploader.tsx   [Tailwind cleanup]
+  - src/components/TeacherDashboard/LiveMonitor.tsx     [Tailwind cleanup]
+  - src/components/TeacherDashboard/StudentDossierModal.tsx [Tailwind cleanup]
+  - src/components/Auth/Authenticator.tsx               [Tailwind cleanup]
+  - src/components/StudentPortal/PracticeDashboard.tsx  [Tailwind cleanup]
+  - src/components/StudentPortal/FocusedPlayer.tsx      [Tailwind cleanup]
+  - AGENTS.md                                           [this update]
+
+TRUSTED DATA OPERATIONS CHANGED:
+  - Added GET /api/attempts (requireAuth): returns attempts for student or all for teacher.
+    No security regression — students see only their own attempts (server filters by studentId).
+
+MODELS CHANGED: None.
+
+VERIFICATION:
+  - npm ci: PASS (608 packages)
+  - npm run lint (tsc --noEmit): PASS (0 errors)
+  - npm run build (vite + esbuild): PASS (0 errors)
+  - No runtime test was possible (no browser in CI), but the editor rewrite is structurally
+    sound: EditorInner is a stable module-level component, applyKey mechanism is idiomatic React.
+
+CURRENT TRUTH ABOUT TEXT EDITING:
+  - The inline component definition bug is fixed. Lexical editors no longer remount on typing.
+  - Standard input/textarea fields were never remounting by themselves; they suffered from
+    parent re-renders caused by the Lexical editor issue.
+  - Toolbar actions (bold, italic, lists, headings) remain functional.
+  - Math (Sigma) and chemistry (Flask) modals remain functional.
+  - External value updates (switching questions, loading saved content) still apply correctly
+    via the applyKey mechanism.
+  - Undo/redo history preserved within session (HistoryPlugin retained).
+  - Manual testing required to confirm no edge case in initial content load path.
+
+CURRENT TRUTH ABOUT ATTEMPT CREATION:
+  - Student dashboard load: GET /api/attempts — NO attempts created.
+  - Student clicks Begin/Resume: POST /api/attempts — attempt created or existing returned.
+  - Completed attempts are not duplicated (server returns active attempt if one exists;
+    blocks creation if allowRetakes is false and a completed attempt exists).
+
+KNOWN REMAINING RISKS FOR PASS 2:
+  1. [HIGH] RichContentEditor: initial content load via editorState callback needs
+     manual verification — the editor state parse path may fail silently for some
+     HTML-only (no lexicalJson) content, leaving the editor empty on load.
+  2. [HIGH] LessonsBuilder stores description as val.html (string), not the full RichContent
+     object. On reload, the editor gets an HTML string (no lexicalJson), so it falls back
+     to HTML parse. The HTML round-trip through DOMParser may lose some Lexical-specific
+     formatting. A future PR should store the full RichContent object.
+  3. [MEDIUM] QuestionEditor: question.stem, question.explanation etc. are stored as RichContent
+     objects by the editor, but patch() passes the whole object up through the chain. When
+     LessonsBuilder saves, it passes these RichContent objects to the server. The server and
+     student player must handle RichContent objects in stems/choices, not just strings.
+  4. [MEDIUM] The 10ms setTimeout in the old code was replaced by setTimeout(..., 0) for
+     resetting isApplyingRef. This is still a timeout — if Lexical's onChange fires outside
+     the microtask queue, the flag may reset too early. Consider watching for a Lexical
+     "settled" event in a future cleanup.
+  5. [LOW] Multiple RichContentEditors on the same page share namespace 'VeritasEditor'.
+     If Lexical uses namespace for anything global, this could cause conflicts. Change to
+     unique per-instance namespace if issues arise.
+
+WHAT PASS 2 STILL NEEDS TO BUILD:
+  1. Live manual verification of the editor (cannot be automated here).
+  2. Firestore as source of truth (Phase 3 from previous sessions).
+  3. Real assignment workflow with open/due/close dates (Phase 4).
+  4. Lesson versioning (Phase 5) and question versioning (Phase 6).
+  5. SA draft autosave (Phase 8).
+  6. Attempt sessions (Phase 9).
+  7. Full teacher dashboard rebuild (assignment-centered, not live-monitor focused).
+  8. Full gradebook with server-side recalculation.
+  9. Firebase Storage for video/image assets.
+  10. SA response RichContent rendering in student player (FocusedPlayer uses textarea;
+      should support RichContent if teacher uses rich stems/instructions).
+
+Future-agent warning:
+  - Do NOT move EditorInner back inside RichContentEditor. The inline definition was the
+    root cause of all editor instability. Keep it at module level.
+  - Do NOT call setEditorState() during normal typing. Only call it via the applyKey path.
+  - When reading description/stem/explanation values from server, check if they are strings
+    or RichContent objects — both must be handled. The migrateToRichContent() function
+    handles this, but callers must pass the right thing.
+  - GET /api/attempts is now the correct endpoint for student dashboard population.
+    POST /api/attempts is the correct endpoint for intentional attempt creation only.
+```

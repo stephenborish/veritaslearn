@@ -80,16 +80,16 @@ export default function Authenticator({ onLoginSuccess }: AuthenticatorProps) {
         </button>
 
         <div className="relative my-6 text-center">
-          <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-slate-150"></span></div>
+          <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-slate-200"></span></div>
           <span className="relative bg-white text-[9px] font-bold tracking-widest text-[#0A192F] px-2 uppercase font-mono">Authorized Accounts Only</span>
         </div>
 
-        <div className="bg-slate-50/60 border border-slate-150 rounded p-3 text-left space-y-2">
+        <div className="bg-slate-50/60 border border-slate-200 rounded p-3 text-left space-y-2">
           <div className="text-xs font-bold text-[#0A192F] flex items-center gap-1.5">
             <GraduationCap className="w-3.5 h-3.5 text-[#E5B53B]" />
             Authentication Conditions
           </div>
-          <p className="text-[10px] text-slate-550 leading-relaxed">
+          <p className="text-[10px] text-slate-500 leading-relaxed">
             Sign in with your authorized Malvern Prep Google account. All activity is logged under FERPA guidelines.
           </p>
         </div>

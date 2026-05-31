@@ -141,27 +141,13 @@ export default function App() {
         }
         setBlocks(allBlocks);
       } else {
-        // If student: Load active attempts sequence
-        const testAttempts: any[] = [];
-        for (const lesson of (lessonsRaw.lessons || [])) {
-          try {
-            const blockDetailRes = await fetch(`/api/attempts?lessonId=${lesson.id}`, {
-              method: "POST",
-              headers: { 
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${token}`
-              },
-              body: JSON.stringify({ lessonId: lesson.id })
-            });
-            if (blockDetailRes.ok) {
-              const blockDetail = await blockDetailRes.json();
-              if (blockDetail.attempt) {
-                testAttempts.push(blockDetail.attempt);
-              }
-            }
-          } catch (e) {}
+        // Students: fetch existing attempts — do NOT create them here.
+        // Attempts are only created when the student intentionally clicks "Begin/Resume".
+        const attemptsRes = await fetch("/api/attempts", { headers: authHeader });
+        if (attemptsRes.ok) {
+          const attemptsRaw = await attemptsRes.json();
+          setAttempts(attemptsRaw.attempts || []);
         }
-        setAttempts(testAttempts);
       }
     } catch (error) {
       console.error("Payload extraction failed:", error);

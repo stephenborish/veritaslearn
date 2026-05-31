@@ -101,11 +101,11 @@ export default function LiveMonitor({ students, attempts, responses, signals, le
                 {/* Stats */}
                 <div className="mt-2.5 pt-2.5.5 flex flex-col space-y-1 text-[11px] text-slate-600 border-t border-slate-100">
                   <div className="flex justify-between">
-                    <span className="font-semibold text-slate-450 uppercase text-[9px]">SESSIONS SCORECARD:</span>
+                    <span className="font-semibold text-slate-500 uppercase text-[9px]">SESSIONS SCORECARD:</span>
                     <span className="font-bold text-slate-800">{completedCount} Item Responses</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="font-semibold text-slate-450 uppercase text-[9px]">DURATIONAL VALUE:</span>
+                    <span className="font-semibold text-slate-500 uppercase text-[9px]">DURATIONAL VALUE:</span>
                     <span className="font-mono text-slate-800 flex items-center gap-1 font-semibold">
                       <Clock className="w-3 h-3 text-slate-400" />
                       {Math.floor(latestAttempt.activeTimeSpent / 60)}m {latestAttempt.activeTimeSpent % 60}s
@@ -126,7 +126,7 @@ export default function LiveMonitor({ students, attempts, responses, signals, le
                       Normal checkpoint ({totalViolations})
                     </span>
                   ) : (
-                    <span className="text-[10px] font-semibold text-emerald-605 text-emerald-600 uppercase flex items-center gap-1">
+                    <span className="text-[10px] font-semibold text-emerald-600 uppercase flex items-center gap-1">
                       No review flags
                     </span>
                   )}

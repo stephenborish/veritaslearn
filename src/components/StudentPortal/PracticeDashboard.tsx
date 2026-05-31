@@ -61,7 +61,7 @@ export default function PracticeDashboard({ lessons, attempts, onStartAttempt, o
                     </p>
                   </div>
 
-                  <div className="bg-slate-50 border-t border-slate-150 px-5 py-3.5 flex justify-between items-center">
+                  <div className="bg-slate-50 border-t border-slate-200 px-5 py-3.5 flex justify-between items-center">
                     <span className="font-sans text-[9px] uppercase font-bold text-slate-500 flex items-center gap-1.5 tracking-wider">
                       <Clock3 className="w-3.5 h-3.5 text-slate-400" />
                       {lesson.estimatedMinutes} M
