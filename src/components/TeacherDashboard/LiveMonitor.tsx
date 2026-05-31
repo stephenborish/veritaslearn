@@ -83,7 +83,7 @@ export default function LiveMonitor({ students, attempts, responses, signals, le
                         ? "bg-amber-100 text-amber-800"
                         : "bg-blue-50 text-blue-700"
                   }`}>
-                    {latestAttempt.status === "completed" ? "COMPLETED" : riskLevel === "high" ? "FLAGGED" : "LIVE"}
+                    {latestAttempt.status === "completed" ? "COMPLETED" : riskLevel === "high" ? "NEEDS REVIEW" : "IN PROGRESS"}
                   </span>
                 </div>
 
@@ -119,7 +119,7 @@ export default function LiveMonitor({ students, attempts, responses, signals, le
                 <div>
                   {riskLevel === "high" ? (
                     <span className="text-[10px] font-bold text-amber-700 uppercase italic flex items-center gap-1">
-                      !! {totalViolations === 1 ? "Focus Blurring" : `${totalViolations} Telemetry Signals`}
+                      {totalViolations === 1 ? "1 focus event" : `${totalViolations} focus events`}
                     </span>
                   ) : riskLevel === "medium" ? (
                     <span className="text-[10px] font-semibold text-slate-500 uppercase flex items-center gap-1">
@@ -127,7 +127,7 @@ export default function LiveMonitor({ students, attempts, responses, signals, le
                     </span>
                   ) : (
                     <span className="text-[10px] font-semibold text-emerald-605 text-emerald-600 uppercase flex items-center gap-1">
-                      Shield Active
+                      No review flags
                     </span>
                   )}
                 </div>

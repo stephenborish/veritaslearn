@@ -65,7 +65,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const data = await response.json();
       
       setAttemptData(data.attempt);
-      setAssignments(data.assignments);
+      setAssignments(data.questionAssignments || data.assignments || []);
       setResponses(data.responses);
 
       // Fetch accompanying lesson blocks
@@ -524,21 +524,20 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                 {q.choices ? (
                                   <div className="grid grid-cols-1 gap-2">
                                     {q.choices.map((choice: any, cIdx: number) => {
-                                      // Scrambled indicator choice letters in Arial Black style
                                       const letter = String.fromCharCode(65 + cIdx);
-                                      const isSel = selectedMC[q.id] === String(cIdx);
+                                      const isSel = selectedMC[q.id] === choice.id;
 
                                       return (
                                         <button
-                                          key={cIdx}
+                                          key={choice.id}
                                           disabled={isSubmitted}
-                                          onClick={() => setSelectedMC({ ...selectedMC, [q.id]: String(cIdx) })}
+                                          onClick={() => setSelectedMC({ ...selectedMC, [q.id]: choice.id })}
                                           className={`w-full text-left text-xs p-2.5 rounded transition border text-slate-200 flex items-start gap-1.5 cursor-pointer ${
                                             isSel ? "border-[#E5B53B] bg-[#E5B53B]/10 text-white font-semibold" : "border-slate-800 bg-slate-900/60 hover:bg-slate-800"
                                           }`}
                                         >
                                           <span className="font-sans font-black pr-1">{letter}.</span>
-                                          <RichContentRenderer content={choice} className="inline-block" />
+                                          <RichContentRenderer content={choice.text} className="inline-block" />
                                         </button>
                                       );
                                     })}
@@ -610,19 +609,19 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                         <div className="grid grid-cols-1 gap-2.5">
                           {q.choices.map((choice: any, cIdx: number) => {
                             const choiceLetter = String.fromCharCode(65 + cIdx);
-                            const isSel = selectedMC[q.id] === String(cIdx);
+                            const isSel = selectedMC[q.id] === choice.id;
 
                             return (
                               <button
-                                key={cIdx}
+                                key={choice.id}
                                 disabled={isSubmitted}
-                                onClick={() => setSelectedMC({ ...selectedMC, [q.id]: String(cIdx) })}
+                                onClick={() => setSelectedMC({ ...selectedMC, [q.id]: choice.id })}
                                 className={`w-full text-left text-xs p-3.5 rounded border transition-all flex items-start gap-2.5 cursor-pointer ${
                                   isSel ? "border-[#0A192F] bg-[#0A192F]/5 font-bold text-[#0A192F]" : "border-slate-200 hover:bg-slate-50 bg-white text-slate-700"
                                 }`}
                               >
                                 <span className="font-sans font-black pr-1">{choiceLetter}.</span>
-                                <RichContentRenderer content={choice} className="inline-block" />
+                                <RichContentRenderer content={choice.text} className="inline-block" />
                               </button>
                             );
                           })}

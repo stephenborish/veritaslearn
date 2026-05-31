@@ -1,10 +1,26 @@
 import { useState } from "react";
-import { Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Eye, ShieldAlert, CheckCircle } from "lucide-react";
+import { Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
-import { migrateToRichContent, getRenderableHtml } from "../RichContent/richContentMigration";
-import { RichContent } from "../RichContent/types";
+import QuestionEditor, { validateQuestionClient } from "./QuestionEditor";
+
+function uid(prefix: string): string {
+  return prefix + "_" + Math.random().toString(36).slice(2, 9);
+}
+
+// Fresh question definition in the stable choice-id model.
+function newQuestionTemplate(type: "mc" | "sa"): any {
+  const base = { id: uid("q"), type, stem: "", points: 5 };
+  if (type === "mc") {
+    const choices = [
+      { id: uid("choice"), text: "" },
+      { id: uid("choice"), text: "" },
+    ];
+    return { ...base, choices, correctChoiceId: choices[0].id, explanation: "" };
+  }
+  return { ...base, modelAnswer: "", answerKey: "", aiScoringGuidance: "", teacherNotes: "", rubricCategories: [] };
+}
 
 interface LessonsBuilderProps {
   lessons: Lesson[];
@@ -76,14 +92,7 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
       content: type === "reading" ? "### Historical Context\nEnter passage context here." : undefined,
       questionType: type === "question" ? "mc" : undefined,
       isPractice: type === "question" ? false : undefined,
-      singleQuestion: type === "question" ? {
-        id: "q_" + Math.random().toString(36).substring(2, 9),
-        stem: "Enter the academic question stem here?",
-        choices: ["Option A", "Option B", "Option C", "Option D"],
-        correctAnswerIndex: 0,
-        explanation: "Correct explanation",
-        points: 5
-      } : undefined
+      singleQuestion: type === "question" ? newQuestionTemplate("mc") : undefined
     };
     setCurrentBlocks([...currentBlocks, newBlock]);
   };
@@ -94,11 +103,72 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
 
   const handleBlockChange = (index: number, key: string, val: any) => {
     const updated = [...currentBlocks];
-    updated[index][key] = val;
+    updated[index] = { ...updated[index], [key]: val };
     setCurrentBlocks(updated);
   };
 
+  // ---- Video checkpoint authoring ----
+  const addCheckpoint = (blockIndex: number) => {
+    const block = currentBlocks[blockIndex];
+    const cps = Array.isArray(block.videoCheckpoints) ? block.videoCheckpoints : [];
+    const cp = {
+      id: uid("cp"),
+      timestamp: 30,
+      title: `Checkpoint ${cps.length + 1}`,
+      isRequired: true,
+      pauseVideo: true,
+      isPractice: false,
+      questionType: "mc",
+      numToSelect: 1,
+      questions: [newQuestionTemplate("mc")]
+    };
+    handleBlockChange(blockIndex, "videoCheckpoints", [...cps, cp]);
+  };
+  const updateCheckpoint = (blockIndex: number, cpId: string, partial: any) => {
+    const block = currentBlocks[blockIndex];
+    const cps = (block.videoCheckpoints || []).map((cp: any) => (cp.id === cpId ? { ...cp, ...partial } : cp));
+    handleBlockChange(blockIndex, "videoCheckpoints", cps);
+  };
+  const updateCheckpointQuestion = (blockIndex: number, cpId: string, uq: any) => {
+    const block = currentBlocks[blockIndex];
+    const cps = (block.videoCheckpoints || []).map((cp: any) => (cp.id === cpId ? { ...cp, questions: [uq] } : cp));
+    handleBlockChange(blockIndex, "videoCheckpoints", cps);
+  };
+  const deleteCheckpoint = (blockIndex: number, cpId: string) => {
+    const block = currentBlocks[blockIndex];
+    handleBlockChange(blockIndex, "videoCheckpoints", (block.videoCheckpoints || []).filter((cp: any) => cp.id !== cpId));
+  };
+
+  const [saveError, setSaveError] = useState<string[] | null>(null);
+
   const handleSave = async () => {
+    setSaveError(null);
+
+    // Published lessons must contain valid graded questions (client gate; server re-validates).
+    if (isPublished) {
+      const problems: string[] = [];
+      currentBlocks.forEach((b: any, i: number) => {
+        if (b.type === "question" && b.singleQuestion) {
+          validateQuestionClient(b.singleQuestion, b.questionType || "mc", !b.isPractice).forEach((e) =>
+            problems.push(`Block ${i + 1}: ${e}`)
+          );
+        }
+        if (b.type === "video" && Array.isArray(b.videoCheckpoints)) {
+          b.videoCheckpoints.forEach((cp: any, ci: number) => {
+            const q = (cp.questions || [])[0];
+            if (q)
+              validateQuestionClient(q, cp.questionType || "mc", !cp.isPractice).forEach((e) =>
+                problems.push(`Block ${i + 1} checkpoint ${ci + 1}: ${e}`)
+              );
+          });
+        }
+      });
+      if (problems.length > 0) {
+        setSaveError(problems);
+        return;
+      }
+    }
+
     const payload = {
       id: selectedLesson.id === "new" ? undefined : selectedLesson.id,
       title,
@@ -199,6 +269,18 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
               </button>
             </div>
           </div>
+
+          {saveError && saveError.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded p-3 text-xs text-red-700 space-y-1">
+              <div className="font-bold flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4" /> Cannot publish — fix these questions:
+              </div>
+              {saveError.map((e, i) => (
+                <div key={i} className="pl-5">• {e}</div>
+              ))}
+              <div className="pl-5 text-[11px] text-red-500">Tip: uncheck "Mark Published" to save as a draft.</div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
             
@@ -347,6 +429,96 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
                                 The upload area above stores files securely on Google Cloud infrastructure. You can also paste existing web-hosted MP4 links.
                               </p>
                             </div>
+
+                            {/* Video checkpoint authoring */}
+                            <div className="pt-3 border-t border-slate-100 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <label className="font-bold text-slate-700 flex items-center gap-1.5">
+                                  <Clock className="w-3.5 h-3.5 text-blue-600" /> Video Checkpoints
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => addCheckpoint(index)}
+                                  className="text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-blue-100 flex items-center gap-1"
+                                >
+                                  <Plus className="w-3 h-3" /> Add Checkpoint
+                                </button>
+                              </div>
+
+                              {(block.videoCheckpoints || []).map((cp: any) => (
+                                <div key={cp.id} className="border border-slate-200 rounded bg-slate-50/60 p-3 space-y-3">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <input
+                                      type="text"
+                                      value={cp.title || ""}
+                                      onChange={(e) => updateCheckpoint(index, cp.id, { title: e.target.value })}
+                                      placeholder="Checkpoint title"
+                                      className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-slate-400"
+                                    />
+                                    <button type="button" onClick={() => deleteCheckpoint(index, cp.id)} className="p-1 text-red-400 hover:text-red-600">
+                                      <Trash className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+
+                                  <div className="grid grid-cols-2 gap-3 text-[11px]">
+                                    <div>
+                                      <label className="font-semibold text-slate-600 block mb-1">Timestamp (seconds)</label>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        value={cp.timestamp ?? 0}
+                                        onChange={(e) => updateCheckpoint(index, cp.id, { timestamp: Number(e.target.value) })}
+                                        className="w-full bg-white border border-slate-200 rounded px-2 py-1 focus:outline-none focus:border-slate-400"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="font-semibold text-slate-600 block mb-1">Question Type</label>
+                                      <select
+                                        value={cp.questionType || "mc"}
+                                        onChange={(e) => {
+                                          const t = e.target.value as "mc" | "sa";
+                                          const existing = (cp.questions && cp.questions[0]) || newQuestionTemplate(t);
+                                          const q = { ...existing, type: t };
+                                          if (t === "mc" && !Array.isArray(q.choices)) {
+                                            const fresh = newQuestionTemplate("mc");
+                                            q.choices = fresh.choices;
+                                            q.correctChoiceId = fresh.correctChoiceId;
+                                          }
+                                          if (t === "sa" && !Array.isArray(q.rubricCategories)) q.rubricCategories = [];
+                                          updateCheckpoint(index, cp.id, { questionType: t, questions: [q] });
+                                        }}
+                                        className="w-full bg-white border border-slate-200 rounded px-2 py-1 focus:outline-none focus:border-slate-400"
+                                      >
+                                        <option value="mc">Multiple Choice</option>
+                                        <option value="sa">Short Answer</option>
+                                      </select>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex flex-wrap gap-4 text-[11px]">
+                                    <label className="flex items-center gap-1.5 cursor-pointer">
+                                      <input type="checkbox" checked={!!cp.isRequired} onChange={(e) => updateCheckpoint(index, cp.id, { isRequired: e.target.checked })} />
+                                      Required (blocks progress)
+                                    </label>
+                                    <label className="flex items-center gap-1.5 cursor-pointer">
+                                      <input type="checkbox" checked={!!cp.pauseVideo} onChange={(e) => updateCheckpoint(index, cp.id, { pauseVideo: e.target.checked })} />
+                                      Pause video
+                                    </label>
+                                    <label className="flex items-center gap-1.5 cursor-pointer">
+                                      <input type="checkbox" checked={!!cp.isPractice} onChange={(e) => updateCheckpoint(index, cp.id, { isPractice: e.target.checked })} />
+                                      Practice (reveals feedback)
+                                    </label>
+                                  </div>
+
+                                  <QuestionEditor
+                                    question={(cp.questions && cp.questions[0]) || newQuestionTemplate(cp.questionType || "mc")}
+                                    type={(cp.questionType || "mc") as "mc" | "sa"}
+                                    graded={!cp.isPractice}
+                                    onChange={(uq) => updateCheckpointQuestion(index, cp.id, uq)}
+                                  />
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         )}
 
@@ -361,16 +533,30 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
                           </div>
                         )}
 
-                        {block.type === "question" && block.singleQuestion && (
+                        {block.type === "question" && (
                           <div className="space-y-3">
                             <span className="font-bold text-slate-700 block uppercase tracking-wide text-[10px] border-b border-slate-100 pb-1">Assessment Settings</span>
-                            
+
                             <div className="grid grid-cols-2 gap-3">
                               <div>
                                 <label className="font-semibold text-slate-600 block mb-1">Question Type</label>
-                                <select 
-                                  value={block.questionType} 
-                                  onChange={(e) => handleBlockChange(index, "questionType", e.target.value)}
+                                <select
+                                  value={block.questionType || "mc"}
+                                  onChange={(e) => {
+                                    const t = e.target.value as "mc" | "sa";
+                                    handleBlockChange(index, "questionType", t);
+                                    const existing = block.singleQuestion || newQuestionTemplate(t);
+                                    const sq = { ...existing, type: t };
+                                    if (t === "mc" && !Array.isArray(sq.choices)) {
+                                      const fresh = newQuestionTemplate("mc");
+                                      sq.choices = fresh.choices;
+                                      sq.correctChoiceId = fresh.correctChoiceId;
+                                    }
+                                    if (t === "sa" && !Array.isArray(sq.rubricCategories)) {
+                                      sq.rubricCategories = [];
+                                    }
+                                    handleBlockChange(index, "singleQuestion", sq);
+                                  }}
                                   className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-800 focus:outline-none"
                                 >
                                   <option value="mc">Multiple Choice (Auto-Graded)</option>
@@ -380,8 +566,8 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
 
                               <div>
                                 <label className="font-semibold text-slate-600 block mb-1">Practice Mode vs Graded</label>
-                                <select 
-                                  value={block.isPractice ? "true":"false"} 
+                                <select
+                                  value={block.isPractice ? "true" : "false"}
                                   onChange={(e) => handleBlockChange(index, "isPractice", e.target.value === "true")}
                                   className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-800 focus:outline-none"
                                 >
@@ -391,18 +577,12 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
                               </div>
                             </div>
 
-                            <div>
-                              <label className="font-bold text-slate-750 block mb-1">Question Prompt Stem</label>
-                              <RichContentEditor
-                                value={block.singleQuestion.stem}
-                                onChange={(val) => {
-                                  const updated = { ...block.singleQuestion!, stem: val };
-                                  handleBlockChange(index, "singleQuestion", updated);
-                                }}
-                                mode="compact"
-                                placeholder="Enter question..."
-                              />
-                            </div>
+                            <QuestionEditor
+                              question={block.singleQuestion || newQuestionTemplate(block.questionType || "mc")}
+                              type={(block.questionType || "mc") as "mc" | "sa"}
+                              graded={!block.isPractice}
+                              onChange={(uq) => handleBlockChange(index, "singleQuestion", uq)}
+                            />
                           </div>
                         )}
 
