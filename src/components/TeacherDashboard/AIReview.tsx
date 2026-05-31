@@ -140,7 +140,7 @@ export default function AIReview({ students, lessons, responses, onOverrideSave 
                                 {Object.keys(grading.rubricBreakdown).map((catName) => (
                                   <div key={catName} className="p-2 text-[10px] bg-white text-slate-600 flex justify-between items-center">
                                     <span className="font-semibold">{catName}:</span>
-                                    <span className="font-bold text-slate-850 font-mono">{grading.rubricBreakdown[catName].score} pts</span>
+                                    <span className="font-bold text-slate-800 font-mono">{grading.rubricBreakdown[catName].score} pts</span>
                                   </div>
                                 ))}
                               </div>
@@ -158,7 +158,7 @@ export default function AIReview({ students, lessons, responses, onOverrideSave 
 
                       <div className="flex flex-col gap-3">
                         <div className="w-1/3">
-                          <label className="text-[9px] font-mono font-bold uppercase text-slate-450 block mb-1">Score Override</label>
+                          <label className="text-[9px] font-mono font-bold uppercase text-slate-500 block mb-1">Score Override</label>
                           <input 
                             type="number"
                             value={overrideScores[res.id] !== undefined ? overrideScores[res.id] : (override?.score ?? grading.score ?? 0)}
@@ -167,7 +167,7 @@ export default function AIReview({ students, lessons, responses, onOverrideSave 
                           />
                         </div>
                         <div className="w-full">
-                          <label className="text-[9px] font-mono font-bold uppercase text-slate-450 block mb-1">Feedback Notes</label>
+                          <label className="text-[9px] font-mono font-bold uppercase text-slate-500 block mb-1">Feedback Notes</label>
                           <RichContentEditor
                             value={overrideNotes[res.id] !== undefined ? overrideNotes[res.id] : (override?.notes ?? "")}
                             onChange={(val) => setOverrideNotes({ ...overrideNotes, [res.id]: val.html })}

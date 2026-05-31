@@ -536,7 +536,7 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, onVideoUploaded 
             <div className="flex items-center justify-between p-4 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <VideoIcon className="w-5 h-5 text-blue-400" />
-                <span className="font-sans font-bold text-sm tracking-tight text-slate-250 uppercase">Lecture Material Interactive Previewer</span>
+                <span className="font-sans font-bold text-sm tracking-tight text-slate-300 uppercase">Lecture Material Interactive Previewer</span>
               </div>
               <button 
                 type="button"

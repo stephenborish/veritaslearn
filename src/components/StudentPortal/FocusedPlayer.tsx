@@ -633,7 +633,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           onChange={(e) => setSaText({ ...saText, [q.id]: e.target.value })}
                           rows={5}
                           placeholder="Compose your academic rationale here. Copying, pasting, and navigation out of focused screen is logged."
-                          className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded p-4 leading-relaxed focus:bg-white focus:outline-none focus:border-slate-450 transition-all font-mono"
+                          className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded p-4 leading-relaxed focus:bg-white focus:outline-none focus:border-slate-400 transition-all font-mono"
                         />
                       )}
 

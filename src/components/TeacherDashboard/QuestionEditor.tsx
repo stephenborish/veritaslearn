@@ -49,7 +49,7 @@ export function validateQuestionClient(q: AnyQuestion, type: "mc" | "sa", graded
 }
 
 const inputCls =
-  "w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-850 text-xs";
+  "w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800 text-xs";
 const labelCls = "font-bold text-slate-700 block mb-1 text-xs";
 const secretLabelCls = "font-bold text-amber-700 mb-1 text-xs flex items-center gap-1";
 

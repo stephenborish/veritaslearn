@@ -207,11 +207,11 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
             {lessons.map((lesson) => (
               <div 
                 key={lesson.id}
-                className="bg-white border text-slate-850 border-slate-200 p-5 rounded shadow-sm hover:border-slate-300 transition flex flex-col justify-between min-h-[160px]"
+                className="bg-white border text-slate-800 border-slate-200 p-5 rounded shadow-sm hover:border-slate-300 transition flex flex-col justify-between min-h-[160px]"
               >
                 <div>
                   <div className="flex justify-between items-start">
-                    <h3 className="text-sm font-bold text-slate-850 tracking-tight">{lesson.title}</h3>
+                    <h3 className="text-sm font-bold text-slate-800 tracking-tight">{lesson.title}</h3>
                     <span className={`text-[8px] font-bold font-mono uppercase tracking-widest px-2 py-0.5 rounded-sm border ${
                       lesson.isPublished ? "bg-green-50 text-green-700 border-green-100":"bg-slate-100 text-slate-500 border-slate-200"
                     }`}>
@@ -296,12 +296,12 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
 
               <div className="space-y-3 text-xs">
                 <div>
-                  <label className="font-bold text-slate-550 text-slate-700 block mb-1">Assessment Sheet Title</label>
+                  <label className="font-bold text-slate-700 block mb-1">Assessment Sheet Title</label>
                   <input 
                     type="text" 
                     value={title} 
                     onChange={(e) => setTitle(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-850"
+                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800"
                   />
                 </div>
 
@@ -321,34 +321,34 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
                     type="number" 
                     value={estimatedMinutes} 
                     onChange={(e) => setEstimatedMinutes(Number(e.target.value))}
-                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-850"
+                    className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800"
                   />
                 </div>
 
                 <div className="pt-3 border-t border-slate-100 space-y-2">
                   <span className="font-bold text-slate-700 block mb-1">Platform Rules Controls</span>
                   
-                  <label className="flex items-center gap-2 font-medium text-slate-650 cursor-pointer text-[11px]">
+                  <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px]">
                     <input type="checkbox" checked={restrictSeeking} onChange={(e) => setRestrictSeeking(e.target.checked)} className="focus:ring-0 rounded-sm" />
                     Disable Forward Skip (Anti-Seeking Mode)
                   </label>
 
-                  <label className="flex items-center gap-2 font-medium text-slate-650 cursor-pointer text-[11px]">
+                  <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px]">
                     <input type="checkbox" checked={requireFullscreen} onChange={(e) => setRequireFullscreen(e.target.checked)} className="focus:ring-0 rounded-sm" />
                     Enforce Focus Player & Tab blurs
                   </label>
 
-                  <label className="flex items-center gap-2 font-medium text-slate-650 cursor-pointer text-[11px]">
+                  <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px]">
                     <input type="checkbox" checked={allowRetakes} onChange={(e) => setAllowRetakes(e.target.checked)} className="focus:ring-0 rounded-sm" />
                     Allow Assessment Retakes
                   </label>
 
-                  <label className="flex items-center gap-2 font-medium text-slate-650 cursor-pointer text-[11px]">
+                  <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px]">
                     <input type="checkbox" checked={randomizeChoices} onChange={(e) => setRandomizeChoices(e.target.checked)} className="focus:ring-0 rounded-sm" />
                     Scramble Multiple-Choice Options
                   </label>
 
-                  <label className="flex items-center gap-2 font-medium text-slate-650 cursor-pointer text-[11px]">
+                  <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px]">
                     <input type="checkbox" checked={isPublished} onChange={(e) => setIsPublished(e.target.checked)} className="focus:ring-0 rounded-sm" />
                     Mark Published & Live to AP Student roster
                   </label>

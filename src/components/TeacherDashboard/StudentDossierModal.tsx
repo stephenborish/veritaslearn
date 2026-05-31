@@ -76,7 +76,7 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
             <div className="bg-white border border-slate-200 p-4 rounded shadow-sm">
               <span className="text-[9px] uppercase font-mono tracking-widest text-slate-400 font-bold block mb-1">Unfocused Time</span>
               <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5 font-mono">
-                <AlertCircle className="w-3.5 h-3.5 text-amber-550 text-amber-600" />
+                <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
                 {Math.floor(attempt.inactiveTimeSpent / 60)}m {attempt.inactiveTimeSpent % 60}s
               </span>
             </div>
@@ -113,7 +113,7 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
                         </span>
                         <span className="text-[10px] text-slate-400 font-mono font-medium">{new Date(signal.timestamp).toLocaleTimeString()}</span>
                       </div>
-                      <p className="text-slate-650 text-slate-750 font-sans">{signal.metadata?.message || `Alert logged inside block: ${signal.blockId}`}</p>
+                      <p className="text-slate-700 font-sans">{signal.metadata?.message || `Alert logged inside block: ${signal.blockId}`}</p>
                     </div>
                     {signal.videoTimestamp && (
                       <span className="text-[9px] font-mono bg-slate-100 px-2 py-0.5 rounded-sm text-slate-500 font-bold uppercase tracking-wider">
@@ -153,7 +153,7 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
                       <div className="text-xs space-y-2">
                         <p className="font-serif leading-relaxed text-slate-700 italic">"{block.singleQuestion?.stem || block.questionPool?.description}"</p>
                         {bResponse ? (
-                          <div className="p-3 bg-slate-50 border border-slate-250 border-slate-200 rounded">
+                          <div className="p-3 bg-slate-50 border border-slate-200 rounded">
                             <span className="text-[9px] font-bold font-mono uppercase text-slate-400 block mb-1 tracking-wider">Submitted Answer</span>
                             <p className="font-bold text-slate-800">
                               {bResponse.type === "mc" ? `Selected: ${bResponse.responseText || bResponse.responseValue}` : bResponse.responseValue}
@@ -186,7 +186,7 @@ export default function StudentDossierModal({ studentId, lessonId, students, att
                           return (
                             <div key={cp.id} className="border border-slate-200/80 rounded p-3 bg-slate-50 text-xs space-y-2">
                               <div className="flex justify-between items-center text-[10px] bg-slate-100 p-1.5 border border-slate-200 rounded-sm">
-                                <span className="font-bold text-slate-750 text-slate-700">{cp.title}</span>
+                                <span className="font-bold text-slate-700">{cp.title}</span>
                                 <span className="text-slate-500 font-mono font-medium">Timestamp Trigger: {cp.timestamp}s</span>
                               </div>
                               

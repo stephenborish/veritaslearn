@@ -958,6 +958,19 @@ function buildQuestionAssignment(
   };
 }
 
+// List all attempts for the logged-in student (or all attempts for teachers)
+app.get("/api/attempts", requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const db = readDb();
+  let attempts: any[];
+  if (user.role === "teacher") {
+    attempts = db.attempts;
+  } else {
+    attempts = db.attempts.filter((a: any) => a.studentId === user.id);
+  }
+  res.json({ attempts });
+});
+
 // Start Lesson Attempt (deterministic seed questions generation)
 app.post("/api/attempts", requireAuth, async (req, res) => {
   try {
