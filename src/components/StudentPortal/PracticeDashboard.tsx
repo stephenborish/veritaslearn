@@ -16,7 +16,7 @@ export default function PracticeDashboard({ lessons, attempts, onStartAttempt, o
         <div className="bg-white border border-slate-200 rounded p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-sm">
           <div>
             <h2 className="font-sans font-bold text-slate-800 text-[26px] leading-[35px] text-left bg-white">AP United States History Course</h2>
-            <p className="text-xs text-slate-500 mt-1">Assignments are configured with strict browser environment surveillance. Minimize tab jumps, copy-paste shortcuts, and video forward skipping.</p>
+            <p className="text-xs text-slate-500 mt-1">Complete each lesson independently and in order. The platform records activity and progress to help your teacher review your work quality.</p>
           </div>
           <div className="bg-[#0A192F] font-sans text-white w-[132.695px] h-[30px] text-center text-[10px] leading-[0px] rounded-[14px] pt-[15px] pb-[15px] whitespace-nowrap box-border flex items-center justify-center">
             TERM 3 - LECTURES

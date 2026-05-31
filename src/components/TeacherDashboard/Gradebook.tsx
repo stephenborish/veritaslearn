@@ -1,34 +1,42 @@
-import { CheckSquare, Award, AlertCircle, HelpCircle } from "lucide-react";
+import { CheckSquare, HelpCircle } from "lucide-react";
 
 interface GradebookProps {
   students: any[];
   lessons: any[];
   attempts: any[];
   responses: any[];
+  blocks?: any[];
 }
 
-export default function Gradebook({ students, lessons, attempts, responses }: GradebookProps) {
+export default function Gradebook({ students, lessons, attempts, responses, blocks = [] }: GradebookProps) {
+  // Calculate max graded points for a lesson from its blocks
+  const calcMaxPoints = (lessonId: string): number => {
+    const lessonBlocks = blocks.filter((b) => b.lessonId === lessonId);
+    return lessonBlocks.reduce((sum: number, b: any) => {
+      if (b.type !== "question" || b.isPractice) return sum;
+      if (b.singleQuestion) return sum + (b.singleQuestion.points || 0);
+      if (b.questionPool) {
+        const perQ = b.questionPool.questions?.[0]?.points || 0;
+        return sum + perQ * (b.questionPool.numToSelect || 1);
+      }
+      return sum;
+    }, 0);
+  };
+
   // Safe CSV export function
   const handleExportCSV = () => {
-    // Construct CSV headers
-    let csvContent = "Student ID,Student Name,Email,Lesson Title,Status,Auto-Score / Points,Grade Percentage,Active Time Spent (Seconds),Suspicious Signals Count\r\n";
+    let csvContent = "Student ID,Student Name,Email,Lesson Title,Status,Score,Max Points,Grade Percentage,Active Time Spent (Seconds)\r\n";
 
     students.forEach((student) => {
       lessons.forEach((lesson) => {
         const attempt = attempts.find((a) => a.studentId === student.id && a.lessonId === lesson.id);
         const sResponses = responses.filter((r) => r.attemptId === (attempt?.id || ""));
         const score = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
-
-        // Max points calculation
-        let maxPoints = 0;
-        const bList = responses.filter(r => r.attemptId === (attempt?.id || ""));
-        // We'll calculate mock max points for seed lesson (which is 40 points total)
-        maxPoints = 40; 
-
-        const percentage = attempt?.status === "completed" ? `${Math.round((score / maxPoints) * 100)}%` : "N/A";
+        const maxPoints = calcMaxPoints(lesson.id) || 0;
+        const percentage = attempt?.status === "completed" && maxPoints > 0 ? `${Math.round((score / maxPoints) * 100)}%` : "N/A";
         const status = attempt ? (attempt.status === "completed" ? "Completed" : "In Progress") : "Not Started";
 
-        csvContent += `"${student.id}","${student.name}","${student.email}","${lesson.title}","${status}","${score}/${maxPoints}","${percentage}","${attempt?.activeTimeSpent || 0}","${attempt?.id ? "Check Analytics" : 0}"\r\n`;
+        csvContent += `"${student.id}","${student.name}","${student.email}","${lesson.title}","${status}","${score}","${maxPoints}","${percentage}","${attempt?.activeTimeSpent || 0}"\r\n`;
       });
     });
 
@@ -67,10 +75,9 @@ export default function Gradebook({ students, lessons, attempts, responses }: Gr
                   {lessons.map((lesson) => {
                     const attempt = attempts.find((a) => a.studentId === student.id && a.lessonId === lesson.id);
                     const sResponses = responses.filter((r) => r.attemptId === (attempt?.id || ""));
-                    
+
                     const score = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
-                    // Standard max points is 40 for lesson_1
-                    const maxScore = 40;
+                    const maxScore = calcMaxPoints(lesson.id);
 
                     if (!attempt) {
                       return (
