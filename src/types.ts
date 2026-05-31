@@ -2,6 +2,8 @@
  * Shared Type Definitions for VERITAS Learn
  */
 
+import { RichContent } from "./components/RichContent/types";
+
 export type UserRole = 'teacher' | 'student';
 
 export interface User {
@@ -23,7 +25,7 @@ export interface LessonSettings {
 export interface Lesson {
   id: string;
   title: string;
-  description: string;
+  description: string | RichContent;
   courseId: string;
   estimatedMinutes: number;
   isPublished: boolean;
@@ -35,12 +37,12 @@ export type BlockType = 'video' | 'reading' | 'question';
 
 export interface QuestionDefinition {
   id: string;
-  stem: string;
-  choices?: string[]; // for Multiple Choice (MC)
+  stem: string | RichContent;
+  choices?: (string | RichContent)[]; // for Multiple Choice (MC)
   correctAnswerIndex?: number; // SECRET (not sent to student on graded)
-  explanation?: string; // SECRET (not sent to student on graded)
+  explanation?: string | RichContent; // SECRET (not sent to student on graded)
   points: number;
-  rubricCategories?: { name: string; maxPoints: number; description: string }[]; // for Short Answer (SA)
+  rubricCategories?: { name: string; maxPoints: number; description: string | RichContent }[]; // for Short Answer (SA)
 }
 
 export interface VideoCheckpoint {
@@ -62,9 +64,10 @@ export interface LessonBlock {
   title: string;
   // Video block specific properties
   videoUrl?: string; // Standard streaming link or clean URL
+  thumbnailUrl?: string; // Opt-in generated course preview thumbnail
   videoCheckpoints?: VideoCheckpoint[];
   // Reading block specific properties
-  content?: string; // Plain text or Markdown content
+  content?: string | RichContent; // Plain text or Markdown content
   // Question block specific properties
   questionType?: 'mc' | 'sa';
   isPractice?: boolean;
@@ -98,7 +101,7 @@ export interface QuestionAssignment {
   checkpointId?: string; // undefined if single question block
   questionId: string;
   selectedQuestion: QuestionDefinition; // Sanitized copy (no answer keys for graded)
-  scrambledChoices?: string[];
+  scrambledChoices?: (string | RichContent)[];
   scrambledToOriginalIndexMap?: number[];
 }
 

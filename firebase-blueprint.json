@@ -116,6 +116,24 @@
         "videoTimestamp": { "type": "number" }
       },
       "required": ["id", "attemptId", "studentId", "timestamp", "eventType", "severity"]
+    },
+    "AIGradingRecord": {
+      "title": "AIGradingRecord",
+      "description": "Historical AI evaluations and scoring breakdowns for short answers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "responseId": { "type": "string" },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "promptVersion": { "type": "string" },
+        "parsedScore": { "type": "number" },
+        "confidence": { "type": "number" },
+        "rationale": { "type": "string" },
+        "status": { "type": "string" },
+        "gradedAt": { "type": "string" }
+      },
+      "required": ["id", "responseId", "parsedScore", "confidence", "status"]
     }
   },
   "firestore": {
@@ -150,6 +168,10 @@
     "securitySignals/{signalId}": {
       "schema": "SecuritySignal",
       "description": "Surveillance events indicating copy-pastes, page blurs, full-screen egresses, or skips"
+    },
+    "aiGradingRecords/{recordId}": {
+      "schema": "AIGradingRecord",
+      "description": "AI grading records for teacher verification and review of short answer responses"
     }
   }
 }

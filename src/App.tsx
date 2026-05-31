@@ -7,6 +7,7 @@ import AIReview from "./components/TeacherDashboard/AIReview";
 import StudentDossierModal from "./components/TeacherDashboard/StudentDossierModal";
 import PracticeDashboard from "./components/StudentPortal/PracticeDashboard";
 import FocusedPlayer from "./components/StudentPortal/FocusedPlayer";
+import { auth, onAuthStateChanged, signOut } from "./lib/firebase";
 
 import { 
   GraduationCap, 
@@ -20,6 +21,7 @@ import { motion } from "motion/react";
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [idToken, setIdToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Curriculum data structures
@@ -35,43 +37,92 @@ export default function App() {
   const [activeDossier, setActiveDossier] = useState<{ studentId: string; lessonId: string } | null>(null);
   const [activeStudentAttempt, setActiveStudentAttempt] = useState<string | null>(null);
 
-  // Authenticate session check
-  const checkSession = async () => {
-    try {
-      const stored = localStorage.getItem("veritas_user_email");
-      if (stored) {
-        const response = await fetch("/api/auth/me", {
-          headers: { "Authorization": `Bearer ${stored}` }
-        });
-        const data = await response.json();
-        if (data.loggedIn) {
-          setCurrentUser(data.user);
-          fetchLmsPayload(data.user);
-        } else {
-          localStorage.removeItem("veritas_user_email");
+  // Listen to Firebase Auth state change dynamically (Durable Auth Persistence)
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const token = await firebaseUser.getIdToken();
+          const response = await fetch("/api/auth/me", {
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          const data = await response.json();
+          if (data.loggedIn) {
+            setCurrentUser(data.user);
+            setIdToken(token);
+            fetchLmsPayload(data.user, token);
+          } else {
+            console.error("Access forbidden: School domain restriction enforced.");
+            setCurrentUser(null);
+            setIdToken(null);
+            await signOut(auth);
+          }
+        } catch (e) {
+          console.error("Failed to authenticate session:", e);
+          setCurrentUser(null);
+          setIdToken(null);
         }
+      } else {
+        setCurrentUser(null);
+        setIdToken(null);
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
       setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Retrieves a validated, self-refreshing ID Token dynamically
+  const getFreshToken = async (forceRefresh = false) => {
+    if (!auth.currentUser) return idToken;
+    try {
+      const token = await auth.currentUser.getIdToken(forceRefresh);
+      if (token && token !== idToken) {
+        setIdToken(token);
+      }
+      return token;
+    } catch (e) {
+      console.error("Failed to query fresh ID token:", e);
+      return idToken;
     }
   };
 
   // Pull operational databases
-  const fetchLmsPayload = async (user = currentUser) => {
+  const fetchLmsPayload = async (user = currentUser, passedToken = idToken, forceRefresh = false) => {
     if (!user) return;
     try {
-      const authHeader = { "Authorization": `Bearer ${user.email}` };
+      let token = passedToken;
+      if (auth.currentUser) {
+        token = await auth.currentUser.getIdToken(forceRefresh);
+      }
+      if (!token) return;
+      if (token !== idToken) {
+        setIdToken(token);
+      }
+      const authHeader = { "Authorization": `Bearer ${token}` };
       
       // Lessons & Blocks
       const lessonsRes = await fetch("/api/lessons", { headers: authHeader });
+      
+      // Self-healing auth check: if token reports expired, attempt live force refresh once
+      if (lessonsRes.status === 401 && auth.currentUser && !forceRefresh) {
+        console.warn("VERITAS Learn - ID Token expired during fetch. Initiating force refresh sequence...");
+        await fetchLmsPayload(user, null, true);
+        return;
+      }
+      
+      if (!lessonsRes.ok) {
+        throw new Error(`Operational database fetch failed with status ${lessonsRes.status}`);
+      }
       const lessonsRaw = await lessonsRes.json();
       setLessons(lessonsRaw.lessons || []);
 
       // If teacher: Full class analytics payload
       if (user.role === "teacher") {
         const analyticsRes = await fetch("/api/analytics", { headers: authHeader });
+        if (!analyticsRes.ok) {
+          throw new Error(`Analytics fetch failed with status ${analyticsRes.status}`);
+        }
         const analyticsRaw = await analyticsRes.json();
 
         setStudents(analyticsRaw.students || []);
@@ -83,16 +134,14 @@ export default function App() {
         const allBlocks: any[] = [];
         for (const lesson of (lessonsRaw.lessons || [])) {
           const blocksRes = await fetch(`/api/lessons/${lesson.id}`, { headers: authHeader });
-          const blocksRaw = await blocksRes.json();
-          allBlocks.push(...(blocksRaw.blocks || []));
+          if (blocksRes.ok) {
+            const blocksRaw = await blocksRes.json();
+            allBlocks.push(...(blocksRaw.blocks || []));
+          }
         }
         setBlocks(allBlocks);
       } else {
-        // If student: Load attempts specific details
-        const listAttemptsRes = await fetch("/api/lessons", { headers: authHeader });
-        const testData = await listAttemptsRes.json();
-        
-        // Load active attempts sequence
+        // If student: Load active attempts sequence
         const testAttempts: any[] = [];
         for (const lesson of (lessonsRaw.lessons || [])) {
           try {
@@ -100,13 +149,15 @@ export default function App() {
               method: "POST",
               headers: { 
                 "Content-Type": "application/json",
-                "Authorization": `Bearer ${user.email}`
+                "Authorization": `Bearer ${token}`
               },
               body: JSON.stringify({ lessonId: lesson.id })
             });
-            const blockDetail = await blockDetailRes.json();
-            if (blockDetail.attempt) {
-              testAttempts.push(blockDetail.attempt);
+            if (blockDetailRes.ok) {
+              const blockDetail = await blockDetailRes.json();
+              if (blockDetail.attempt) {
+                testAttempts.push(blockDetail.attempt);
+              }
             }
           } catch (e) {}
         }
@@ -117,32 +168,38 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    checkSession();
-  }, []);
-
   // Periodic Live Sync interval (every 4 seconds) to fuel the Teacher Dashboard Live-Grid
   useEffect(() => {
-    if (!currentUser || currentUser.role !== "teacher") return;
+    if (!currentUser || currentUser.role !== "teacher" || !idToken) return;
     const interval = setInterval(() => {
-      fetchLmsPayload();
+      fetchLmsPayload(currentUser, null);
     }, 4000);
     return () => clearInterval(interval);
-  }, [currentUser]);
+  }, [currentUser, idToken]);
 
-  const handleLogin = (user: any) => {
-    localStorage.setItem("veritas_user_email", user.email);
-    setCurrentUser(user);
-    fetchLmsPayload(user);
+  const handleLogin = async (user: any) => {
+    if (auth.currentUser) {
+      const token = await auth.currentUser.getIdToken();
+      setCurrentUser(user);
+      setIdToken(token);
+      fetchLmsPayload(user, token);
+    }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("veritas_user_email");
-    setCurrentUser(null);
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setIdToken(null);
+    } catch (e) {
+      console.error("Logout failed:", e);
+    }
   };
 
   // Saving edited / created Lesson Curriculum
   const handleSaveLessonCurriculum = async (payload: any) => {
+    const token = await getFreshToken();
+    if (!token) return;
     try {
       const url = payload.id ? `/api/lessons/${payload.id}` : "/api/lessons";
       const method = payload.id ? "PUT" : "POST";
@@ -151,12 +208,12 @@ export default function App() {
         method,
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${currentUser.email}`
+          "Authorization": `Bearer ${token}`
         },
         body: JSON.stringify(payload)
       });
       await res.json();
-      fetchLmsPayload();
+      fetchLmsPayload(currentUser, token);
     } catch (e) {
       console.error(e);
     }
@@ -164,12 +221,14 @@ export default function App() {
 
   // Archiving / Deletions of Lessons
   const handleArchiveLesson = async (id: string) => {
+    const token = await getFreshToken();
+    if (!token) return;
     try {
       await fetch(`/api/lessons/${id}`, {
         method: "DELETE",
-        headers: { "Authorization": `Bearer ${currentUser.email}` }
+        headers: { "Authorization": `Bearer ${token}` }
       });
-      fetchLmsPayload();
+      fetchLmsPayload(currentUser, token);
     } catch (e) {
       console.error(e);
     }
@@ -177,16 +236,18 @@ export default function App() {
 
   // Set Manual Override overrides
   const handleOverrideScore = async (responseId: string, score: number, notes: string) => {
+    const token = await getFreshToken();
+    if (!token) return;
     try {
       await fetch(`/api/responses/${responseId}/override`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${currentUser.email}`
+          "Authorization": `Bearer ${token}`
         },
         body: JSON.stringify({ score, notes })
       });
-      fetchLmsPayload();
+      fetchLmsPayload(currentUser, token);
     } catch (e) {
       console.error(e);
     }
@@ -194,10 +255,12 @@ export default function App() {
 
   // Launch Focus player
   const handleLaunchStudentPlayer = async (lessonId: string) => {
+    const token = await getFreshToken();
+    if (!token) return;
     try {
       const authHeader = {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${currentUser.email}`
+        "Authorization": `Bearer ${token}`
       };
       
       const res = await fetch("/api/attempts", {
@@ -317,18 +380,8 @@ export default function App() {
         
         {/* Sidebar Navigation */}
         <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
-          <div className="p-4">
-            <button 
-              onClick={() => {
-                setActiveTab("builder");
-              }}
-              className="w-full py-2 bg-[#0A192F] hover:bg-[#15294b] text-white text-sm font-semibold rounded shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
-            >
-              + Create New Lesson
-            </button>
-          </div>
-          <div className="flex-1 py-1 px-3 space-y-1 overflow-y-auto">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 pb-2 mt-2">Classroom Management</div>
+          <div className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 pb-2">Classroom Management</div>
             <button
               onClick={() => setActiveTab("live")}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left font-semibold text-sm cursor-pointer transition ${

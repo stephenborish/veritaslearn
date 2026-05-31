@@ -1,0 +1,69 @@
+import { RichContent } from "./types";
+import { richContentSanitizer } from "./richContentSanitizer";
+
+export const applyLegacyMarkdownConversion = (text: string): string => {
+  const lines = text.split('\n');
+  let html = '';
+  
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    
+    if (line.trim() === '') {
+      html += '<p><br></p>';
+      continue;
+    }
+    
+    // Convert *italic*
+    line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    
+    if (line.startsWith('### ')) {
+      html += `<h3>${line.substring(4)}</h3>`;
+    } else if (line.startsWith('## ')) {
+      html += `<h2>${line.substring(3)}</h2>`;
+    } else if (line.startsWith('# ')) {
+      html += `<h1>${line.substring(2)}</h1>`;
+    } else if (line.startsWith('> ')) {
+      html += `<blockquote>${line.substring(2)}</blockquote>`;
+    } else {
+      html += `<p>${line}</p>`;
+    }
+  }
+  
+  return html;
+};
+
+export const migrateToRichContent = (existingText: string | RichContent | null | undefined): RichContent => {
+  if (!existingText) {
+    return {
+      version: 1,
+      format: "veritas-rich-content",
+      html: "",
+      plainText: "",
+      assets: []
+    };
+  }
+
+  // If already rich content
+  if (typeof existingText === "object" && existingText.format === "veritas-rich-content") {
+    return existingText;
+  }
+
+  // Otherwise, it's a string, migrate it
+  const asString = String(existingText);
+  const textHtml = applyLegacyMarkdownConversion(asString);
+  return {
+    version: 1,
+    format: "veritas-rich-content",
+    html: textHtml,
+    plainText: asString,
+    assets: []
+  };
+};
+
+export const getRenderableHtml = (content: string | RichContent | null | undefined): string => {
+  if (!content) return "";
+  if (typeof content === "object" && content.format === "veritas-rich-content") {
+    return content.html;
+  }
+  return applyLegacyMarkdownConversion(String(content));
+};

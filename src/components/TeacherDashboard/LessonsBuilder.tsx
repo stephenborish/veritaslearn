@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Eye, ShieldAlert, CheckCircle } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
+import VideoUploader from "./VideoUploader";
+import { RichContentEditor } from "../RichContent/RichContentEditor";
+import { migrateToRichContent, getRenderableHtml } from "../RichContent/richContentMigration";
+import { RichContent } from "../RichContent/types";
 
 interface LessonsBuilderProps {
   lessons: Lesson[];
@@ -217,10 +221,11 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
 
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">Educational Narrative description</label>
-                  <textarea 
-                    value={description} 
-                    onChange={(e) => setDescription(e.target.value)}
-                    className="w-full h-20 bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-850"
+                  <RichContentEditor
+                    value={description}
+                    onChange={(val) => setDescription(val.html)}
+                    mode="compact"
+                    placeholder="Enter lesson description..."
                   />
                 </div>
 
@@ -314,25 +319,44 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
                         </div>
 
                         {block.type === "video" && (
-                          <div>
-                            <label className="font-bold text-slate-700 block mb-1">Streaming Video Source URL (mp4 or WebM)</label>
-                            <input 
-                              type="text" 
-                              value={block.videoUrl || ""} 
-                              onChange={(e) => handleBlockChange(index, "videoUrl", e.target.value)}
-                              className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1 font-mono text-[11px]"
+                          <div className="space-y-3">
+                            <label className="font-bold text-slate-700 block mb-1">Lecture Video Material (Upload or URL)</label>
+                            
+                            {/* Drag & Drop with manual selection Click uploader built on top of secure backend uploads directory */}
+                            <VideoUploader 
+                              videoUrl={block.videoUrl}
+                              thumbnailUrl={block.thumbnailUrl}
+                              onVideoUploaded={(url, thumbnail) => {
+                                handleBlockChange(index, "videoUrl", url);
+                                if (thumbnail !== undefined) {
+                                  handleBlockChange(index, "thumbnailUrl", thumbnail);
+                                }
+                              }}
                             />
-                            <p className="text-[10px] text-slate-400 mt-1">Default AP history pre-load provided. Paste any web-accessible MP4 stream to verify.</p>
+
+                            <div className="pt-2 border-t border-slate-100">
+                              <label className="font-semibold text-slate-600 block mb-1">Direct Video URL Link (Backup/Manual Override)</label>
+                              <input 
+                                type="text" 
+                                value={block.videoUrl || ""} 
+                                onChange={(e) => handleBlockChange(index, "videoUrl", e.target.value)}
+                                placeholder="https://example.com/lecture.mp4"
+                                className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1 font-mono text-[11px] focus:outline-none focus:border-slate-400"
+                              />
+                              <p className="text-[10px] text-slate-400 mt-1">
+                                The upload area above stores files securely on Google Cloud infrastructure. You can also paste existing web-hosted MP4 links.
+                              </p>
+                            </div>
                           </div>
                         )}
 
                         {block.type === "reading" && (
                           <div>
-                            <label className="font-bold text-slate-700 block mb-1">Instructional Reading Passage Content (Markdown supports)</label>
-                            <textarea 
-                              value={block.content || ""} 
-                              onChange={(e) => handleBlockChange(index, "content", e.target.value)}
-                              className="w-full h-32 bg-slate-50 border border-slate-200 rounded px-3 py-2 font-mono"
+                            <label className="font-bold text-slate-700 block mb-1">Instructional Reading Passage Content</label>
+                            <RichContentEditor
+                              value={block.content || ""}
+                              onChange={(val) => handleBlockChange(index, "content", val)}
+                              mode="full"
                             />
                           </div>
                         )}
@@ -369,14 +393,14 @@ export default function LessonsBuilder({ lessons, blocks, onSaveLesson, onArchiv
 
                             <div>
                               <label className="font-bold text-slate-750 block mb-1">Question Prompt Stem</label>
-                              <input 
-                                type="text" 
-                                value={block.singleQuestion.stem} 
-                                onChange={(e) => {
-                                  const updated = { ...block.singleQuestion, stem: e.target.value };
+                              <RichContentEditor
+                                value={block.singleQuestion.stem}
+                                onChange={(val) => {
+                                  const updated = { ...block.singleQuestion!, stem: val };
                                   handleBlockChange(index, "singleQuestion", updated);
                                 }}
-                                className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1 font-serif text-[12px] text-slate-850"
+                                mode="compact"
+                                placeholder="Enter question..."
                               />
                             </div>
                           </div>

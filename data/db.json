@@ -1,7 +1,7 @@
 {
   "users": [
     {
-      "id": "teacher_1",
+      "id": "NJ0tE8hJ7NMsBtVSQTJgyp1OGrj2",
       "name": "Stephen Borish",
       "email": "stephenborish@gmail.com",
       "role": "teacher",
@@ -53,9 +53,55 @@
         "randomizeChoices": true,
         "immediateFeedback": false
       }
+    },
+    {
+      "id": "lesson_ziyhl37",
+      "title": "New APUSH Assessment Lesson",
+      "description": "",
+      "courseId": "course_1",
+      "estimatedMinutes": 25,
+      "isPublished": false,
+      "createdAt": "2026-05-30T20:34:00.257Z",
+      "settings": {
+        "restrictSeeking": true,
+        "requireFullscreen": true,
+        "allowRetakes": false,
+        "randomizeChoices": true,
+        "immediateFeedback": false
+      }
+    },
+    {
+      "id": "lesson_rjxp2rk",
+      "title": "Test Lesson",
+      "description": "Test",
+      "courseId": "course_1",
+      "estimatedMinutes": 5,
+      "isPublished": false,
+      "createdAt": "2026-05-30T22:39:35.318Z",
+      "settings": {
+        "restrictSeeking": true,
+        "requireFullscreen": true,
+        "allowRetakes": false,
+        "randomizeChoices": true,
+        "immediateFeedback": false
+      }
     }
   ],
   "blocks": [
+    {
+      "id": "b_new_1",
+      "lessonId": "lesson_ziyhl37",
+      "order": 1,
+      "type": "video",
+      "title": "Lecture Video",
+      "videoUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+      "videoCheckpoints": [],
+      "content": "",
+      "questionType": "mc",
+      "isPractice": false,
+      "questionPool": null,
+      "singleQuestion": null
+    },
     {
       "id": "block_1",
       "lessonId": "lesson_1",
@@ -196,6 +242,30 @@
           }
         ]
       }
+    },
+    {
+      "id": "block_yc92fw4",
+      "lessonId": "lesson_rjxp2rk",
+      "order": 1,
+      "type": "question",
+      "title": "Segment 1",
+      "videoUrl": "",
+      "videoCheckpoints": [],
+      "content": "",
+      "questionType": "mc",
+      "isPractice": false,
+      "questionPool": null,
+      "singleQuestion": {
+        "type": "sa",
+        "stem": {
+          "html": "<p>Hello</p>",
+          "lexicalJson": {
+            "root": {}
+          },
+          "plainText": "Hello"
+        },
+        "points": 5
+      }
     }
   ],
   "attempts": [
@@ -242,6 +312,18 @@
       },
       "activeTimeSpent": 1100,
       "inactiveTimeSpent": 45
+    },
+    {
+      "id": "attempt_tzp57fa",
+      "lessonId": "lesson_1",
+      "studentId": "NJ0tE8hJ7NMsBtVSQTJgyp1OGrj2",
+      "seed": 758797,
+      "startedAt": "2026-05-30T22:38:07.083Z",
+      "status": "started",
+      "currentBlockIndex": 0,
+      "furthestVideoTimestamps": {},
+      "activeTimeSpent": 0,
+      "inactiveTimeSpent": 0
     }
   ],
   "assignments": [
@@ -268,7 +350,12 @@
         "Proportionally by state population, favoring larger states",
         "Appointed entirely by the executive branch of government"
       ],
-      "scrambledToOriginalIndexMap": [2, 1, 0, 3]
+      "scrambledToOriginalIndexMap": [
+        2,
+        1,
+        0,
+        3
+      ]
     },
     {
       "id": "assignment_attempt_2_b1_cp1",
@@ -293,7 +380,12 @@
         "New Jersey",
         "Virginia"
       ],
-      "scrambledToOriginalIndexMap": [1, 2, 0, 3]
+      "scrambledToOriginalIndexMap": [
+        1,
+        2,
+        0,
+        3
+      ]
     },
     {
       "id": "assignment_attempt_3_b1_cp1",
@@ -318,7 +410,128 @@
         "Equally with two senators per state, favoring smaller states",
         "Based on the state's financial contribution to the Treasury"
       ],
-      "scrambledToOriginalIndexMap": [3, 0, 1, 2]
+      "scrambledToOriginalIndexMap": [
+        3,
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "id": "asgn_attempt_tzp57fa_block_1_cp_checkpoint_1_q0",
+      "attemptId": "attempt_tzp57fa",
+      "blockId": "block_1",
+      "checkpointId": "checkpoint_1",
+      "questionId": "cp1_q2",
+      "selectedQuestion": {
+        "id": "cp1_q2",
+        "stem": "Which state's delegation counter-proposed equal state representation in a unicameral congress to protect small-state interests?",
+        "choices": [
+          "Virginia",
+          "Georgia",
+          "Pennsylvania",
+          "New Jersey"
+        ],
+        "points": 5
+      },
+      "scrambledChoices": [
+        "Virginia",
+        "Georgia",
+        "Pennsylvania",
+        "New Jersey"
+      ],
+      "scrambledToOriginalIndexMap": [
+        3,
+        2,
+        1,
+        0
+      ]
+    },
+    {
+      "id": "asgn_attempt_tzp57fa_block_1_cp_checkpoint_2_q0",
+      "attemptId": "attempt_tzp57fa",
+      "blockId": "block_1",
+      "checkpointId": "checkpoint_2",
+      "questionId": "cp2_q1",
+      "selectedQuestion": {
+        "id": "cp2_q1",
+        "stem": "Explain the core motivations behind the Three-Fifths Compromise. In your response, contrast the political benefits sought by Northern delegates versus Southern delegates.",
+        "points": 10,
+        "rubricCategories": [
+          {
+            "name": "Northern Position",
+            "maxPoints": 4,
+            "description": "Correctly states that North resisted counting enslaved people for representation but favored counting them for taxation."
+          },
+          {
+            "name": "Southern Position",
+            "maxPoints": 4,
+            "description": "Correctly states that South wanted enslaved people counted for representation to increase southern electoral weight, but not for taxes."
+          },
+          {
+            "name": "Outcome / Compromise Result",
+            "maxPoints": 2,
+            "description": "Recognizes that three-fifths of the slave population was added to both taxes and seats, institutionalizing slavery in representation."
+          }
+        ]
+      }
+    },
+    {
+      "id": "asgn_attempt_tzp57fa_block_3",
+      "attemptId": "attempt_tzp57fa",
+      "blockId": "block_3",
+      "questionId": "q3_mc_1",
+      "selectedQuestion": {
+        "id": "q3_mc_1",
+        "stem": "According to Federalist No. 10, James Madison argues that the 'most common and durable source of factions' is which of the following?",
+        "choices": [
+          "The various and unequal distribution of property",
+          "Religious disagreements and philosophical doctrines",
+          "Regional differences between Northern and Southern economies",
+          "Alliances with foreign European empires"
+        ],
+        "points": 10
+      },
+      "scrambledChoices": [
+        "The various and unequal distribution of property",
+        "Religious disagreements and philosophical doctrines",
+        "Regional differences between Northern and Southern economies",
+        "Alliances with foreign European empires"
+      ],
+      "scrambledToOriginalIndexMap": [
+        0,
+        2,
+        1,
+        3
+      ]
+    },
+    {
+      "id": "asgn_attempt_tzp57fa_block_4",
+      "attemptId": "attempt_tzp57fa",
+      "blockId": "block_4",
+      "questionId": "q4_sa_1",
+      "selectedQuestion": {
+        "id": "q4_sa_1",
+        "stem": "Analyze why some delegates, like George Mason and Patrick Henry, deeply feared a single unitary executive. How did the final checks and balances draft address or fail to address their anti-federalist concerns?",
+        "points": 15,
+        "rubricCategories": [
+          {
+            "name": "Anti-Federalist Fears",
+            "maxPoints": 5,
+            "description": "Explains fears that a single executive resembled an elected king or monarchical tyranny."
+          },
+          {
+            "name": "Checks & Balances Integration",
+            "maxPoints": 5,
+            "description": "Identifies legislative checks: Senate's advice and consent, Congress's impeachment powers, power of the purse."
+          },
+          {
+            "name": "Critical Argumentative Evaluation",
+            "maxPoints": 5,
+            "description": "Evaluates effectiveness (e.g. expansion of executive decrees over time, balanced by structural design)."
+          }
+        ]
+      }
     }
   ],
   "responses": [
@@ -345,28 +558,7 @@
       "type": "sa",
       "responseValue": "The Northern states were highly concerned with representation because they felt Southern states would disproportionately gain electoral and legislative strength by counting enslaved populations who had zero civil liberties. Southern states demanded representation counting their enslaved populations, threatening to walk out. Northern states believed if they count for representation they must also count for tax tallies. The compromise resulted in 3/5ths allocation, bolstering southern power while taxes were theoretically split, establishing institutional boundaries for slave states in the new constitution.",
       "score": 10,
-      "activeTimeSpent": 180,
-      "aiGrading": {
-        "score": 10,
-        "rationale": "Perfect coverage of both perspectives. Explicitly detailed Northern resistance regarding population representation metrics and taxation requirements, Southern threats of standard walkouts, and the exact 3/5ths transactional outcome.",
-        "confidence": 0.96,
-        "status": "success",
-        "rubricBreakdown": {
-          "Northern Position": {
-            "score": 4,
-            "feedback": "Outstanding capture of tax preferences and representation constraints."
-          },
-          "Southern Position": {
-            "score": 4,
-            "feedback": "Correctly details southern drive for electoral counting density."
-          },
-          "Outcome / Compromise Result": {
-            "score": 2,
-            "feedback": "Excellent description of the legal compromises institutionalized."
-          }
-        },
-        "gradedAt": "2026-05-28T14:15:20Z"
-      }
+      "activeTimeSpent": 180
     },
     {
       "id": "resp_attempt_1_b3",
@@ -389,28 +581,7 @@
       "type": "sa",
       "responseValue": "The anti-federalists like Mason and Henry strongly opposed the single chief executive because they felt it lacked localized transparency, closely representing a core monarch with unchecked dictatorial command. The convention designed key structural safeguards to address these specific anxieties: including Senate check filters over treaty selections, executive appointments constraints, and full congressional control of the state purse alongside precise rules of regular presidential impeachment. This ensured the office would remain strictly subordinate to the statutory powers of representational legislation.",
       "score": 14,
-      "activeTimeSpent": 320,
-      "aiGrading": {
-        "score": 14,
-        "rationale": "High-quality academic analysis covering the central fears regarding executive branch abuse, listing clear check filters, and providing structured reasoning regarding legislative design dominance.",
-        "status": "success",
-        "confidence": 0.92,
-        "rubricBreakdown": {
-          "Anti-Federalist Fears": {
-            "score": 5,
-            "feedback": "Thoroughly outlines the monarchy fears."
-          },
-          "Checks & Balances Integration": {
-            "score": 5,
-            "feedback": "Explicitly details standard legislative checks."
-          },
-          "Critical Argumentative Evaluation": {
-            "score": 4,
-            "feedback": "Very solid critical evaluation with strong vocabulary."
-          }
-        },
-        "gradedAt": "2026-05-28T14:32:15Z"
-      }
+      "activeTimeSpent": 320
     },
     {
       "id": "resp_attempt_2_cp1",
@@ -435,28 +606,7 @@
       "type": "sa",
       "responseValue": "the North wanted to tax slaves but not count them for electoral power. the South wanted to count them for electoral power so they could win votes in congress. they compromising by doing a proportion of three out of five people of color count. it was pretty bad.",
       "score": 6,
-      "activeTimeSpent": 45,
-      "aiGrading": {
-        "score": 6,
-        "rationale": "The student states simple accurate points but lacks formal academic vocabulary, structural logic, and specific details about long-term constitutional balances.",
-        "status": "success",
-        "confidence": 0.85,
-        "rubricBreakdown": {
-          "Northern Position": {
-            "score": 3,
-            "feedback": "Accurate summary but extremely brief."
-          },
-          "Southern Position": {
-            "score": 2,
-            "feedback": "Understood the basic electoral driver but lacks detail."
-          },
-          "Outcome / Compromise Result": {
-            "score": 1,
-            "feedback": "Acknowledged the outcome with informal terminology."
-          }
-        },
-        "gradedAt": "2026-05-29T15:20:00Z"
-      }
+      "activeTimeSpent": 45
     },
     {
       "id": "resp_attempt_2_b3",
@@ -480,27 +630,6 @@
       "responseValue": "Mason and Henry did not like a strong unitary executive because they believed it could behave like a British king with unchecked authority over the army. To try and limit this check and balances were put in. impeachment can be used by congress, override vetoes by two thirds numbers, and treaties require consent.",
       "score": 12,
       "activeTimeSpent": 110,
-      "aiGrading": {
-        "score": 11,
-        "rationale": "Decent submission outlining monarchical fears and checks such as veto override and impeachment. Somewhat brief on critical evaluation.",
-        "status": "success",
-        "confidence": 0.88,
-        "rubricBreakdown": {
-          "Anti-Federalist Fears": {
-            "score": 4,
-            "feedback": "Correctly links executive powers to anti-monarchical fears."
-          },
-          "Checks & Balances Integration": {
-            "score": 4,
-            "feedback": "Captures standard checks accurately."
-          },
-          "Critical Argumentative Evaluation": {
-            "score": 3,
-            "feedback": "Provides basic overview but could evaluate impacts more substantially."
-          }
-        },
-        "gradedAt": "2026-05-29T15:35:00Z"
-      },
       "teacherOverride": {
         "score": 12,
         "notes": "Fair understanding. Upgraded by 1 point due to correct description of Vetos and Impeachment logic.",
@@ -530,15 +659,7 @@
       "type": "sa",
       "responseValue": "The dispute was over whether to include slaves in the population counts. Northern states did not hold slaves mostly and did not want southern states to get extra voting seats, but they did want them to be counted in tax calculations. The south threatend to veto the Union if they did not get complete counting credits. The three fifths compromise was the compromise.",
       "score": 0,
-      "activeTimeSpent": 150,
-      "aiGrading": {
-        "score": 0,
-        "rationale": "Response written successfully. Awaiting final grading evaluation.",
-        "status": "pending",
-        "confidence": 0,
-        "rubricBreakdown": {},
-        "gradedAt": ""
-      }
+      "activeTimeSpent": 150
     }
   ],
   "securitySignals": [
@@ -618,6 +739,135 @@
       "metadata": {
         "reason": "minor_unfocus"
       }
+    }
+  ],
+  "aiGradingRecords": [
+    {
+      "id": "aigr_r9dmj9j",
+      "responseId": "resp_attempt_1_cp2",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "promptVersion": "1.0",
+      "rubricSnapshot": [],
+      "inputHash": "",
+      "parsedScore": 10,
+      "confidence": 0.96,
+      "rationale": "Perfect coverage of both perspectives. Explicitly detailed Northern resistance regarding population representation metrics and taxation requirements, Southern threats of standard walkouts, and the exact 3/5ths transactional outcome.",
+      "rubricBreakdown": {
+        "Northern Position": {
+          "score": 4,
+          "feedback": "Outstanding capture of tax preferences and representation constraints."
+        },
+        "Southern Position": {
+          "score": 4,
+          "feedback": "Correctly details southern drive for electoral counting density."
+        },
+        "Outcome / Compromise Result": {
+          "score": 2,
+          "feedback": "Excellent description of the legal compromises institutionalized."
+        }
+      },
+      "status": "success",
+      "gradedAt": "2026-05-28T14:15:20Z"
+    },
+    {
+      "id": "aigr_9rjun8h",
+      "responseId": "resp_attempt_1_b4",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "promptVersion": "1.0",
+      "rubricSnapshot": [],
+      "inputHash": "",
+      "parsedScore": 14,
+      "confidence": 0.92,
+      "rationale": "High-quality academic analysis covering the central fears regarding executive branch abuse, listing clear check filters, and providing structured reasoning regarding legislative design dominance.",
+      "rubricBreakdown": {
+        "Anti-Federalist Fears": {
+          "score": 5,
+          "feedback": "Thoroughly outlines the monarchy fears."
+        },
+        "Checks & Balances Integration": {
+          "score": 5,
+          "feedback": "Explicitly details standard legislative checks."
+        },
+        "Critical Argumentative Evaluation": {
+          "score": 4,
+          "feedback": "Very solid critical evaluation with strong vocabulary."
+        }
+      },
+      "status": "success",
+      "gradedAt": "2026-05-28T14:32:15Z"
+    },
+    {
+      "id": "aigr_leefxto",
+      "responseId": "resp_attempt_2_cp2",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "promptVersion": "1.0",
+      "rubricSnapshot": [],
+      "inputHash": "",
+      "parsedScore": 6,
+      "confidence": 0.85,
+      "rationale": "The student states simple accurate points but lacks formal academic vocabulary, structural logic, and specific details about long-term constitutional balances.",
+      "rubricBreakdown": {
+        "Northern Position": {
+          "score": 3,
+          "feedback": "Accurate summary but extremely brief."
+        },
+        "Southern Position": {
+          "score": 2,
+          "feedback": "Understood the basic electoral driver but lacks detail."
+        },
+        "Outcome / Compromise Result": {
+          "score": 1,
+          "feedback": "Acknowledged the outcome with informal terminology."
+        }
+      },
+      "status": "success",
+      "gradedAt": "2026-05-29T15:20:00Z"
+    },
+    {
+      "id": "aigr_7t3ph9p",
+      "responseId": "resp_attempt_2_b4",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "promptVersion": "1.0",
+      "rubricSnapshot": [],
+      "inputHash": "",
+      "parsedScore": 11,
+      "confidence": 0.88,
+      "rationale": "Decent submission outlining monarchical fears and checks such as veto override and impeachment. Somewhat brief on critical evaluation.",
+      "rubricBreakdown": {
+        "Anti-Federalist Fears": {
+          "score": 4,
+          "feedback": "Correctly links executive powers to anti-monarchical fears."
+        },
+        "Checks & Balances Integration": {
+          "score": 4,
+          "feedback": "Captures standard checks accurately."
+        },
+        "Critical Argumentative Evaluation": {
+          "score": 3,
+          "feedback": "Provides basic overview but could evaluate impacts more substantially."
+        }
+      },
+      "status": "success",
+      "gradedAt": "2026-05-29T15:35:00Z"
+    },
+    {
+      "id": "aigr_4ac4jck",
+      "responseId": "resp_attempt_3_cp2",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "promptVersion": "1.0",
+      "rubricSnapshot": [],
+      "inputHash": "",
+      "parsedScore": 0,
+      "confidence": 0,
+      "rationale": "Response written successfully. Awaiting final grading evaluation.",
+      "rubricBreakdown": {},
+      "status": "pending",
+      "gradedAt": "2026-05-30T20:14:26.023Z"
     }
   ]
 }

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { MessageSquare, Check, RotateCcw, ShieldAlert, Award, AlertCircle } from "lucide-react";
 import { motion } from "motion/react";
+import { RichContentEditor } from "../RichContent/RichContentEditor";
+import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 
 interface AIReviewProps {
   students: any[];
@@ -154,7 +156,7 @@ export default function AIReview({ students, lessons, responses, onOverrideSave 
                         <Award className="w-4 h-4 text-[#0A192F] shrink-0" /> Apply Score Amendment
                       </span>
 
-                      <div className="flex items-center gap-3">
+                      <div className="flex flex-col gap-3">
                         <div className="w-1/3">
                           <label className="text-[9px] font-mono font-bold uppercase text-slate-450 block mb-1">Score Override</label>
                           <input 
@@ -164,14 +166,13 @@ export default function AIReview({ students, lessons, responses, onOverrideSave 
                             className="w-full text-xs font-mono font-bold text-center bg-slate-50 border border-slate-200 rounded p-1.5 focus:outline-none focus:border-slate-400 transition"
                           />
                         </div>
-                        <div className="w-2/3">
+                        <div className="w-full">
                           <label className="text-[9px] font-mono font-bold uppercase text-slate-450 block mb-1">Feedback Notes</label>
-                          <input 
-                            type="text"
-                            placeholder="Reason for change..."
+                          <RichContentEditor
                             value={overrideNotes[res.id] !== undefined ? overrideNotes[res.id] : (override?.notes ?? "")}
-                            onChange={(e) => setOverrideNotes({ ...overrideNotes, [res.id]: e.target.value })}
-                            className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-1.5 focus:outline-none focus:border-slate-400 transition"
+                            onChange={(val) => setOverrideNotes({ ...overrideNotes, [res.id]: val.html })}
+                            mode="inline"
+                            placeholder="Reason for change..."
                           />
                         </div>
                       </div>

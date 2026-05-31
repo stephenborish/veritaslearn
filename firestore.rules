@@ -87,5 +87,10 @@ service cloud.firestore {
       allow create: if isSignedIn();
       allow update, delete: if isTeacher();
     }
+
+    // 9. AI Grading Records collection rules
+    match /aiGradingRecords/{recordId} {
+      allow read, write: if isTeacher();
+    }
   }
 }

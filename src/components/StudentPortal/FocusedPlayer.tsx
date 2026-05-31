@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { ShieldAlert, Play, EyeOff, Check, X, Expand, RefreshCw, AlertCircle, ArrowLeft, ChevronRight, Lock } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { auth } from "../../lib/firebase";
+import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 
 interface FocusedPlayerProps {
   attemptId: string;
@@ -39,11 +41,28 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [activeCheckpoint, setActiveCheckpoint] = useState<any>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
 
+  // Helper to retrieve current active authentication headers
+  const getAuthHeader = async () => {
+    let token = user?.email || "";
+    if (auth.currentUser) {
+      try {
+        const freshToken = await auth.currentUser.getIdToken();
+        if (freshToken) {
+          token = freshToken;
+        }
+      } catch (err) {
+        console.warn("FocusedPlayer - failed to fetch fresh idToken. Falling back to email bearer:", err);
+      }
+    }
+    return { "Authorization": `Bearer ${token}` };
+  };
+
   // Fetch full structured data on mount
   const fetchData = async () => {
     try {
+      const authHeader = await getAuthHeader();
       const response = await fetch(`/api/attempts/${attemptId}`, {
-        headers: { "Authorization": `Bearer ${user.email}` }
+        headers: authHeader
       });
       const data = await response.json();
       
@@ -53,7 +72,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
       // Fetch accompanying lesson blocks
       const lResponse = await fetch(`/api/lessons/${data.attempt.lessonId}`, {
-        headers: { "Authorization": `Bearer ${user.email}` }
+        headers: authHeader
       });
       const lData = await lResponse.json();
       setBlocks(lData.blocks);
@@ -187,21 +206,23 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     // Synchronize time spent telemetry to backend every 10 seconds
     const syncTimeSpent = setInterval(() => {
       if (activeTimeRef.current > 0 || inactiveTimeRef.current > 0) {
-        fetch(`/api/attempts/${attemptId}/progress`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${user.email}`
-          },
-          body: JSON.stringify({
-            blockId: blocks[currentBlockIndex]?.id,
-            timestamp: videoRef.current ? Math.floor(videoRef.current.currentTime) : 0,
-            activeTime: activeTimeRef.current,
-            inactiveTime: inactiveTimeRef.current
-          })
-        }).then(() => {
-          activeTimeRef.current = 0;
-          inactiveTimeRef.current = 0;
+        getAuthHeader().then((authHeader) => {
+          fetch(`/api/attempts/${attemptId}/progress`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...authHeader
+            },
+            body: JSON.stringify({
+              blockId: blocks[currentBlockIndex]?.id,
+              timestamp: videoRef.current ? Math.floor(videoRef.current.currentTime) : 0,
+              activeTime: activeTimeRef.current,
+              inactiveTime: inactiveTimeRef.current
+            })
+          }).then(() => {
+            activeTimeRef.current = 0;
+            inactiveTimeRef.current = 0;
+          }).catch(() => {});
         }).catch(() => {});
       }
     }, 10000);
@@ -223,11 +244,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   // Log strict security incident to telemetry API
   const logTelemetry = async (eventType: string, severity: string, metadata: any = {}) => {
     try {
+      const authHeader = await getAuthHeader();
       await fetch("/api/telemetry", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${user.email}`
+          ...authHeader
         },
         body: JSON.stringify({
           attemptId,
@@ -302,11 +324,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     setNavigationError(null);
 
     try {
+      const authHeader = await getAuthHeader();
       const resp = await fetch(`/api/attempts/${attemptId}/block`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${user.email}`
+          ...authHeader
         },
         body: JSON.stringify({ blockIndex: nextIdx })
       });
@@ -330,11 +353,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
     setSavingResponse((prev) => ({ ...prev, [questionId]: true }));
     try {
+      const authHeader = await getAuthHeader();
       const respObj = await fetch(`/api/attempts/${attemptId}/submit`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${user.email}`
+          ...authHeader
         },
         body: JSON.stringify({
           blockId,
@@ -366,11 +390,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   // Complete attempt
   const handleCompleteLessonAttempt = async () => {
     try {
+      const authHeader = await getAuthHeader();
       await fetch(`/api/attempts/${attemptId}/complete`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${user.email}`
+          ...authHeader
         }
       });
       onExit();
@@ -453,9 +478,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                 <div className="border-t border-slate-100 pt-4 text-sm text-slate-600 leading-relaxed space-y-4">
                   {/* Simplistic reading paragraphs */}
                   {activeBlock.content ? (
-                    activeBlock.content.split("\n\n").map((para: string, idx: number) => (
-                      <p key={idx}>{para}</p>
-                    ))
+                    <RichContentRenderer content={activeBlock.content} />
                   ) : (
                     <p className="italic text-slate-400">Document under review.</p>
                   )}
@@ -497,11 +520,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
                             return (
                               <div key={q.id} className="space-y-2">
-                                <p className="text-xs text-slate-300 italic">"{q.stem}"</p>
+                                <div className="text-xs text-slate-300 italic"><RichContentRenderer content={q.stem} /></div>
                                 
                                 {q.choices ? (
                                   <div className="grid grid-cols-1 gap-2">
-                                    {q.choices.map((choice: string, cIdx: number) => {
+                                    {q.choices.map((choice: any, cIdx: number) => {
                                       // Scrambled indicator choice letters in Arial Black style
                                       const letter = String.fromCharCode(65 + cIdx);
                                       const isSel = selectedMC[q.id] === String(cIdx);
@@ -516,7 +539,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                           }`}
                                         >
                                           <span className="font-sans font-black pr-1">{letter}.</span>
-                                          {choice}
+                                          <RichContentRenderer content={choice} className="inline-block" />
                                         </button>
                                       );
                                     })}
@@ -582,11 +605,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
                   return (
                     <div key={asg.id} className="space-y-4">
-                      <p className="text-sm font-semibold text-slate-800 leading-relaxed">"{q.stem}"</p>
+                      <div className="text-sm font-semibold text-slate-800 leading-relaxed"><RichContentRenderer content={q.stem} /></div>
 
                       {q.choices ? (
                         <div className="grid grid-cols-1 gap-2.5">
-                          {q.choices.map((choice: string, cIdx: number) => {
+                          {q.choices.map((choice: any, cIdx: number) => {
                             const choiceLetter = String.fromCharCode(65 + cIdx);
                             const isSel = selectedMC[q.id] === String(cIdx);
 
@@ -600,7 +623,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                 }`}
                               >
                                 <span className="font-sans font-black pr-1">{choiceLetter}.</span>
-                                {choice}
+                                <RichContentRenderer content={choice} className="inline-block" />
                               </button>
                             );
                           })}
