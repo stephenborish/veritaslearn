@@ -48,8 +48,22 @@ export const migrateToRichContent = (existingText: string | RichContent | null |
     return existingText;
   }
 
-  // Otherwise, it's a string, migrate it
   const asString = String(existingText);
+
+  // If the string is already HTML (starts with '<'), use it directly.
+  // Running applyLegacyMarkdownConversion on HTML would double-wrap every block element
+  // in a <p> tag, creating invalid nested <p> elements that break the editor.
+  if (asString.trim().startsWith('<')) {
+    return {
+      version: 1,
+      format: "veritas-rich-content",
+      html: asString,
+      plainText: asString.replace(/<[^>]*>/g, ''),
+      assets: []
+    };
+  }
+
+  // Otherwise, it's plain text or legacy markdown — convert it
   const textHtml = applyLegacyMarkdownConversion(asString);
   return {
     version: 1,
