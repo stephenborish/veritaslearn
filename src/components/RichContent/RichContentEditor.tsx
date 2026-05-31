@@ -321,6 +321,10 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   const onChangeRef = useRef(onChange);
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
 
+  // Unique namespace per editor instance prevents Lexical conflicts when multiple
+  // editors are rendered on the same page.
+  const namespaceRef = useRef(`VeritasEditor-${Math.random().toString(36).slice(2, 9)}`);
+
   // Track what HTML is currently in the editor (set by apply or by typing)
   const currentHtmlRef = useRef<string>('');
   // Track what we last serialized+emitted to parent (to break echo loops)
@@ -335,6 +339,15 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
 
   // Detect external value changes that warrant re-importing content into the editor
   useEffect(() => {
+    // Fast-path: if value is the plain HTML string we just emitted, skip reimport.
+    // This handles parents that store val.html (a string) instead of the full RichContent
+    // object — without this check the echo-prevention below fails because
+    // migrateToRichContent() sees a plain string and transforms it, producing HTML that
+    // no longer matches currentHtmlRef or lastEmittedRef.
+    if (typeof value === 'string' && lastEmittedRef.current !== null) {
+      if (JSON.stringify({ html: value }) === lastEmittedRef.current) return;
+    }
+
     const newVal = migrateToRichContent(value);
     // Skip if the HTML hasn't changed from what the editor currently has
     if (newVal.html === currentHtmlRef.current) return;
@@ -410,7 +423,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   }, []); // intentionally empty — runs once on mount
 
   const initialConfig = {
-    namespace: 'VeritasEditor',
+    namespace: namespaceRef.current,
     theme: {
       paragraph: 'mb-2 leading-relaxed',
       heading: {
