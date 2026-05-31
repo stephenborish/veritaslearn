@@ -1208,11 +1208,21 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
   if (activeTime) attempt.activeTimeSpent += Number(activeTime);
   if (inactiveTime) attempt.inactiveTimeSpent += Number(inactiveTime);
 
+  // Track per-block active time for teacher dossier visibility
+  if (blockId && Number(activeTime) > 0) {
+    if (!attempt.blockTimeSpent) attempt.blockTimeSpent = {};
+    attempt.blockTimeSpent[blockId] = (attempt.blockTimeSpent[blockId] || 0) + Number(activeTime);
+  }
+
+  // Record last active timestamp for "inactive > 24h" anomaly detection
+  attempt.lastActiveAt = new Date().toISOString();
+
   writeDb(db);
   res.json({
     success: true,
     allowedTimestamp,
-    furthestMaxTimestamp: attempt.furthestVideoTimestamps[blockId] || 0
+    furthestMaxTimestamp: attempt.furthestVideoTimestamps[blockId] || 0,
+    lockState: attempt.lockState || null
   });
 });
 
@@ -1616,9 +1626,42 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
   };
 
   db.securitySignals.push(signal);
+
+  // Auto-lock attempt when student exits fullscreen on a lesson that requires it
+  let lockState: string | null = null;
+  if (eventType === "fullscreen_exited" && severity === "high" && attemptId) {
+    const attemptIdx = db.attempts.findIndex((a: any) => a.id === attemptId);
+    if (attemptIdx !== -1) {
+      const attempt = db.attempts[attemptIdx];
+      const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
+      if (lesson?.settings?.requireFullscreen && attempt.lockState !== "locked_awaiting_teacher") {
+        db.attempts[attemptIdx].lockState = "locked_awaiting_teacher";
+        db.attempts[attemptIdx].lockedAt = new Date().toISOString();
+        lockState = "locked_awaiting_teacher";
+      }
+    }
+  }
+
+  writeDb(db);
+  res.json({ success: true, lockState });
+});
+
+// Teacher: Unlock a locked student attempt
+app.post("/api/attempts/:id/unlock", requireTeacher, (req, res) => {
+  const { id } = req.params;
+  const db = readDb();
+
+  const attemptIdx = db.attempts.findIndex((a: any) => a.id === id);
+  if (attemptIdx === -1) {
+    fail(res, "NOT_FOUND", "Attempt not found.");
+    return;
+  }
+
+  db.attempts[attemptIdx].lockState = null;
+  db.attempts[attemptIdx].lockedAt = null;
   writeDb(db);
 
-  res.json({ success: true });
+  res.json({ success: true, attempt: { id, lockState: null } });
 });
 
 // ==========================================

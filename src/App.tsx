@@ -220,6 +220,21 @@ export default function App() {
     }
   };
 
+  // Teacher: unlock a student's locked attempt
+  const handleUnlockStudent = async (attemptId: string) => {
+    const token = await getFreshToken();
+    if (!token) return;
+    try {
+      await fetch(`/api/attempts/${attemptId}/unlock`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      fetchLmsPayload(currentUser, token);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // Set Manual Override overrides
   const handleOverrideScore = async (responseId: string, score: number, notes: string) => {
     const token = await getFreshToken();
@@ -349,7 +364,7 @@ export default function App() {
             <span className="text-[10px] text-white/60 font-medium">Faculty</span>
           </div>
           <div className="w-9 h-9 rounded-full border-2 border-white/20 flex items-center justify-center font-bold text-xs uppercase bg-gradient-to-tr from-blue-700 to-indigo-800 text-white shrink-0">
-            SB
+            {currentUser.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)}
           </div>
           <button
             onClick={handleLogout}
@@ -404,7 +419,7 @@ export default function App() {
               }`}
             >
               <span className={`w-3.5 h-3.5 rounded-sm border transition-colors ${activeTab === 'ai' ? 'bg-[#0A192F] border-[#0A192F]' : 'border-slate-400 bg-transparent'}`}></span> 
-              AI Rubrics Queue
+              Review Queue
             </button>
           </div>
         </aside>
@@ -416,14 +431,14 @@ export default function App() {
             <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
               <div>
                 <h1 className="text-xl font-bold text-slate-800">
-                  {activeTab === "live" && <>Assignment Progress</>}
+                  {activeTab === "live" && <>Lesson Tracking</>}
                   {activeTab === "builder" && <>Lesson Builder & Curriculum Library</>}
-                  {activeTab === "ai" && <>AI Rubric Grading Evaluations Queue</>}
+                  {activeTab === "ai" && <>Review Queue</>}
                 </h1>
                 <p className="text-xs text-slate-500 mt-0.5 font-medium">
                   {activeTab === "live" && <>{students.length} students registered &bull; Asynchronous assignment progress</>}
                   {activeTab === "builder" && <>Draft and publish active lessons and multi-checkpoint assessments</>}
-                  {activeTab === "ai" && <>Review AI-suggested rubric grades and submit teacher overrides</>}
+                  {activeTab === "ai" && <>SA grading review, integrity signals, and attention flags</>}
                 </p>
               </div>
 
@@ -449,15 +464,17 @@ export default function App() {
             {/* Dynamic tabs load */}
             <div className="w-full">
               {activeTab === "live" && (
-                <LiveMonitor 
+                <LiveMonitor
                   students={students}
                   attempts={attempts}
                   responses={responses}
                   signals={signals}
                   lessons={lessons}
+                  blocks={blocks}
                   onOpenDossier={(studentId, lessonId) => {
                     setActiveDossier({ studentId, lessonId });
                   }}
+                  onUnlockStudent={handleUnlockStudent}
                 />
               )}
 
@@ -481,11 +498,15 @@ export default function App() {
               )}
 
               {activeTab === "ai" && (
-                <AIReview 
+                <AIReview
                   students={students}
                   lessons={lessons}
+                  blocks={blocks}
+                  attempts={attempts}
                   responses={responses}
+                  signals={signals}
                   onOverrideSave={handleOverrideScore}
+                  onOpenDossier={(studentId, lessonId) => setActiveDossier({ studentId, lessonId })}
                 />
               )}
             </div>

@@ -120,6 +120,10 @@ export interface LessonAttempt {
   furthestVideoTimestamps: { [blockId: string]: number }; // blockId -> furthest validated watch timestamp
   activeTimeSpent: number; // in seconds
   inactiveTimeSpent: number; // in seconds
+  lockState?: 'locked_awaiting_teacher' | null; // teacher-approval gate state
+  lockedAt?: string | null; // ISO timestamp when lock was set
+  lastActiveAt?: string; // ISO timestamp of last heartbeat
+  blockTimeSpent?: { [blockId: string]: number }; // blockId -> cumulative active seconds
 }
 
 export interface QuestionAssignment {
@@ -197,7 +201,9 @@ export interface SecuritySignal {
     | 'visibility_hidden'
     | 'fullscreen_exited'
     | 'seek_attempt_blocked'
-    | 'rapid_navigation';
+    | 'rapid_navigation'
+    | 'context_menu_blocked'
+    | 'checkpoint_triggered';
   severity: 'low' | 'medium' | 'high';
   blockId?: string;
   videoTimestamp?: number;

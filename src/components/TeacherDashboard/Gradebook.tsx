@@ -1,4 +1,4 @@
-import { CheckSquare, HelpCircle } from "lucide-react";
+import { CheckSquare, HelpCircle, Minus } from "lucide-react";
 
 interface GradebookProps {
   students: any[];
@@ -52,6 +52,14 @@ export default function Gradebook({ students, lessons, attempts, responses, bloc
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <button
+          onClick={handleExportCSV}
+          className="text-[10px] font-bold uppercase tracking-widest px-4 py-2 bg-white border border-slate-200 rounded text-slate-600 hover:bg-slate-50 hover:border-slate-300 transition shadow-sm cursor-pointer"
+        >
+          Export CSV
+        </button>
+      </div>
       <div className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm">
         <div className="overflow-x-auto w-full">
           <table className="w-full text-left text-sm border-collapse">
@@ -81,8 +89,10 @@ export default function Gradebook({ students, lessons, attempts, responses, bloc
 
                     if (!attempt) {
                       return (
-                        <td key={lesson.id} className="py-4 px-6 text-xs text-slate-400 font-mono italic">
-                          Not Started
+                        <td key={lesson.id} className="py-4 px-6">
+                          <span className="inline-flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest text-slate-400 bg-slate-50 px-2 py-1 rounded-sm border border-slate-200">
+                            <Minus className="w-2.5 h-2.5" /> Not Started
+                          </span>
                         </td>
                       );
                     }
@@ -128,6 +138,37 @@ export default function Gradebook({ students, lessons, attempts, responses, bloc
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="bg-slate-50 border-t-2 border-slate-200">
+                <td className="py-3 px-6 text-[10px] font-bold uppercase tracking-widest text-slate-500 font-mono">
+                  Class Average
+                </td>
+                {lessons.map((lesson) => {
+                  const completedAttempts = attempts.filter((a) => a.lessonId === lesson.id && a.status === "completed");
+                  const maxScore = calcMaxPoints(lesson.id);
+                  if (!completedAttempts.length || maxScore === 0) {
+                    return (
+                      <td key={lesson.id} className="py-3 px-6">
+                        <span className="text-[9px] text-slate-400 font-mono">—</span>
+                      </td>
+                    );
+                  }
+                  const avgScore = Math.round(
+                    completedAttempts.reduce((sum, a) => {
+                      const s = responses.filter((r) => r.attemptId === a.id).reduce((rs, r) => rs + (r.score || 0), 0);
+                      return sum + s;
+                    }, 0) / completedAttempts.length
+                  );
+                  const avgPct = Math.round((avgScore / maxScore) * 100);
+                  return (
+                    <td key={lesson.id} className="py-3 px-6">
+                      <span className="text-xs font-bold font-mono text-slate-700">{avgScore}/{maxScore}</span>
+                      <span className="ml-2 text-[10px] font-mono text-slate-500">({avgPct}%)</span>
+                    </td>
+                  );
+                })}
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>

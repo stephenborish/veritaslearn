@@ -23,13 +23,20 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [isLocked, setIsLocked] = useState(false);
   const [lockMessage, setLockMessage] = useState("");
   const [activeTab, setActiveTab] = useState(true);
-  
+  // Teacher-approval lock state (distinct from self-service fullscreen re-entry)
+  const [isTeacherLocked, setIsTeacherLocked] = useState(false);
+  const isTeacherLockedRef = useRef(false); // ref for closure access in intervals
+
   // Scoring / Submission states
   const [selectedMC, setSelectedMC] = useState<{ [qId: string]: string }>({});
   const [saText, setSaText] = useState<{ [qId: string]: string }>({});
   const [submittedLocal, setSubmittedLocal] = useState<{ [qId: string]: boolean }>({});
   const [savingResponse, setSavingResponse] = useState<{ [qId: string]: boolean }>({});
   const [feedbackState, setFeedbackState] = useState<{ [qId: string]: { correct: boolean; desc?: string } }>({});
+
+  // SA draft autosave
+  const draftSaveTimers = useRef<{ [qId: string]: ReturnType<typeof setTimeout> }>({});
+  const [draftSavedIndicator, setDraftSavedIndicator] = useState<{ [qId: string]: boolean }>({});
 
   // Active time-spent counters
   const activeTimeRef = useRef(0);
@@ -91,6 +98,25 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setSubmittedLocal(localSub);
       setFeedbackState(localFeed);
 
+      // Restore SA drafts from localStorage for unsubmitted questions
+      const allAssignments = data.questionAssignments || data.assignments || [];
+      allAssignments.forEach((asg: any) => {
+        const q = asg.selectedQuestion;
+        if (q?.type === "sa" && !localSub[q.id]) {
+          const draftKey = `veritas_draft_${data.attempt.id}_${q.id}`;
+          const saved = localStorage.getItem(draftKey);
+          if (saved) {
+            setSaText((prev) => ({ ...prev, [q.id]: saved }));
+          }
+        }
+      });
+
+      // Check teacher lock state on resume
+      if (data.attempt.lockState === "locked_awaiting_teacher") {
+        setIsTeacherLocked(true);
+        isTeacherLockedRef.current = true;
+      }
+
       // If video progress records are found, seek to saved limits
       const savedFurthest = data.attempt.furthestVideoTimestamps;
       if (savedFurthest && Object.keys(savedFurthest).length > 0) {
@@ -126,13 +152,21 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     const lesson = attemptData.lesson || {};
     const requireFullscreenOpt = attemptData.lesson?.settings?.requireFullscreen ?? true;
 
-    // Fullscreen lock check
-    const handleFullscreenChange = () => {
+    // Fullscreen lock check — may escalate to teacher-approval lock
+    const handleFullscreenChange = async () => {
       const isFull = !!document.fullscreenElement;
       if (!isFull && requireFullscreenOpt) {
-        setIsLocked(true);
-        setLockMessage("Veritas requires fullscreen focus. Please enter secure fullscreen to continue.");
-        logIntegritySignal("fullscreen_exited", "high", { detail: "User exited fullscreen mode." });
+        const result = await logIntegritySignal("fullscreen_exited", "high", { detail: "User exited fullscreen mode." });
+        if (result?.lockState === "locked_awaiting_teacher") {
+          // Escalated: teacher must approve re-entry
+          setIsTeacherLocked(true);
+          isTeacherLockedRef.current = true;
+          setIsLocked(false);
+        } else {
+          // Standard fullscreen enforcement — student can self-dismiss
+          setIsLocked(true);
+          setLockMessage("VERITAS requires fullscreen focus. Please re-enter fullscreen to continue.");
+        }
       }
     };
 
@@ -201,28 +235,35 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       }
     }, 1000);
 
-    // Synchronize time spent to backend every 10 seconds
+    // Synchronize time spent to backend every 10 seconds; also polls lock state
     const syncTimeSpent = setInterval(() => {
-      if (activeTimeRef.current > 0 || inactiveTimeRef.current > 0) {
-        getAuthHeader().then((authHeader) => {
-          fetch(`/api/attempts/${attemptId}/progress`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...authHeader
-            },
-            body: JSON.stringify({
-              blockId: blocks[currentBlockIndex]?.id,
-              timestamp: videoRef.current ? Math.floor(videoRef.current.currentTime) : 0,
-              activeTime: activeTimeRef.current,
-              inactiveTime: inactiveTimeRef.current
-            })
-          }).then(() => {
-            activeTimeRef.current = 0;
-            inactiveTimeRef.current = 0;
-          }).catch(() => {});
+      getAuthHeader().then((authHeader) => {
+        fetch(`/api/attempts/${attemptId}/progress`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...authHeader
+          },
+          body: JSON.stringify({
+            blockId: blocks[currentBlockIndex]?.id,
+            timestamp: videoRef.current ? Math.floor(videoRef.current.currentTime) : 0,
+            activeTime: activeTimeRef.current,
+            inactiveTime: inactiveTimeRef.current
+          })
+        }).then((res) => res.json()).then((data) => {
+          activeTimeRef.current = 0;
+          inactiveTimeRef.current = 0;
+          // Detect teacher unlock — if lockState cleared and we were locked, resume
+          if (data.lockState === null && isTeacherLockedRef.current) {
+            setIsTeacherLocked(false);
+            isTeacherLockedRef.current = false;
+            if (requireFullscreenOpt) requestFullscreen();
+          } else if (data.lockState === "locked_awaiting_teacher" && !isTeacherLockedRef.current) {
+            setIsTeacherLocked(true);
+            isTeacherLockedRef.current = true;
+          }
         }).catch(() => {});
-      }
+      }).catch(() => {});
     }, 10000);
 
     return () => {
@@ -239,12 +280,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     };
   }, [loading, attemptData, currentBlockIndex]);
 
-  // Log activity and integrity signal to API
-  const logIntegritySignal = async (eventType: string, severity: string, metadata: any = {}) => {
+  // Log activity and integrity signal to API; returns parsed response
+  const logIntegritySignal = async (eventType: string, severity: string, metadata: any = {}): Promise<{ lockState?: string | null } | null> => {
     try {
       const authHeader = await getAuthHeader();
-      if (!authHeader.Authorization) return;
-      await fetch("/api/integrity-signals", {
+      if (!authHeader.Authorization) return null;
+      const res = await fetch("/api/integrity-signals", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -262,8 +303,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           }
         })
       });
+      return res.ok ? res.json() : null;
     } catch (e) {
       console.error(e);
+      return null;
     }
   };
 
@@ -346,6 +389,19 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     }
   };
 
+  // SA draft autosave handler — debounced 800ms save to localStorage
+  const handleSaChange = (questionId: string, value: string) => {
+    setSaText((prev) => ({ ...prev, [questionId]: value }));
+    if (draftSaveTimers.current[questionId]) {
+      clearTimeout(draftSaveTimers.current[questionId]);
+    }
+    draftSaveTimers.current[questionId] = setTimeout(() => {
+      localStorage.setItem(`veritas_draft_${attemptId}_${questionId}`, value);
+      setDraftSavedIndicator((prev) => ({ ...prev, [questionId]: true }));
+      setTimeout(() => setDraftSavedIndicator((prev) => ({ ...prev, [questionId]: false })), 2500);
+    }, 800);
+  };
+
   // Student answer submission
   const handleSubmitResponse = async (blockId: string, questionId: string, responseVal: string, cpId?: string) => {
     if (!responseVal) return;
@@ -370,7 +426,14 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const data = await respObj.json();
 
       setSubmittedLocal((prev) => ({ ...prev, [questionId]: true }));
-      
+
+      // Clear SA draft from localStorage on successful submission
+      localStorage.removeItem(`veritas_draft_${attemptId}_${questionId}`);
+      if (draftSaveTimers.current[questionId]) {
+        clearTimeout(draftSaveTimers.current[questionId]);
+        delete draftSaveTimers.current[questionId];
+      }
+
       // Handle practice immediate feedback if returned
       if (data.gradedImmediate) {
         setFeedbackState((prev) => ({
@@ -418,10 +481,33 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col md:flex-row relative overflow-hidden">
       
-      {/* Full screen Integrity Enforcement Overlay */}
+      {/* Teacher-approval lock overlay — student cannot self-dismiss */}
       <AnimatePresence>
-        {isLocked && (
-          <motion.div 
+        {isTeacherLocked && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-[#0A192F] text-white z-50 flex flex-col items-center justify-center p-6 text-center"
+          >
+            <div className="w-16 h-16 rounded-full border-2 border-[#E5B53B]/30 flex items-center justify-center mb-6">
+              <Lock className="w-7 h-7 text-[#E5B53B]" />
+            </div>
+            <h2 className="text-xl font-bold tracking-wide">Your session is paused.</h2>
+            <p className="text-sm text-slate-300 max-w-sm mt-4 leading-relaxed font-sans">
+              Your teacher has been notified. Please wait — your progress is saved.
+            </p>
+            <p className="text-[10px] text-slate-500 mt-8 font-mono uppercase tracking-widest">
+              Raise your hand or contact your teacher to continue.
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Standard fullscreen enforcement overlay — student can self-dismiss */}
+      <AnimatePresence>
+        {isLocked && !isTeacherLocked && (
+          <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -543,13 +629,18 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                     })}
                                   </div>
                                 ) : (
-                                  <textarea 
-                                    className="w-full text-xs text-slate-800 bg-white p-2.5 rounded focus:outline-none"
-                                    rows={3}
-                                    value={saText[q.id] || ""}
-                                    onChange={(e) => setSaText({ ...saText, [q.id]: e.target.value })}
-                                    placeholder="Write your brief response here..."
-                                  />
+                                  <div className="space-y-1">
+                                    <textarea
+                                      className="w-full text-xs text-slate-800 bg-white p-2.5 rounded focus:outline-none"
+                                      rows={3}
+                                      value={saText[q.id] || ""}
+                                      onChange={(e) => handleSaChange(q.id, e.target.value)}
+                                      placeholder="Write your brief response here..."
+                                    />
+                                    {draftSavedIndicator[q.id] && (
+                                      <span className="text-[9px] text-slate-400 font-mono uppercase tracking-wider">Draft saved</span>
+                                    )}
+                                  </div>
                                 )}
 
                                 {!isSubmitted && (
@@ -627,14 +718,19 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           })}
                         </div>
                       ) : (
-                        <textarea
-                          disabled={isSubmitted}
-                          value={saText[q.id] || ""}
-                          onChange={(e) => setSaText({ ...saText, [q.id]: e.target.value })}
-                          rows={5}
-                          placeholder="Compose your academic rationale here. Copying, pasting, and navigation out of focused screen is logged."
-                          className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded p-4 leading-relaxed focus:bg-white focus:outline-none focus:border-slate-400 transition-all font-mono"
-                        />
+                        <div className="space-y-1">
+                          <textarea
+                            disabled={isSubmitted}
+                            value={saText[q.id] || ""}
+                            onChange={(e) => handleSaChange(q.id, e.target.value)}
+                            rows={5}
+                            placeholder="Compose your academic rationale here. Copying, pasting, and navigation out of focused screen is logged."
+                            className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded p-4 leading-relaxed focus:bg-white focus:outline-none focus:border-slate-400 transition-all font-mono"
+                          />
+                          {!isSubmitted && draftSavedIndicator[q.id] && (
+                            <span className="text-[9px] text-slate-400 font-mono uppercase tracking-wider">Draft saved</span>
+                          )}
+                        </div>
                       )}
 
                       {!isSubmitted && (
