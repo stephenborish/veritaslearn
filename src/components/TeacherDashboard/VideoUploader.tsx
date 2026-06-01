@@ -24,7 +24,8 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
   const [videoDuration, setVideoDuration] = useState<number>(duration || 0);
   const [scrubTime, setScrubTime] = useState<number>(0.5);
   const [isGeneratingThumbnail, setIsGeneratingThumbnail] = useState<boolean>(false);
-  const extractorVideoRef = useRef<HTMLVideoElement | null>(null);
+  const inlineVideoRef = useRef<HTMLVideoElement | null>(null);
+  const isResolvingRef = useRef(false);
 
   const bucket = storage.app.options.storageBucket || "gen-lang-client-0781925544.firebasestorage.app";
   const displayedVideoUrl = videoUrl || (storagePath ? `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodeURIComponent(storagePath)}?alt=media` : "");
@@ -36,66 +37,10 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
     return `${minutes}:${seconds < 10 ? "0" : ""}${seconds}`;
   };
 
-  // Setup offscreen extractor video when displayedVideoUrl becomes available
-  useEffect(() => {
-    if (displayedVideoUrl) {
-      const video = document.createElement("video");
-      video.src = displayedVideoUrl;
-      video.crossOrigin = "anonymous";
-      video.preload = "metadata";
-      video.muted = true;
-      video.playsInline = true;
-      
-      const onLoaded = () => {
-        const dur = video.duration || 0;
-        setVideoDuration(dur);
-        // If there's no pre-existing thumbnail, do an auto extraction at 0.5 seconds
-        if (!thumbnailUrl && !extractedThumbnail) {
-          video.currentTime = 0.5;
-        } else {
-          onVideoUploaded(displayedVideoUrl, thumbnailUrl || extractedThumbnail || undefined, dur, storagePath);
-        }
-      };
-
-      const onSeeked = () => {
-        // Prevent writing if thumbnail already exists and the seek was from a manual action
-        if (!thumbnailUrl && !extractedThumbnail && video.currentTime === 0.5) {
-          try {
-            const canvas = document.createElement("canvas");
-            canvas.width = 160;
-            canvas.height = 90;
-            const ctx = canvas.getContext("2d");
-            if (ctx) {
-              ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-              const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
-              setExtractedThumbnail(dataUrl);
-              onVideoUploaded(displayedVideoUrl, dataUrl, video.duration, storagePath);
-            }
-          } catch (err) {
-            console.warn("Auto frame snapshot skipped or CORS-blocked:", err);
-            onVideoUploaded(displayedVideoUrl, undefined, video.duration, storagePath);
-          }
-        }
-      };
-
-      video.addEventListener("loadedmetadata", onLoaded);
-      video.addEventListener("seeked", onSeeked);
-      extractorVideoRef.current = video;
-
-      return () => {
-        video.removeEventListener("loadedmetadata", onLoaded);
-        video.removeEventListener("seeked", onSeeked);
-      };
-    } else {
-      extractorVideoRef.current = null;
-      setVideoDuration(0);
-      setScrubTime(0.5);
-    }
-  }, [displayedVideoUrl, thumbnailUrl]);
-
   // Automated resolver to check if a saved storagePath is present in database but URL hasn't been retrieved
   useEffect(() => {
-    if (storagePath && !videoUrl) {
+    if (storagePath && !videoUrl && !isResolvingRef.current) {
+      isResolvingRef.current = true;
       const fileRef = ref(storage, storagePath);
       getDownloadURL(fileRef)
         .then((url) => {
@@ -105,12 +50,15 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
           console.error("Auto-resolving storage path URL failed, using fallback:", err);
           const fallbackUrl = `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodeURIComponent(storagePath)}?alt=media`;
           onVideoUploaded(fallbackUrl, thumbnailUrl || extractedThumbnail || undefined, duration, storagePath);
+        })
+        .finally(() => {
+          isResolvingRef.current = false;
         });
     }
   }, [storagePath, videoUrl]);
 
   const extractFrameAtTime = (time: number) => {
-    const video = extractorVideoRef.current;
+    const video = inlineVideoRef.current;
     if (!video || !displayedVideoUrl) return;
 
     setIsGeneratingThumbnail(true);
@@ -126,7 +74,7 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
           setExtractedThumbnail(dataUrl);
-          onVideoUploaded(displayedVideoUrl, dataUrl, video.duration, storagePath);
+          onVideoUploaded(displayedVideoUrl, dataUrl, video.duration || videoDuration, storagePath);
         }
       } catch (err) {
         console.warn("Failed manual frame selection:", err);
@@ -136,11 +84,10 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
       }
     };
 
-    // Remove any stale listeners first to avoid double draw callbacks
     video.removeEventListener("seeked", handleSeekComplete);
     video.addEventListener("seeked", handleSeekComplete);
     
-    video.currentTime = Math.min(Math.max(0.1, time), video.duration || 0.1);
+    video.currentTime = Math.min(Math.max(0.1, time), video.duration || videoDuration || 0.1);
   };
 
   // Extract duration and grab a thumbnail frame locally before uploading
@@ -442,11 +389,19 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
         <div className="border border-slate-200 bg-slate-900 rounded-lg p-4 flex flex-col gap-4 shadow-sm" id="inline-video-preview-wrapper">
           <div className="relative rounded-lg overflow-hidden bg-black border border-slate-850 flex items-center justify-center aspect-video w-full max-h-[300px]" id="inline-video-player-container">
             <video 
+              ref={inlineVideoRef}
               src={displayedVideoUrl} 
               controls 
               preload="metadata" 
               className="w-full h-full max-h-[300px] rounded-lg object-contain"
               referrerPolicy="no-referrer"
+              crossOrigin="anonymous"
+              onLoadedMetadata={(e) => {
+                const dur = e.currentTarget.duration || 0;
+                if (dur > 0 && dur !== videoDuration) {
+                  setVideoDuration(dur);
+                }
+              }}
             />
           </div>
 

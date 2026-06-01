@@ -199,14 +199,20 @@ export default function App() {
     }
   };
 
+  const [isAuthoringDirty, setIsAuthoringDirty] = useState(false);
+
   // Periodic background refresh for teacher dashboard (every 60 seconds, async-first)
   useEffect(() => {
     if (!currentUser || currentUser.role !== "teacher" || !idToken) return;
     const interval = setInterval(() => {
+      if (isAuthoringDirty) {
+        console.log("VERITAS Learn - Suppressing background refresh because lesson editor has unsaved changes.");
+        return;
+      }
       fetchLmsPayload(currentUser, null);
     }, 60000);
     return () => clearInterval(interval);
-  }, [currentUser, idToken]);
+  }, [currentUser, idToken, isAuthoringDirty]);
 
   const handleLogin = async (user: any) => {
     if (auth.currentUser) {
@@ -243,10 +249,12 @@ export default function App() {
         },
         body: JSON.stringify(payload)
       });
-      await res.json();
-      fetchLmsPayload(currentUser, token);
+      const data = await res.json();
+      await fetchLmsPayload(currentUser, token);
+      return data;
     } catch (e) {
       console.error(e);
+      throw e;
     }
   };
 
@@ -652,6 +660,7 @@ export default function App() {
                     onDeleteAssignment={handleDeleteAssignment}
                     onLaunchPreviewAttempt={handleLaunchPreviewAttempt}
                     courses={courses}
+                    onEditingDirtyChange={setIsAuthoringDirty}
                   />
                 )
               )}

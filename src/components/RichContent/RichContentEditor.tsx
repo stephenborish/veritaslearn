@@ -383,8 +383,20 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   mode = "full",
   allowMath = true,
   allowChemistry = true,
-  disabled = false
+  disabled = false,
+  documentKey = ""
 }) => {
+  // Track focus state of this specific editor
+  const [isFocused, setIsFocused] = useState(false);
+
+  // Track documentKey changes to force re-import
+  const prevDocKeyRef = useRef(documentKey);
+  const docKeyChanged = prevDocKeyRef.current !== documentKey;
+
+  useEffect(() => {
+    prevDocKeyRef.current = documentKey;
+  });
+
   // Stable ref to latest onChange — avoids stale closures without needing useCallback deps
   const onChangeRef = useRef(onChange);
   useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
@@ -423,10 +435,16 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
     const str = JSON.stringify({ html: newVal.html });
     if (str === lastEmittedRef.current) return;
 
+    // Suppress external value updates if the editor is actively focused and the edit target
+    // documentKey has not changed. This protects the teacher's active caret and keystrokes.
+    if (isFocused && !docKeyChanged) {
+      return;
+    }
+
     contentToApplyRef.current = { lexicalJson: newVal.lexicalJson, html: newVal.html };
     setApplyKey(k => k + 1);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  }, [value, documentKey, isFocused]);
 
   // Stable change handler: emits to parent, updates current html tracking
   const handleEditorChange = useCallback((editorState: any, editor: LexicalEditor) => {
@@ -522,7 +540,15 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   };
 
   return (
-    <div className={`relative border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm select-text ${disabled ? 'opacity-70 bg-slate-50' : ''}`}>
+    <div
+      className={`relative border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm select-text ${disabled ? "opacity-70 bg-slate-50" : ""}`}
+      onFocusCapture={() => setIsFocused(true)}
+      onBlurCapture={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setIsFocused(false);
+        }
+      }}
+    >
       <LexicalComposer initialConfig={initialConfig}>
         <EditorInner
           disabled={disabled}

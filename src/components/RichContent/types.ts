@@ -39,4 +39,5 @@ export type RichContentEditorProps = {
   allowMath?: boolean;
   allowChemistry?: boolean;
   disabled?: boolean;
+  documentKey?: string;
 };

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock, ChevronUp, ChevronDown, ArrowUp, ArrowDown, BookOpen, Calendar, ShieldAlert, Eye, Play, CheckCircle } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
@@ -26,13 +26,14 @@ function newQuestionTemplate(type: "mc" | "sa"): any {
 interface LessonsBuilderProps {
   lessons: Lesson[];
   blocks: LessonBlock[];
-  onSaveLesson: (lessonData: any) => Promise<void>;
+  onSaveLesson: (lessonData: any) => Promise<any>;
   onArchived: (id: string) => Promise<void>;
   assignments?: any[];
   onSaveAssignment?: (payload: any) => Promise<void>;
   onDeleteAssignment?: (id: string) => Promise<void>;
   onLaunchPreviewAttempt?: (lessonId: string) => Promise<void>;
   courses?: any[];
+  onEditingDirtyChange?: (isDirty: boolean) => void;
 }
 
 export default function LessonsBuilder({
@@ -45,6 +46,7 @@ export default function LessonsBuilder({
   onDeleteAssignment,
   onLaunchPreviewAttempt,
   courses = [],
+  onEditingDirtyChange,
 }: LessonsBuilderProps) {
   const [selectedLesson, setSelectedLesson] = useState<any>(null);
   const [title, setTitle] = useState("");
@@ -81,6 +83,90 @@ export default function LessonsBuilder({
     const d = new Date();
     d.setDate(d.getDate() + 10);
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  };
+
+  // Active selected item inside the redesign layout: "setup" or blockIndex number
+  const [activeWorkspace, setActiveWorkspace] = useState<"setup" | number>("setup");
+
+  // Local recovery draft state
+  const [recoveryDraft, setRecoveryDraft] = useState<any>(null);
+
+  // Unsaved and save status trackers
+  const [saveStatus, setSaveStatus] = useState<"clean" | "saving" | "saved" | "error">("clean");
+  const [isDirty, setIsDirty] = useState(false);
+  const [initialSnapshotStr, setInitialSnapshotStr] = useState("");
+
+  // Helpers for Question configuration
+  const ensureQuestionForBlock = (block: any): any => {
+    if (block.type !== "question") return block;
+    if (block.singleQuestion && block.singleQuestion.id) return block;
+    return {
+      ...block,
+      questionType: block.questionType || "mc",
+      singleQuestion: newQuestionTemplate(block.questionType || "mc")
+    };
+  };
+
+  const ensureQuestionForCheckpoint = (cp: any): any => {
+    const questions = cp.questions || [];
+    if (questions[0] && questions[0].id) return cp;
+    return {
+      ...cp,
+      questionType: cp.questionType || "mc",
+      questions: [newQuestionTemplate(cp.questionType || "mc")]
+    };
+  };
+
+  const convertQuestionType = (existing: any, nextType: "mc" | "sa"): any => {
+    const q = existing || {};
+    const base = {
+      id: q.id || uid("q"),
+      type: nextType,
+      stem: q.stem ?? "",
+      points: q.points ?? 5,
+    };
+
+    if (nextType === "mc") {
+      let choices = q.choices;
+      if (!Array.isArray(choices) || choices.length === 0) {
+        choices = [
+          { id: uid("choice"), text: "" },
+          { id: uid("choice"), text: "" },
+        ];
+      }
+      const correctChoiceId = q.correctChoiceId || (choices[0] && choices[0].id) || "";
+      return {
+        ...base,
+        choices,
+        correctChoiceId,
+        explanation: q.explanation ?? ""
+      };
+    } else {
+      return {
+        ...base,
+        modelAnswer: q.modelAnswer ?? "",
+        aiScoringGuidance: q.aiScoringGuidance ?? "",
+        teacherNotes: q.teacherNotes ?? "",
+        rubricCategories: q.rubricCategories ?? [],
+        studentInstructions: q.studentInstructions ?? ""
+      };
+    }
+  };
+
+  // Get current state snapshot string
+  const getSnapshot = () => {
+    return JSON.stringify({
+      title,
+      description,
+      estimatedMinutes,
+      isPublished,
+      restrictSeeking,
+      requireFullscreen,
+      allowRetakes,
+      randomizeChoices,
+      immediateFeedback,
+      currentBlocks
+    });
   };
 
   const [asgOpensAt, setAsgOpensAt] = useState(getDefaultOpenDate());
@@ -151,6 +237,12 @@ export default function LessonsBuilder({
     updated[index] = updated[targetIndex];
     updated[targetIndex] = temp;
     setCurrentBlocks(updated);
+
+    if (activeWorkspace === index) {
+      setActiveWorkspace(targetIndex);
+    } else if (activeWorkspace === targetIndex) {
+      setActiveWorkspace(index);
+    }
   };
 
   // Open editor of specific lesson
@@ -166,15 +258,29 @@ export default function LessonsBuilder({
     setRandomizeChoices(lesson.settings.randomizeChoices);
     setImmediateFeedback(lesson.settings.immediateFeedback);
 
-    const lessonBlocks = blocks.filter((b) => b.lessonId === lesson.id).sort((a, b) => a.order - b.order);
-    setCurrentBlocks(lessonBlocks.map((b) => ({ ...b })));
+    const lessonBlocks = blocks
+      .filter((b) => b.lessonId === lesson.id)
+      .sort((a, b) => a.order - b.order)
+      .map(ensureQuestionForBlock);
 
-    // Collapse other blocks, expand the first one for neat visual organization
-    const initialExpanded: Record<string, boolean> = {};
-    lessonBlocks.forEach((b, i) => {
-      initialExpanded[b.id] = i === 0;
+    setCurrentBlocks(lessonBlocks.map((b) => ({ ...b })));
+    setExpandedBlocks({});
+    setActiveWorkspace("setup");
+    setSaveStatus("clean");
+
+    const snap = JSON.stringify({
+      title: lesson.title,
+      description: lesson.description,
+      estimatedMinutes: lesson.estimatedMinutes,
+      isPublished: lesson.isPublished,
+      restrictSeeking: lesson.settings.restrictSeeking,
+      requireFullscreen: lesson.settings.requireFullscreen,
+      allowRetakes: lesson.settings.allowRetakes,
+      randomizeChoices: lesson.settings.randomizeChoices,
+      immediateFeedback: lesson.settings.immediateFeedback,
+      currentBlocks: lessonBlocks.map((b) => ({ ...b }))
     });
-    setExpandedBlocks(initialExpanded);
+    setInitialSnapshotStr(snap);
   };
 
   const startNewLesson = () => {
@@ -188,16 +294,32 @@ export default function LessonsBuilder({
     setAllowRetakes(false);
     setRandomizeChoices(true);
     setImmediateFeedback(false);
-    setCurrentBlocks([
-      {
-        id: "b_new_1",
-        type: "video",
-        title: "Video Instruction",
-        videoUrl: "",
-        videoCheckpoints: []
-      }
-    ]);
+
+    const initialBlock = {
+      id: "b_new_1",
+      type: "video" as const,
+      title: "Video Instruction",
+      videoUrl: "",
+      videoCheckpoints: []
+    };
+    setCurrentBlocks([initialBlock]);
     setExpandedBlocks({ "b_new_1": true });
+    setActiveWorkspace("setup");
+    setSaveStatus("clean");
+
+    const snap = JSON.stringify({
+      title: "New Lesson",
+      description: "",
+      estimatedMinutes: 25,
+      isPublished: false,
+      restrictSeeking: true,
+      requireFullscreen: true,
+      allowRetakes: false,
+      randomizeChoices: true,
+      immediateFeedback: false,
+      currentBlocks: [initialBlock]
+    });
+    setInitialSnapshotStr(snap);
   };
 
   const handleAddBlock = (type: "video" | "reading" | "question") => {
@@ -210,15 +332,22 @@ export default function LessonsBuilder({
       content: type === "reading" ? "### Lesson Passage\nEnter reading content here." : undefined,
       questionType: type === "question" ? "mc" : undefined,
       isPractice: type === "question" ? false : undefined,
-      singleQuestion: type === "question" ? newQuestionTemplate("mc") : undefined
+      singleQuestion: type === "question" ? newQuestionTemplate("mc") : undefined,
+      videoCheckpoints: []
     };
-    setCurrentBlocks([...currentBlocks, newBlock]);
-    // Collapse others and expand this new one
-    setExpandedBlocks({ [freshId]: true });
+    const nextBlocks = [...currentBlocks, newBlock];
+    setCurrentBlocks(nextBlocks);
+    setActiveWorkspace(nextBlocks.length - 1);
   };
 
   const handleDeleteBlock = (index: number) => {
-    setCurrentBlocks(currentBlocks.filter((_: any, idx: number) => idx !== index));
+    const nextBlocks = currentBlocks.filter((_: any, idx: number) => idx !== index);
+    setCurrentBlocks(nextBlocks);
+    if (activeWorkspace === index) {
+      setActiveWorkspace("setup");
+    } else if (typeof activeWorkspace === "number" && activeWorkspace > index) {
+      setActiveWorkspace(activeWorkspace - 1);
+    }
   };
 
   const handleBlockChange = (index: number, key: string, val: any) => {
@@ -254,19 +383,106 @@ export default function LessonsBuilder({
     };
     handleBlockChange(blockIndex, "videoCheckpoints", [...cps, cp]);
   };
+
   const updateCheckpoint = (blockIndex: number, cpId: string, partial: any) => {
     const block = currentBlocks[blockIndex];
     const cps = (block.videoCheckpoints || []).map((cp: any) => (cp.id === cpId ? { ...cp, ...partial } : cp));
     handleBlockChange(blockIndex, "videoCheckpoints", cps);
   };
+
   const updateCheckpointQuestion = (blockIndex: number, cpId: string, uq: any) => {
     const block = currentBlocks[blockIndex];
     const cps = (block.videoCheckpoints || []).map((cp: any) => (cp.id === cpId ? { ...cp, questions: [uq] } : cp));
     handleBlockChange(blockIndex, "videoCheckpoints", cps);
   };
+
   const deleteCheckpoint = (blockIndex: number, cpId: string) => {
     const block = currentBlocks[blockIndex];
     handleBlockChange(blockIndex, "videoCheckpoints", (block.videoCheckpoints || []).filter((cp: any) => cp.id !== cpId));
+  };
+
+  // Track dirty state and automatic localStorage draft recovery writes
+  useEffect(() => {
+    if (!selectedLesson) {
+      if (onEditingDirtyChange) onEditingDirtyChange(false);
+      setIsDirty(false);
+      return;
+    }
+
+    const currentStr = getSnapshot();
+    const clean = !initialSnapshotStr || (currentStr === initialSnapshotStr);
+    setIsDirty(!clean);
+    if (onEditingDirtyChange) {
+      onEditingDirtyChange(!clean);
+    }
+
+    if (!clean) {
+      const storageKey = selectedLesson.id === "new" ? "veritas_recovery_draft_new" : `veritas_recovery_draft_${selectedLesson.id}`;
+      const timer = setTimeout(() => {
+        localStorage.setItem(storageKey, JSON.stringify({
+          timestamp: Date.now(),
+          title,
+          description,
+          estimatedMinutes,
+          isPublished,
+          restrictSeeking,
+          requireFullscreen,
+          allowRetakes,
+          randomizeChoices,
+          immediateFeedback,
+          currentBlocks
+        }));
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [
+    selectedLesson,
+    title,
+    description,
+    estimatedMinutes,
+    isPublished,
+    restrictSeeking,
+    requireFullscreen,
+    allowRetakes,
+    randomizeChoices,
+    immediateFeedback,
+    currentBlocks,
+    initialSnapshotStr
+  ]);
+
+  // Browser reload listener
+  useEffect(() => {
+    if (!isDirty) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "You have unsaved changes on the Lesson Design Canvas.";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isDirty]);
+
+  const handleRestoreDraft = () => {
+    if (!recoveryDraft) return;
+    setTitle(recoveryDraft.title ?? "");
+    setDescription(recoveryDraft.description ?? "");
+    setEstimatedMinutes(recoveryDraft.estimatedMinutes ?? 25);
+    setIsPublished(recoveryDraft.isPublished ?? false);
+    setRestrictSeeking(recoveryDraft.restrictSeeking ?? true);
+    setRequireFullscreen(recoveryDraft.requireFullscreen ?? true);
+    setAllowRetakes(recoveryDraft.allowRetakes ?? false);
+    setRandomizeChoices(recoveryDraft.randomizeChoices ?? true);
+    setImmediateFeedback(recoveryDraft.immediateFeedback ?? false);
+    setCurrentBlocks((recoveryDraft.currentBlocks || []).map(ensureQuestionForBlock));
+    setRecoveryDraft(null);
+    setSaveStatus("clean");
+  };
+
+  const handleDiscardDraft = () => {
+    if (!selectedLesson) return;
+    const storageKey = selectedLesson.id === "new" ? "veritas_recovery_draft_new" : `veritas_recovery_draft_${selectedLesson.id}`;
+    localStorage.removeItem(storageKey);
+    setRecoveryDraft(null);
   };
 
   const [saveError, setSaveError] = useState<string[] | null>(null);
@@ -295,6 +511,7 @@ export default function LessonsBuilder({
       });
       if (problems.length > 0) {
         setSaveError(problems);
+        setSaveStatus("error");
         return false;
       }
     }
@@ -315,9 +532,66 @@ export default function LessonsBuilder({
       blocks: currentBlocks
     };
 
-    await onSaveLesson(payload);
-    setSelectedLesson(null);
-    return true;
+    setSaveStatus("saving");
+    try {
+      const savedResult = await onSaveLesson(payload);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("clean"), 3000);
+
+      const oldKey = selectedLesson.id === "new" ? "veritas_recovery_draft_new" : `veritas_recovery_draft_${selectedLesson.id}`;
+      localStorage.removeItem(oldKey);
+
+      if (savedResult && savedResult.id) {
+        setSelectedLesson(savedResult);
+        const resolvedBlocks = (savedResult.blocks || []).map(ensureQuestionForBlock);
+        setCurrentBlocks(resolvedBlocks.map((b: any) => ({ ...b })));
+        setIsPublished(savedResult.isPublished);
+
+        const newSnap = JSON.stringify({
+          title: savedResult.title,
+          description: savedResult.description,
+          estimatedMinutes: savedResult.estimatedMinutes,
+          isPublished: savedResult.isPublished,
+          restrictSeeking: savedResult.settings?.restrictSeeking ?? restrictSeeking,
+          requireFullscreen: savedResult.settings?.requireFullscreen ?? requireFullscreen,
+          allowRetakes: savedResult.settings?.allowRetakes ?? allowRetakes,
+          randomizeChoices: savedResult.settings?.randomizeChoices ?? randomizeChoices,
+          immediateFeedback: savedResult.settings?.immediateFeedback ?? immediateFeedback,
+          currentBlocks: resolvedBlocks.map((b: any) => ({ ...b }))
+        });
+        setInitialSnapshotStr(newSnap);
+      } else {
+        const snap = JSON.stringify({
+          title,
+          description,
+          estimatedMinutes,
+          isPublished: publishedStatus,
+          restrictSeeking,
+          requireFullscreen,
+          allowRetakes,
+          randomizeChoices,
+          immediateFeedback,
+          currentBlocks
+        });
+        setInitialSnapshotStr(snap);
+      }
+      return true;
+    } catch (e: any) {
+      console.error("Failed to save lesson", e);
+      setSaveStatus("error");
+      setSaveError([e.message || "Failed to save lesson. Please verify connectivity."]);
+      return false;
+    }
+  };
+
+  const handleReturnToLibrary = () => {
+    if (isDirty) {
+      if (window.confirm("You have unsaved changes. Discard and return to library? Your unsaved draft has been saved locally.")) {
+        setSelectedLesson(null);
+      }
+    } else {
+      setSelectedLesson(null);
+    }
   };
 
   const handleSave = async () => {
@@ -331,22 +605,15 @@ export default function LessonsBuilder({
   const handlePublishLive = async () => {
     const success = await saveWithPublishedStatus(true);
     if (!success) {
-      // If validation error occurred, keep editor open so they can resolve errors listed in saveError
       setIsPublished(true);
     }
   };
 
   const handleAssignAndLaunch = async () => {
-    // Determine status to save, then route student assignments form context
     const success = await saveWithPublishedStatus(isPublished);
     if (success) {
       if (selectedLesson.id !== "new") {
         setAsgLessonId(selectedLesson.id);
-        setShowAssignmentForm(true);
-        setBuilderSubTab("assignments");
-      } else {
-        // Fallback for new lesson - direct user to form
-        setAsgLessonId("");
         setShowAssignmentForm(true);
         setBuilderSubTab("assignments");
       }
@@ -869,18 +1136,72 @@ export default function LessonsBuilder({
       ) : (
         // Designer workspace
         <div className="space-y-6">
-          {/* Sticky Header Controls for quick curriculum management */}
+          {/* Unsaved draft recovery alert at the very top */}
+          {recoveryDraft && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3.5 text-xs text-amber-800 flex items-center justify-between shadow-xs">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <div>
+                  <span className="font-bold">Unsaved local changes detected</span> (from {new Date(recoveryDraft.timestamp).toLocaleTimeString()}).
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleRestoreDraft}
+                  className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1 rounded text-[11px] shadow-sm cursor-pointer"
+                >
+                  Restore Draft
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDiscardDraft}
+                  className="bg-white hover:bg-slate-100 border border-amber-300 text-amber-800 font-bold px-3 py-1 rounded text-[11px] cursor-pointer"
+                >
+                  Discard Draft
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Sticky Header Controls with real-time state feedback */}
           <div className="sticky top-0 z-30 bg-slate-50/95 backdrop-blur-md border-b border-slate-200 pb-4 mb-4 pt-2 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
             <div>
-              <h3 className="text-lg font-bold text-slate-800 tracking-tight flex items-center gap-2">
-                <BookOpen className="w-5 h-5 text-[#0A192F]" /> Lesson Design Canvas
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">Combine core blocks and publish assessments for student access.</p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-lg font-bold text-slate-800 tracking-tight flex items-center gap-2">
+                  <BookOpen className="w-5 h-5 text-[#0A192F]" /> Lesson Design Canvas
+                </h3>
+                <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full ${isPublished ? "bg-emerald-100 text-emerald-800 border border-emerald-200" : "bg-slate-100 text-slate-600 border border-slate-200"}`}>
+                  {isPublished ? "Published" : "Draft"}
+                </span>
+
+                {/* Real-time Save status feedback label */}
+                <div className="text-[11px] font-medium flex items-center gap-1.5 transition-all">
+                  {saveStatus === "saving" && (
+                    <span className="text-blue-600 flex items-center gap-1"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving changes...</span>
+                  )}
+                  {saveStatus === "saved" && (
+                    <span className="text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Saved successfully!</span>
+                  )}
+                  {saveStatus === "error" && (
+                    <span className="text-red-650 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Save failed</span>
+                  )}
+                  {saveStatus === "clean" && isDirty && (
+                    <span className="text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5 animate-pulse" /> Unsaved changes</span>
+                  )}
+                  {saveStatus === "clean" && !isDirty && (
+                    <span className="text-slate-500 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> All changes saved</span>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Currently editing: <strong className="text-slate-700">{title || "New Lesson"}</strong>
+              </p>
             </div>
             <div className="flex flex-wrap gap-1.5 self-stretch sm:self-auto items-center">
               {/* Reset/Back button */}
               <button
-                onClick={() => setSelectedLesson(null)}
+                onClick={handleReturnToLibrary}
                 className="border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-semibold px-2.5 py-2 rounded transition cursor-pointer shadow-sm"
               >
                 ← Library
@@ -889,6 +1210,7 @@ export default function LessonsBuilder({
               {/* Save Draft button */}
               <button
                 onClick={handleSaveAsDraft}
+                disabled={saveStatus === "saving"}
                 className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
                 title="Saves this lesson draft"
               >
@@ -898,6 +1220,7 @@ export default function LessonsBuilder({
               {/* Publish Live button */}
               <button
                 onClick={handlePublishLive}
+                disabled={saveStatus === "saving"}
                 className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
                 title="Validates, publishes to students, and saves progress"
               >
@@ -907,6 +1230,7 @@ export default function LessonsBuilder({
               {/* Assign & Launch block */}
               <button
                 onClick={handleAssignAndLaunch}
+                disabled={saveStatus === "saving"}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
                 title="Saves lesson progress and opens assignment setup form"
               >
@@ -927,7 +1251,7 @@ export default function LessonsBuilder({
                 <button
                   type="button"
                   disabled
-                  className="bg-slate-100 text-slate-400 border border-slate-200 text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 cursor-not-allowed"
+                  className="bg-slate-105 text-slate-400 border border-slate-200 text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 cursor-not-allowed"
                   title="Save the lesson first to enable student preview"
                 >
                   Preview (save first)

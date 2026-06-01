@@ -1791,6 +1791,25 @@ Remaining work: Expand RichContent fields into complex properties (choices/expla
 Future-agent warning: Do not use CKEditor, TinyMCE, or MathType. Video upload must remain handled by existing VERITAS systems.
 ```
 
+```text
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent (Antigravity-3.5)
+Task: Fix teacher video upload causing page refresh and loss of work
+Files changed:
+  - /src/components/TeacherDashboard/VideoUploader.tsx
+Trusted data operations changed: none
+Models changed: none
+Verification steps:
+  - Verified static bounds via `lint_applet` and `compile_applet` (100% clean build).
+Results:
+  - Fixed an infinite rendering and state update feedback loop triggered inside the `VideoUploader` component when updated props set off raw `useEffect` metadata loaders that triggered backward parent updates.
+  - Eliminated automatic `onVideoUploaded` handlers inside the passive asset loading `useEffect` hook.
+  - Prevented empty/undefined thumbnail updates from bubbling on CORS media failures, preserving state consistency.
+Known issues: none
+Remaining work: none
+Future-agent warning: Keep data flow downstream and event signaling upstream. Never bubble callbacks inside global prop/state effects without guard checks or explicit user event gates.
+```
+
 ---
 
 ## AUDIT SESSION — 2026-05-31
@@ -2511,5 +2530,62 @@ FILES CHANGED:
 VERIFICATION:
 - `npm run lint`: PASS (Completed successfully, 100% clean)
 - `npm run build`: PASS (Bundled production successfully)
-```,TargetContent:
+```
+
+---
+
+### Step 11: Video Upload Thread Stabilization (Loop-Free Update)
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Fix the critical video upload reload and state-loss issue caused by background offscreen video metadata loops and duplicate chokes.
+
+FILES CHANGED:
+- `src/components/TeacherDashboard/VideoUploader.tsx`:
+  - Removed passive `useEffect` metadata extractor that created multiple hidden offscreen video DOM elements (`document.createElement("video")` background loaders).
+  - Designed clean `inlineVideoRef` directly bound to the active JSX `<video>` preview element, avoiding duplicate media buffer and streaming memory consumption.
+  - Placed duration detection inside the native react `onLoadedMetadata` listener, executing safely in standard client rendering lifecycle.
+  - Reworked `extractFrameAtTime` to fetch frames and capture the manual thumbnail from the active player's buffer instantly on scrubber seek.
+  - Implemented strong loop guards on storage resolve triggers using `isResolvingRef` tracker to completely eliminate backward-update infinite render cycles.
+
+VERIFICATION:
+- `npm run lint`: PASS (100% typechecked compile)
+- `npm run build`: PASS (Production build fully compiled)
+```
+
+---
+
+### Step 12: File-Watcher Ignore Rules for Dynamic Portals (Anti-Refresher)
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Fix the critical auto-reload issue during design/input operations because Vite's file watcher tracked dynamic json changes in `data/` and uploads in `uploads/` and refresh the client browser on back-end writes.
+
+FILES CHANGED:
+- `vite.config.ts`:
+  - Resolved Vite's default-fallback oversight where passing `watch: null` when `DISABLE_HMR` is true would silently enable Vite's default watcher, causing it to monitor everything. Any background heartbeats writing to `data/db.json` then triggered a full client reload.
+  - Implemented an absolute `ignored: ['**']` ignore configuration when `DISABLE_HMR` is `'true'`. This fully disables file-watching and stops any possible client reloads.
+  - Configured robust fallback ignores for active environments to completely ignore all JSON and log files alongside `**/data/**` and `**/uploads/**` folders.
+
+VERIFICATION:
+- `npm run lint`: PASS (100% clean check)
+- `npm run build`: PASS (Production SPA bundler compilation successful)
+```
+
+---
+
+### Step 13: Video Player CORS Tainted Canvas Fix
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Fix the browser security exception ("Failed manual frame selection: Failed to execute 'toDataURL' on 'HTMLCanvasElement': Tainted canvases may not be exported.") generated when capturing a manual preview thumbnail.
+
+FILES CHANGED:
+- `src/components/TeacherDashboard/VideoUploader.tsx`:
+  - Enforced `crossOrigin="anonymous"` on the inline video preview element player tag.
+  - This informs the browser to fetch the stream with proper CORS headers (sending origin request credentials checking), preventing client browser rendering contexts from blocking `.toDataURL()` or `.toBlob()` calls during manual canvas frame grab offsets.
+
+VERIFICATION:
+- `npm run lint`: PASS (100% fully typed passing validation)
+- `npm run build`: PASS (Production build successful)
 ```

@@ -109,6 +109,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
           onChange={(val) => patch({ stem: val })}
           mode="compact"
           placeholder="Enter the question students will see..."
+          documentKey={`qstem-${q.id || "new"}`}
         />
       </div>
 
@@ -175,6 +176,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
               onChange={(val) => patch({ explanation: val })}
               mode="compact"
               placeholder="Why is the correct answer correct?"
+              documentKey={`qexp-${q.id || "new"}`}
             />
           </div>
         </div>
@@ -187,17 +189,18 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
               onChange={(val) => patch({ studentInstructions: val })}
               mode="compact"
               placeholder="e.g. Respond in 3-5 sentences."
+              documentKey={`qinst-${q.id || "new"}`}
             />
           </div>
 
           <div>
             <label className={secretLabelCls}><Lock className="w-3 h-3" /> Model / Expected Answer (teacher-only)</label>
-            <RichContentEditor value={q.modelAnswer ?? ""} onChange={(val) => patch({ modelAnswer: val })} mode="compact" placeholder="A strong, full-credit answer." />
+            <RichContentEditor value={q.modelAnswer ?? ""} onChange={(val) => patch({ modelAnswer: val })} mode="compact" placeholder="A strong, full-credit answer." documentKey={`qmodel-${q.id || "new"}`} />
           </div>
 
           <div>
             <label className={secretLabelCls}><Lock className="w-3 h-3" /> Answer Key / AI Scoring Guidance (teacher-only)</label>
-            <RichContentEditor value={q.aiScoringGuidance ?? ""} onChange={(val) => patch({ aiScoringGuidance: val })} mode="compact" placeholder="Key points the AI grader should look for and how to weight them." />
+            <RichContentEditor value={q.aiScoringGuidance ?? ""} onChange={(val) => patch({ aiScoringGuidance: val })} mode="compact" placeholder="Key points the AI grader should look for and how to weight them." documentKey={`qscoring-${q.id || "new"}`} />
           </div>
 
           {/* Rubric categories */}
@@ -241,6 +244,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
                   onChange={(val) => updateRubric(r.id, { description: val })}
                   mode="compact"
                   placeholder="What earns credit in this category?"
+                  documentKey={`qrub-${r.id}`}
                 />
                 <div className="grid grid-cols-1 gap-1">
                   <input type="text" value={textOf(r.fullCreditExample)} onChange={(e) => updateRubric(r.id, { fullCreditExample: e.target.value })} placeholder="Full-credit example (optional)" className={inputCls} />
@@ -258,7 +262,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
 
           <div>
             <label className={secretLabelCls}><Lock className="w-3 h-3" /> Teacher Grading Notes (teacher-only)</label>
-            <RichContentEditor value={q.teacherNotes ?? ""} onChange={(val) => patch({ teacherNotes: val })} mode="compact" placeholder="Private notes for graders." />
+            <RichContentEditor value={q.teacherNotes ?? ""} onChange={(val) => patch({ teacherNotes: val })} mode="compact" placeholder="Private notes for graders." documentKey={`qnotes-${q.id || "new"}`} />
           </div>
         </div>
       )}
