@@ -110,15 +110,19 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setSubmittedLocal(localSub);
       setFeedbackState(localFeed);
 
-      // Restore SA drafts from localStorage
+      // Restore SA drafts — prefer server-persisted drafts (cross-device), fall back to localStorage.
+      const serverDrafts: Record<string, string> = data.attempt.draftResponses || {};
       const allAssignments = data.questionAssignments || data.assignments || [];
       allAssignments.forEach((asg: any) => {
         const q = asg.selectedQuestion;
         if (q?.type === "sa" && !localSub[q.id]) {
-          const draftKey = `veritas_draft_${data.attempt.id}_${q.id}`;
-          const saved = localStorage.getItem(draftKey);
-          if (saved) {
-            setSaText((prev: any) => ({ ...prev, [q.id]: saved }));
+          const serverDraft = serverDrafts[q.id];
+          const localDraft = (() => {
+            try { return localStorage.getItem(`veritas_draft_${data.attempt.id}_${q.id}`); } catch { return null; }
+          })();
+          const draft = serverDraft || localDraft;
+          if (draft) {
+            setSaText((prev: any) => ({ ...prev, [q.id]: draft }));
             setSaAutosave((prev: any) => ({ ...prev, [q.id]: "saved" }));
           }
         }
@@ -408,7 +412,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     }
   };
 
-  // SA draft autosave — debounced 800ms to localStorage
+  // SA draft autosave — debounced 800ms, persisted to server + localStorage fallback
   const handleSaChange = (questionId: string, value: string) => {
     setSaText((prev: any) => ({ ...prev, [questionId]: value }));
     setSaAutosave((prev: any) => ({ ...prev, [questionId]: "dirty" }));
@@ -416,10 +420,20 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     if (draftSaveTimers.current[questionId]) {
       clearTimeout(draftSaveTimers.current[questionId]);
     }
-    draftSaveTimers.current[questionId] = setTimeout(() => {
+    draftSaveTimers.current[questionId] = setTimeout(async () => {
       setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saving" }));
+      // Always write to localStorage as an immediate offline backup.
+      try { localStorage.setItem(`veritas_draft_${attemptId}_${questionId}`, value); } catch { /* ignore */ }
+      // Persist to server so drafts survive device changes.
       try {
-        localStorage.setItem(`veritas_draft_${attemptId}_${questionId}`, value);
+        const authHeader = await getAuthHeader();
+        if (authHeader.Authorization) {
+          await fetch(`/api/attempts/${attemptId}/draft`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeader },
+            body: JSON.stringify({ questionId, draftText: value }),
+          });
+        }
         setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saved" }));
       } catch {
         setSaAutosave((prev: any) => ({ ...prev, [questionId]: "error" }));
@@ -678,9 +692,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           <button
             onClick={onExit}
             className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 transition cursor-pointer"
+            title="Save progress and exit"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">Exit</span>
+            <span className="hidden sm:inline">Save and exit</span>
           </button>
 
           <div className="flex-1 min-w-0 text-center">
@@ -705,11 +720,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         </div>
       </header>
 
-      {/* Block content area */}
-      <div className="flex-1 flex flex-col max-w-5xl mx-auto w-full px-4 md:px-6 py-6 space-y-4">
+      {/* Block content area — full-width for video blocks, contained for reading/question */}
+      <div className={`flex-1 flex flex-col ${activeBlock?.type === "video" ? "w-full" : "max-w-5xl mx-auto w-full px-4 md:px-6 py-6 space-y-4"}`}>
 
         {activeBlock && (
-          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
+          <div className={`bg-white overflow-hidden flex-1 flex flex-col ${activeBlock.type === "video" ? "" : "border border-slate-200 rounded-lg shadow-sm"}`}>
 
             {/* Block header */}
             <div className="px-6 py-3 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/50">
@@ -735,16 +750,23 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
               </div>
             )}
 
-            {/* VIDEO BLOCK */}
+            {/* VIDEO BLOCK — full-width, video-first layout */}
             {activeBlock.type === "video" && (
-              <div className="flex-1 flex flex-col relative bg-black">
+              <div className="flex-1 flex flex-col relative bg-black" style={{ minHeight: 0 }}>
+                {/* Note: browser controls do not prevent media extraction; this is casual deterrence only. */}
                 <video
                   ref={videoRef}
                   src={resolvedVideoUrl || undefined}
                   controls
-                  controlsList="nodownload noremoteplayback"
+                  controlsList="nodownload noremoteplayback noplaybackrate"
+                  disablePictureInPicture
+                  playsInline
+                  preload="metadata"
+                  draggable={false}
+                  onContextMenu={(e) => e.preventDefault()}
                   onTimeUpdate={handleVideoTimeUpdate}
-                  className="w-full flex-1 max-h-[520px] object-contain"
+                  className="w-full object-contain bg-black"
+                  style={{ flex: 1, minHeight: 0, maxHeight: "calc(100vh - 160px)" }}
                 />
 
                 {/* Checkpoint overlay */}
@@ -1016,7 +1038,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             )}
 
             {/* Navigation footer */}
-            <div className="bg-slate-50 border-t border-slate-200 px-6 py-4 shrink-0">
+            <div className={`bg-slate-50 border-t border-slate-200 shrink-0 ${activeBlock.type === "video" ? "px-6 py-3" : "px-6 py-4"}`}>
               {navigationError && (
                 <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-sm text-amber-800">

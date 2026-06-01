@@ -53,9 +53,13 @@ service cloud.firestore {
       allow write: if isTeacher();
     }
 
-    // 4. Lesson Blocks — same access pattern as lessons
+    // 4. Lesson Blocks — teacher only.
+    // Students access lesson content through sanitized server routes (/api/lessons/:id),
+    // not via direct Firestore reads, so direct student access is intentionally denied.
+    // This prevents students from reading raw blocks containing answer keys, rubrics,
+    // model answers, and other teacher-only fields.
     match /blocks/{blockId} {
-      allow read: if isTeacher() || isSignedIn();
+      allow read: if isTeacher();
       allow write: if isTeacher();
     }
 

@@ -787,7 +787,7 @@ app.post("/api/lessons", requireTeacher, async (req, res) => {
 
     const newLesson = {
       id: "lesson_" + Math.random().toString(36).substring(2, 9),
-      title: title || "New Untitled AP Lesson",
+      title: title || "Untitled Lesson",
       description: description || "",
       courseId: courseId || "course_1",
       estimatedMinutes: Number(estimatedMinutes) || 30,
@@ -958,33 +958,80 @@ app.delete("/api/lessons/:id", requireTeacher, (req, res) => {
 // Lesson Assignments APIs
 // ==========================================
 
-// Fetch lesson assignments (All for teachers, only open for students)
+// Fetch lesson assignments (All for teachers; all for students with access metadata)
 app.get("/api/assignments", requireAuth, (req, res) => {
   const user = (req as any).user;
   const db = readDb();
-  const now = new Date().toISOString();
+  const nowDate = new Date();
+  const nowIso = nowDate.toISOString();
 
-  let list = db.lessonAssignments || [];
+  const list = db.lessonAssignments || [];
 
-  if (user.role === "student") {
-    // Show only open assignments (opensAt <= now <= closesAt) for students
-    list = list.filter((asg: any) => {
-      const opensAt = asg.opensAt || "";
-      const closesAt = asg.closesAt || "";
-      return opensAt <= now && now <= closesAt;
-    });
-  }
-
-  // Join lesson metadata dynamically
+  // Join lesson metadata and compute per-assignment access state for students.
+  // Teachers receive raw records; students receive all assignments so the dashboard
+  // can categorize them as upcoming / open / past-due / closed / completed.
+  //
+  // TODO: When a roster/enrollment model is implemented, filter list here
+  // to only assignments whose courseId the student is enrolled in.
   const enrichedList = list.map((asg: any) => {
     const lesson = db.lessons.find((l: any) => l.id === asg.lessonId);
-    return {
+
+    const base = {
       ...asg,
       lessonTitle: lesson ? lesson.title : "Unknown Lesson",
       lessonDescription: lesson ? lesson.description : "",
       lessonEstimatedMinutes: lesson ? lesson.estimatedMinutes : 30,
       lessonSettings: lesson ? lesson.settings : null,
       lessonIsPublished: lesson ? lesson.isPublished : false,
+    };
+
+    if (user.role !== "student") return base;
+
+    // Compute student-facing access metadata.
+    const opensAt = asg.opensAt ? new Date(asg.opensAt) : null;
+    const dueAt = asg.dueAt ? new Date(asg.dueAt) : null;
+    const closesAt = asg.closesAt ? new Date(asg.closesAt) : null;
+
+    const isUpcoming = opensAt !== null && nowDate < opensAt;
+    const isClosed = closesAt !== null && nowDate > closesAt;
+    const isPastDue = dueAt !== null && nowDate > dueAt;
+    const isCurrentlyOpen =
+      (opensAt === null || nowDate >= opensAt) &&
+      (closesAt === null || nowDate <= closesAt);
+
+    let accessState: string;
+    let canBegin = false;
+    let canResume = false;
+    let reason: string | undefined;
+
+    if (isUpcoming) {
+      accessState = "upcoming";
+      reason = "This assignment has not opened yet.";
+    } else if (isClosed) {
+      accessState = "closed";
+      reason = "This assignment is no longer accepting submissions.";
+    } else if (isCurrentlyOpen && isPastDue) {
+      accessState = "past_due";
+      canBegin = true;
+      canResume = true;
+    } else if (isCurrentlyOpen) {
+      accessState = "open";
+      canBegin = true;
+      canResume = true;
+    } else {
+      accessState = "open";
+      canBegin = true;
+      canResume = true;
+    }
+
+    return {
+      ...base,
+      accessState,
+      canBegin,
+      canResume,
+      canReview: false,
+      primaryAction: canResume ? "resume" : canBegin ? "begin" : "none",
+      ...(reason ? { reason } : {}),
     };
   });
 
@@ -1059,6 +1106,16 @@ app.delete("/api/assignments/:id", requireTeacher, async (req, res) => {
 // ==========================================
 // Student Progress and Player Execution APIs
 // ==========================================
+
+/**
+ * Return the canonical video duration in seconds for a block.
+ * Prefers `duration` (the current field); falls back to legacy `videoDuration`
+ * if present, so existing records that used the old field still enforce correctly.
+ */
+function getBlockDurationSeconds(block: any): number | null {
+  const d = block?.duration ?? block?.videoDuration;
+  return typeof d === "number" && d > 0 ? d : null;
+}
 
 /**
  * Build a single deterministic, student-safe question assignment.
@@ -1207,17 +1264,74 @@ app.post("/api/teacher/lessons/:lessonId/preview-attempt", requireTeacher, async
 app.post("/api/attempts", requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
-    const { lessonId } = req.body;
+    const { lessonId, assignmentId } = req.body;
     const db = readDb();
+    const nowIso = new Date().toISOString();
 
-    const lesson = db.lessons.find((l: any) => l.id === lessonId);
+    // --- Assignment-aware eligibility check ---
+    // Students must provide an assignmentId that references an open, published assignment.
+    // This prevents a student from starting an arbitrary published lesson by guessing a lessonId.
+    // TODO: When a roster/enrollment model is added, also verify the student is enrolled
+    // in the assignment's courseId before permitting access.
+    let resolvedLessonId: string = lessonId;
+    let resolvedAssignmentId: string | null = null;
+
+    if (user.role === "student") {
+      const lessonAssignments = db.lessonAssignments || [];
+
+      if (assignmentId) {
+        // Explicit assignment path: validate that the given assignment is valid for this student.
+        const asg = lessonAssignments.find((a: any) => a.id === assignmentId);
+        if (!asg) {
+          fail(res, "NOT_FOUND", "Assignment not found.");
+          return;
+        }
+        if (asg.opensAt && asg.opensAt > nowIso) {
+          fail(res, "FORBIDDEN", "This assignment has not opened yet.");
+          return;
+        }
+        if (asg.closesAt && asg.closesAt < nowIso) {
+          fail(res, "FORBIDDEN", "This assignment is no longer accepting submissions.");
+          return;
+        }
+        resolvedLessonId = asg.lessonId;
+        resolvedAssignmentId = asg.id;
+      } else {
+        // Legacy path: lessonId only — find the first open assignment for this lesson.
+        // Kept for backward compatibility; prefer passing assignmentId going forward.
+        const openAsg = lessonAssignments.find((a: any) => {
+          if (a.lessonId !== (lessonId || resolvedLessonId)) return false;
+          if (a.opensAt && a.opensAt > nowIso) return false;
+          if (a.closesAt && a.closesAt < nowIso) return false;
+          return true;
+        });
+        if (!openAsg) {
+          fail(res, "FORBIDDEN", "No open assignment found for this lesson. Begin from your assignment dashboard.");
+          return;
+        }
+        resolvedLessonId = openAsg.lessonId;
+        resolvedAssignmentId = openAsg.id;
+      }
+    } else {
+      // Teachers can create attempts by lessonId for administrative purposes.
+      resolvedLessonId = lessonId;
+      resolvedAssignmentId = assignmentId || null;
+    }
+
+    const lesson = db.lessons.find((l: any) => l.id === resolvedLessonId);
     if (!lesson) {
       fail(res, "NOT_FOUND", "Lesson not found.");
       return;
     }
 
-    // Handle existing incomplete attempt or check retake policy (ignore preview attempts)
-    const existingAttempts = db.attempts.filter((a: any) => a.lessonId === lessonId && a.studentId === user.id && !a.isPreviewAttempt);
+    // Handle existing incomplete attempt or check retake policy (ignore preview attempts).
+    // Match by assignmentId when available so a lesson reused across multiple assignments
+    // creates distinct attempt records.
+    const existingAttempts = db.attempts.filter((a: any) => {
+      if (a.studentId !== user.id || a.isPreviewAttempt) return false;
+      if (resolvedAssignmentId) return a.assignmentId === resolvedAssignmentId;
+      return a.lessonId === resolvedLessonId;
+    });
     const activeAttempt = existingAttempts.find((a: any) => a.status === "started");
 
     if (activeAttempt) {
@@ -1226,17 +1340,18 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
     }
 
     if (existingAttempts.length > 0 && !lesson.settings.allowRetakes && user.role !== "teacher") {
-      fail(res, "VALIDATION_ERROR", "Retakes are disabled for this lesson assessment.");
+      fail(res, "VALIDATION_ERROR", "Retakes are disabled for this assignment.");
       return;
     }
 
     const seed = Math.floor(Math.random() * 900000) + 100000;
     const newAttempt = {
       id: "attempt_" + Math.random().toString(36).substring(2, 9),
-      lessonId,
+      lessonId: resolvedLessonId,
+      assignmentId: resolvedAssignmentId,
       studentId: user.id,
       seed,
-      startedAt: new Date().toISOString(),
+      startedAt: nowIso,
       status: "started",
       currentBlockIndex: 0,
       furthestVideoTimestamps: {},
@@ -1249,7 +1364,7 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
     // Generate and lock deterministic, sanitized question assignments.
     const randFn = lcg(seed);
     const randomize = !!lesson.settings.randomizeChoices;
-    const lessonBlocks = db.blocks.filter((b: any) => b.lessonId === lessonId);
+    const lessonBlocks = db.blocks.filter((b: any) => b.lessonId === resolvedLessonId);
 
     lessonBlocks.forEach((block: any) => {
       if (block.type === "question") {
@@ -1533,9 +1648,11 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
           return;
         }
 
-        // 2. Check video watch milestone against actual video duration if known
-        if (lesson.settings.restrictSeeking && blockToCheck.videoDuration) {
-          const videoDuration = blockToCheck.videoDuration;
+        // 2. Check video watch milestone against actual video duration if known.
+        // Uses getBlockDurationSeconds() to prefer `duration` over the legacy `videoDuration` field.
+        const blockDuration = getBlockDurationSeconds(blockToCheck);
+        if (lesson.settings.restrictSeeking && blockDuration !== null) {
+          const videoDuration = blockDuration;
           const requiredSeconds = videoDuration * 0.9;
           const furthestWatch = attempt.furthestVideoTimestamps[blockToCheck.id] || 0;
 
@@ -1859,23 +1976,99 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
 
   db.securitySignals.push(signal);
 
-  // Auto-lock attempt when student exits fullscreen on a lesson that requires it
+  // Tiered violation response thresholds (named constants for clarity and easy tuning).
+  // Low severity: warn only. Moderate: flag for review. High: lock and require teacher approval.
+  const FULLSCREEN_REVIEW_THRESHOLD = 1;  // exits before securityReviewRequired is set
+  const FULLSCREEN_LOCK_THRESHOLD = 3;    // exits before hard lock (requires teacher unlock)
+  const BLUR_REVIEW_THRESHOLD = 4;        // repeated blur events (medium severity) before review flag
+
   let lockState: string | null = null;
-  if (eventType === "fullscreen_exited" && severity === "high" && attemptId) {
+  let securityReviewRequired: boolean | null = null;
+
+  if (attemptId) {
     const attemptIdx = db.attempts.findIndex((a: any) => a.id === attemptId);
     if (attemptIdx !== -1) {
       const attempt = db.attempts[attemptIdx];
       const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
-      if (lesson?.settings?.requireFullscreen && attempt.lockState !== "locked_awaiting_teacher") {
-        db.attempts[attemptIdx].lockState = "locked_awaiting_teacher";
-        db.attempts[attemptIdx].lockedAt = new Date().toISOString();
-        lockState = "locked_awaiting_teacher";
+
+      // --- Fullscreen exit: tiered response ---
+      if (eventType === "fullscreen_exited" && lesson?.settings?.requireFullscreen) {
+        // Count exits including the signal just pushed.
+        const exitCount = db.securitySignals.filter(
+          (s: any) => s.attemptId === attemptId && s.eventType === "fullscreen_exited"
+        ).length;
+
+        if (attempt.lockState !== "locked_awaiting_teacher") {
+          if (exitCount >= FULLSCREEN_LOCK_THRESHOLD) {
+            // Hard lock: student needs teacher approval to continue.
+            db.attempts[attemptIdx].lockState = "locked_awaiting_teacher";
+            db.attempts[attemptIdx].lockedAt = new Date().toISOString();
+            lockState = "locked_awaiting_teacher";
+          } else if (exitCount >= FULLSCREEN_REVIEW_THRESHOLD && !attempt.securityReviewRequired) {
+            // Soft flag: mark for teacher review without locking.
+            db.attempts[attemptIdx].securityReviewRequired = true;
+            db.attempts[attemptIdx].securityReviewAt = new Date().toISOString();
+            db.attempts[attemptIdx].securityReviewReason = `Fullscreen exited ${exitCount} time(s)`;
+            securityReviewRequired = true;
+          }
+        }
       }
+
+      // --- Repeated blur events at medium severity: flag for review ---
+      if (eventType === "blur_focus_lost" && severity === "medium" && !attempt.securityReviewRequired) {
+        const blurCount = db.securitySignals.filter(
+          (s: any) => s.attemptId === attemptId && s.eventType === "blur_focus_lost"
+        ).length;
+        if (blurCount >= BLUR_REVIEW_THRESHOLD) {
+          db.attempts[attemptIdx].securityReviewRequired = true;
+          db.attempts[attemptIdx].securityReviewAt = new Date().toISOString();
+          db.attempts[attemptIdx].securityReviewReason = "Repeated focus loss detected";
+          securityReviewRequired = true;
+        }
+      }
+
+      // Update last active timestamp on any integrity event.
+      db.attempts[attemptIdx].lastActiveAt = new Date().toISOString();
     }
   }
 
   writeDb(db);
-  res.json({ success: true, lockState });
+  res.json({ success: true, lockState, securityReviewRequired });
+});
+
+// Save SA draft response (server-side autosave without submitting).
+// Stores draftResponses[questionId] on the attempt so the student can resume
+// from any device without losing progress. localStorage is still used as a fallback.
+app.post("/api/attempts/:id/draft", requireAuth, (req, res) => {
+  const { id } = req.params;
+  const { questionId, draftText } = req.body;
+
+  if (!questionId || typeof draftText !== "string") {
+    res.status(400).json({ error: "questionId and draftText are required." });
+    return;
+  }
+
+  const db = readDb();
+  const attemptIdx = db.attempts.findIndex((a: any) => a.id === id);
+  if (attemptIdx === -1) {
+    res.status(404).json({ error: "Attempt not found." });
+    return;
+  }
+
+  const user = (req as any).user;
+  if (user?.role === "student" && db.attempts[attemptIdx].studentId !== user?.id) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
+  if (!db.attempts[attemptIdx].draftResponses) {
+    db.attempts[attemptIdx].draftResponses = {};
+  }
+  db.attempts[attemptIdx].draftResponses[questionId] = draftText;
+  db.attempts[attemptIdx].lastActiveAt = new Date().toISOString();
+
+  writeDb(db);
+  res.json({ success: true });
 });
 
 // Teacher: Unlock a locked student attempt

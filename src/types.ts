@@ -113,6 +113,8 @@ export interface LessonBlock {
 export interface LessonAttempt {
   id: string;
   lessonId: string;
+  /** The lesson assignment this attempt is tied to. Absent for legacy attempts created before assignment-awareness. */
+  assignmentId?: string | null;
   studentId: string;
   seed: number;
   startedAt: string;
@@ -126,6 +128,10 @@ export interface LessonAttempt {
   lockedAt?: string | null; // ISO timestamp when lock was set
   lastActiveAt?: string; // ISO timestamp of last activity
   securityReviewRequired?: boolean; // flagged for teacher review without full lockout
+  securityReviewReason?: string; // human-readable reason for the review flag
+  securityReviewAt?: string; // ISO timestamp when review flag was set
+  /** Server-persisted SA draft responses keyed by questionId. */
+  draftResponses?: { [questionId: string]: string };
   blockTimeSpent?: { [blockId: string]: number }; // blockId -> cumulative active seconds
   attemptMode?: "real" | "preview" | "test";
   isPreviewAttempt?: boolean;
@@ -239,6 +245,13 @@ export interface Assignment {
   lessonEstimatedMinutes?: number;
   lessonSettings?: any;
   lessonIsPublished?: boolean;
+  // Student-facing access metadata (server-computed for student role)
+  accessState?: 'upcoming' | 'open' | 'past_due' | 'closed';
+  canBegin?: boolean;
+  canResume?: boolean;
+  canReview?: boolean;
+  primaryAction?: 'begin' | 'resume' | 'review' | 'none';
+  reason?: string;
 }
 
 export interface RosterStudent {
