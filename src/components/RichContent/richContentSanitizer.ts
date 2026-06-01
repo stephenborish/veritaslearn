@@ -12,6 +12,7 @@ export const richContentSanitizer = (html: string): string => {
       "h1", "h2", "h3", "h4", "h5", "h6", "span", "br",
       "table", "tbody", "thead", "tr", "td", "th",
       "blockquote", "hr", "sup", "sub", "u", "s", "strike",
+      "img",
       // Our custom components/math:
       "math-field", "math", "mi", "mo", "mn", "ms", "mspace", "mtext", "menclose",
       "merror", "mfenced", "mfrac", "mpadded", "mphantom", "mroot",

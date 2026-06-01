@@ -20,8 +20,12 @@ import { $setBlocksType } from '@lexical/selection';
 import { $getNearestNodeOfType } from '@lexical/utils';
 import {
   Bold, Italic, Underline, Strikethrough, Superscript, Subscript, AlignLeft, AlignCenter, AlignRight, AlignJustify,
-  Undo, Redo, Heading1, Heading2, Heading3, Text, List, ListOrdered, Quote, Link as LinkIcon, Eraser, Sigma, FlaskConical
+  Undo, Redo, Heading1, Heading2, Heading3, Text, List, ListOrdered, Quote, Link as LinkIcon, Eraser, Sigma, FlaskConical,
+  Image as ImageIcon
 } from 'lucide-react';
+
+import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
+import { storage } from "../../lib/firebase";
 
 import { RichContent, RichContentEditorProps } from "./types";
 import { FormulaEditorModal } from "./FormulaEditorModal";
@@ -30,6 +34,7 @@ import { migrateToRichContent } from "./richContentMigration";
 import { richContentSanitizer } from "./richContentSanitizer";
 import { FormulaNode, $createFormulaNode } from "./FormulaNode";
 import { ChemistryNode, $createChemistryNode } from "./ChemistryNode";
+import { ImageNode, $createImageNode } from "./ImageNode";
 
 // ToolbarPlugin is stable at module level — no issue.
 const ToolbarPlugin = ({
@@ -44,6 +49,46 @@ const ToolbarPlugin = ({
   onOpenChem: () => void;
 }) => {
   const [editor] = useLexicalComposerContext();
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    try {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      const dotIndex = file.name.lastIndexOf(".");
+      const ext = dotIndex !== -1 ? file.name.slice(dotIndex) : "";
+      const base = dotIndex !== -1 ? file.name.slice(0, dotIndex).replace(/[^a-zA-Z0-9]/g, "_") : file.name.replace(/[^a-zA-Z0-9]/g, "_");
+      const filename = `${base}-${uniqueSuffix}${ext}`;
+      const fileStoragePath = `images/${filename}`;
+      const fileRef = ref(storage, fileStoragePath);
+
+      const uploadTask = await uploadBytesResumable(fileRef, file, {
+        contentType: file.type
+      });
+      const url = await getDownloadURL(uploadTask.ref);
+
+      editor.update(() => {
+        const selection = $getSelection();
+        const node = $createImageNode(url, file.name);
+        if (selection) {
+          $insertNodes([node]);
+        } else {
+          const root = $getRoot();
+          root.append(node);
+        }
+      });
+    } catch (error) {
+      console.error("Rich inline image upload failed:", error);
+      alert("Image upload failed: " + (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
   const [isBold, setIsBold] = useState(false);
   const [isItalic, setIsItalic] = useState(false);
   const [isUnderline, setIsUnderline] = useState(false);
@@ -163,6 +208,29 @@ const ToolbarPlugin = ({
       <Btn title="Numbered List" active={blockType === 'ol'} onClick={() => { blockType !== 'ol' ? editor.dispatchCommand(INSERT_ORDERED_LIST_COMMAND, undefined) : editor.dispatchCommand(REMOVE_LIST_COMMAND, undefined); }}><ListOrdered size={16} /></Btn>
       <Btn title="Quote" active={blockType === 'quote'} onClick={formatQuote}><Quote size={16} /></Btn>
       <Btn title="Link" onClick={insertLink}><LinkIcon size={16} /></Btn>
+      
+      {/* Hidden file selector for inline image upload */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleImageUpload}
+        accept="image/*"
+        className="hidden"
+      />
+      <button
+        type="button"
+        disabled={isUploading}
+        onClick={() => fileInputRef.current?.click()}
+        title="Upload Image Inline"
+        className={`p-1.5 rounded flex items-center justify-center transition-colors ${isUploading ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-100'} disabled:opacity-50`}
+      >
+        {isUploading ? (
+          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+        ) : (
+          <ImageIcon size={16} />
+        )}
+      </button>
+
       <div className="w-px h-5 bg-slate-300 mx-1"></div>
       <Btn title="Align Left" onClick={() => editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'left')}><AlignLeft size={16} /></Btn>
       <Btn title="Align Center" onClick={() => editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'center')}><AlignCenter size={16} /></Btn>
@@ -447,7 +515,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
         superscript: 'align-super text-xs',
       }
     },
-    nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode, AutoLinkNode, LinkNode, FormulaNode, ChemistryNode],
+    nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode, AutoLinkNode, LinkNode, FormulaNode, ChemistryNode, ImageNode],
     onError: (error: Error) => { console.error(error); },
     editable: !disabled,
     editorState: getInitialEditorState,

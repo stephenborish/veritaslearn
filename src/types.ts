@@ -93,6 +93,8 @@ export interface LessonBlock {
   // Video block specific properties
   videoUrl?: string; // Standard streaming link or clean URL
   thumbnailUrl?: string; // Opt-in generated course preview thumbnail
+  storagePath?: string; // Firebase Storage reference path for the video asset
+  duration?: number; // Video duration in seconds
   videoCheckpoints?: VideoCheckpoint[];
   // Reading block specific properties
   content?: string | RichContent; // Plain text or Markdown content
@@ -217,6 +219,23 @@ export interface Course {
   code: string;
 }
 
+export interface Assignment {
+  id: string;
+  lessonId: string;
+  courseId: string;
+  section: string;
+  opensAt: string;
+  dueAt: string;
+  closesAt: string;
+  createdAt: string;
+  // Dynamic joins loaded for frontend display convenience
+  lessonTitle?: string;
+  lessonDescription?: string | any;
+  lessonEstimatedMinutes?: number;
+  lessonSettings?: any;
+  lessonIsPublished?: boolean;
+}
+
 export interface RosterStudent {
   id: string;
   courseId: string;
@@ -234,4 +253,5 @@ export interface DatabaseSchema {
   responses: StudentResponse[];
   securitySignals: SecuritySignal[];
   aiGradingRecords: AIGradingRecord[];
+  lessonAssignments: Assignment[];
 }

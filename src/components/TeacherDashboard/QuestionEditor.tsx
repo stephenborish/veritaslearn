@@ -307,7 +307,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
               <RichContentRenderer content={q.stem ?? ""} />
             </div>
             {type === "sa" && q.studentInstructions && (
-              <div className="text-xs text-slate-600 italic">
+              <div className="text-xs text-slate-600 italic font-serif">
                 <RichContentRenderer content={q.studentInstructions} />
               </div>
             )}

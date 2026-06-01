@@ -7,6 +7,11 @@ import AIReview from "./components/TeacherDashboard/AIReview";
 import StudentDossierModal from "./components/TeacherDashboard/StudentDossierModal";
 import PracticeDashboard from "./components/StudentPortal/PracticeDashboard";
 import FocusedPlayer from "./components/StudentPortal/FocusedPlayer";
+import { 
+  LessonsBuilderSkeleton, 
+  GradebookSkeleton, 
+  AIReviewSkeleton 
+} from "./components/TeacherDashboard/SkeletonScreens";
 import { auth, onAuthStateChanged, signOut } from "./lib/firebase";
 
 import { 
@@ -23,9 +28,11 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [idToken, setIdToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isFetching, setIsFetching] = useState(false);
 
   // Curriculum data structures
   const [lessons, setLessons] = useState<any[]>([]);
+  const [assignments, setAssignments] = useState<any[]>([]);
   const [blocks, setBlocks] = useState<any[]>([]);
   const [students, setStudents] = useState<any[]>([]);
   const [attempts, setAttempts] = useState<any[]>([]);
@@ -46,6 +53,11 @@ export default function App() {
           const response = await fetch("/api/auth/me", {
             headers: { "Authorization": `Bearer ${token}` }
           });
+          const ct = response.headers.get("content-type");
+          if (!ct || !ct.includes("application/json")) {
+            console.warn("VERITAS Learn - Authentication service is warming up. Retrying...");
+            return;
+          }
           const data = await response.json();
           if (data.loggedIn) {
             setCurrentUser(data.user);
@@ -90,6 +102,7 @@ export default function App() {
   // Pull operational databases
   const fetchLmsPayload = async (user = currentUser, passedToken = idToken, forceRefresh = false) => {
     if (!user) return;
+    setIsFetching(true);
     try {
       let token = passedToken;
       if (auth.currentUser) {
@@ -111,11 +124,25 @@ export default function App() {
         return;
       }
       
+      const contentType = lessonsRes.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        console.warn("VERITAS Learn - Server is currently booting or unreachable. Retrying sync in 3s...");
+        setTimeout(() => fetchLmsPayload(user, passedToken, forceRefresh), 3000);
+        return;
+      }
+      
       if (!lessonsRes.ok) {
         throw new Error(`Operational database fetch failed with status ${lessonsRes.status}`);
       }
       const lessonsRaw = await lessonsRes.json();
       setLessons(lessonsRaw.lessons || []);
+
+      // Fetch Assignments
+      const assignmentsRes = await fetch("/api/assignments", { headers: authHeader });
+      if (assignmentsRes.ok) {
+        const assignmentsRaw = await assignmentsRes.json();
+        setAssignments(assignmentsRaw.assignments || []);
+      }
 
       // If teacher: Full class analytics payload
       if (user.role === "teacher") {
@@ -151,6 +178,8 @@ export default function App() {
       }
     } catch (error) {
       console.error("Payload extraction failed:", error);
+    } finally {
+      setIsFetching(false);
     }
   };
 
@@ -217,6 +246,42 @@ export default function App() {
       fetchLmsPayload(currentUser, token);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleSaveAssignment = async (payload: any) => {
+    const token = await getFreshToken();
+    if (!token) return;
+    try {
+      const res = await fetch("/api/assignments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        fetchLmsPayload(currentUser, token);
+      }
+    } catch (e) {
+      console.error("Failed to save assignment:", e);
+    }
+  };
+
+  const handleDeleteAssignment = async (id: string) => {
+    const token = await getFreshToken();
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/assignments/${id}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      if (res.ok) {
+        fetchLmsPayload(currentUser, token);
+      }
+    } catch (e) {
+      console.error("Failed to delete assignment:", e);
     }
   };
 
@@ -331,7 +396,7 @@ export default function App() {
         </nav>
         <div className="flex-1 overflow-y-auto">
           <PracticeDashboard 
-            lessons={lessons}
+            assignments={assignments}
             attempts={attempts}
             onStartAttempt={handleLaunchStudentPlayer}
             onLogout={handleLogout}
@@ -479,35 +544,50 @@ export default function App() {
               )}
 
               {activeTab === "builder" && (
-                <LessonsBuilder 
-                  lessons={lessons}
-                  blocks={blocks}
-                  onSaveLesson={handleSaveLessonCurriculum}
-                  onArchived={handleArchiveLesson}
-                />
+                isFetching && lessons.length === 0 ? (
+                  <LessonsBuilderSkeleton />
+                ) : (
+                  <LessonsBuilder 
+                    lessons={lessons}
+                    blocks={blocks}
+                    onSaveLesson={handleSaveLessonCurriculum}
+                    onArchived={handleArchiveLesson}
+                    assignments={assignments}
+                    onSaveAssignment={handleSaveAssignment}
+                    onDeleteAssignment={handleDeleteAssignment}
+                  />
+                )
               )}
 
               {activeTab === "gradebook" && (
-                <Gradebook
-                  students={students}
-                  lessons={lessons}
-                  attempts={attempts}
-                  responses={responses}
-                  blocks={blocks}
-                />
+                isFetching && (students.length === 0 || lessons.length === 0) ? (
+                  <GradebookSkeleton />
+                ) : (
+                  <Gradebook
+                    students={students}
+                    lessons={lessons}
+                    attempts={attempts}
+                    responses={responses}
+                    blocks={blocks}
+                  />
+                )
               )}
 
               {activeTab === "ai" && (
-                <AIReview
-                  students={students}
-                  lessons={lessons}
-                  blocks={blocks}
-                  attempts={attempts}
-                  responses={responses}
-                  signals={signals}
-                  onOverrideSave={handleOverrideScore}
-                  onOpenDossier={(studentId, lessonId) => setActiveDossier({ studentId, lessonId })}
-                />
+                isFetching && (responses.length === 0 || students.length === 0) ? (
+                  <AIReviewSkeleton />
+                ) : (
+                  <AIReview
+                    students={students}
+                    lessons={lessons}
+                    blocks={blocks}
+                    attempts={attempts}
+                    responses={responses}
+                    signals={signals}
+                    onOverrideSave={handleOverrideScore}
+                    onOpenDossier={(studentId, lessonId) => setActiveDossier({ studentId, lessonId })}
+                  />
+                )
               )}
             </div>
           </div>

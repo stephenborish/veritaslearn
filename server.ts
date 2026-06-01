@@ -7,6 +7,7 @@ import dns from "dns";
 import { initializeApp as initializeAdminApp } from "firebase-admin/app";
 import { getFirestore as getAdminFirestore } from "firebase-admin/firestore";
 import { getAuth as getAdminAuth } from "firebase-admin/auth";
+import { getStorage as getAdminStorage, getDownloadURL } from "firebase-admin/storage";
 import multer from "multer";
 import { appError, sendAppError, fail } from "./server/data/errors";
 import {
@@ -40,6 +41,7 @@ const DB_FILE = path.join(process.cwd(), "data", "db.json");
 const CONFIG_FILE = path.join(process.cwd(), "firebase-applet-config.json");
 
 let firestoreDb: any = null;
+let firebaseBucket: any = null;
 
 // Configurable domain and teacher allowlist from environment
 const ALLOWED_DOMAIN = (process.env.GOOGLE_ALLOWED_DOMAIN || "malvernprep.org").toLowerCase();
@@ -55,9 +57,12 @@ if (fs.existsSync(CONFIG_FILE)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
     const adminApp = initializeAdminApp({
       projectId: firebaseConfig.projectId,
+      storageBucket: firebaseConfig.storageBucket,
     });
     firestoreDb = getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
+    firebaseBucket = getAdminStorage(adminApp).bucket(firebaseConfig.storageBucket);
     console.log("VERITAS Learn - Firebase Firestore initialized with Admin SDK. DB id:", firebaseConfig.firestoreDatabaseId);
+    console.log("VERITAS Learn - Firebase Storage bucket initialized:", firebaseConfig.storageBucket);
   } catch (err) {
     console.error("VERITAS Learn - Failed to initialize Admin Firebase connection:", err);
   }
@@ -125,6 +130,7 @@ const DB_COLLECTIONS = [
   "responses",
   "securitySignals",
   "aiGradingRecords",
+  "lessonAssignments",
 ] as const;
 
 function emptyDb(): any {
@@ -587,18 +593,8 @@ const requireTeacher = async (req: express.Request, res: express.Response, next:
   next();
 };
 
-// Multer Storage Configuration for academic video uploads
-const uploadStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, UPLOADS_DIR);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    const ext = path.extname(file.originalname);
-    const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, "_");
-    cb(null, `${base}-${uniqueSuffix}${ext}`);
-  }
-});
+// Multer Storage Configuration for academic video uploads using Memory Storage for Firebase Storage direct stream
+const uploadStorage = multer.memoryStorage();
 
 const uploadVideo = multer({
   storage: uploadStorage,
@@ -613,21 +609,47 @@ const uploadVideo = multer({
   }
 });
 
-// Video Upload Route for block designer
-app.post("/api/video/upload", requireTeacher, uploadVideo.single("video"), (req, res) => {
+// Video Upload Route for block designer integrated with Firebase Storage
+app.post("/api/video/upload", requireTeacher, uploadVideo.single("video"), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "No video file was uploaded." });
     return;
   }
   
-  const videoUrl = `/uploads/${req.file.filename}`;
-  res.json({
-    success: true,
-    videoUrl,
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    size: req.file.size
-  });
+  try {
+    if (!firebaseBucket) {
+      res.status(500).json({ error: "Firebase Storage is not initialized." });
+      return;
+    }
+
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    const ext = path.extname(req.file.originalname);
+    const base = path.basename(req.file.originalname, ext).replace(/[^a-zA-Z0-9]/g, "_");
+    const filename = `${base}-${uniqueSuffix}${ext}`;
+    
+    const fileRef = firebaseBucket.file(`videos/${filename}`);
+    
+    await fileRef.save(req.file.buffer, {
+      metadata: {
+        contentType: req.file.mimetype,
+      },
+      resumable: false,
+    });
+    
+    const videoUrl = await getDownloadURL(fileRef);
+
+    res.json({
+      success: true,
+      videoUrl,
+      storagePath: `videos/${filename}`,
+      filename,
+      originalName: req.file.originalname,
+      size: req.file.size
+    });
+  } catch (err: any) {
+    console.error("Firebase Storage Upload Route Error:", err);
+    res.status(500).json({ error: err.message || "Failed to upload file to Firebase Storage." });
+  }
 });
 
 // ==========================================
@@ -784,19 +806,23 @@ app.post("/api/lessons", requireTeacher, async (req, res) => {
 
     if (Array.isArray(blocks)) {
       blocks.forEach((b: any, index: number) => {
+        const bType = b.type;
         const rawBlock = {
           id: b.id || "block_" + Math.random().toString(36).substring(2, 9),
           lessonId: newLesson.id,
           order: index + 1,
-          type: b.type,
+          type: bType,
           title: b.title || `Segment ${index + 1}`,
-          videoUrl: b.videoUrl || "",
-          videoCheckpoints: b.videoCheckpoints || [],
-          content: b.content || "",
-          questionType: b.questionType || "mc",
-          isPractice: b.isPractice ?? false,
-          questionPool: b.questionPool || null,
-          singleQuestion: b.singleQuestion || null
+          videoUrl: bType === "video" ? b.videoUrl : undefined,
+          thumbnailUrl: bType === "video" ? b.thumbnailUrl : undefined,
+          storagePath: bType === "video" ? b.storagePath : undefined,
+          duration: bType === "video" ? (b.duration !== undefined ? Number(b.duration) : undefined) : undefined,
+          videoCheckpoints: bType === "video" ? b.videoCheckpoints || [] : undefined,
+          content: bType === "reading" ? b.content : undefined,
+          questionType: bType === "question" ? b.questionType : undefined,
+          isPractice: bType === "question" ? b.isPractice : undefined,
+          questionPool: bType === "question" ? b.questionPool : undefined,
+          singleQuestion: bType === "question" ? b.singleQuestion : undefined
         };
         // Normalize embedded questions to the stable choice-id model before persisting.
         db.blocks.push(migrateBlock(rawBlock));
@@ -856,6 +882,9 @@ app.put("/api/lessons/:id", requireTeacher, async (req, res) => {
           type: bType,
           title: b.title || "Untitled block",
           videoUrl: bType === "video" ? b.videoUrl : undefined,
+          thumbnailUrl: bType === "video" ? b.thumbnailUrl : undefined,
+          storagePath: bType === "video" ? b.storagePath : undefined,
+          duration: bType === "video" ? (b.duration !== undefined ? Number(b.duration) : undefined) : undefined,
           videoCheckpoints: bType === "video" ? b.videoCheckpoints || [] : undefined,
           content: bType === "reading" ? b.content : undefined,
           questionType: bType === "question" ? b.questionType : undefined,
@@ -916,10 +945,115 @@ app.delete("/api/lessons/:id", requireTeacher, (req, res) => {
 
   db.lessons = db.lessons.filter((l: any) => l.id !== id);
   db.blocks = db.blocks.filter((b: any) => b.lessonId !== id);
+  if (db.lessonAssignments) {
+    db.lessonAssignments = db.lessonAssignments.filter((asg: any) => asg.lessonId !== id);
+  }
   // Keep attempts for record consistency unless necessary to delete
   writeDb(db);
 
   res.json({ success: true });
+});
+
+// ==========================================
+// Lesson Assignments APIs
+// ==========================================
+
+// Fetch lesson assignments (All for teachers, only open for students)
+app.get("/api/assignments", requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const db = readDb();
+  const now = new Date().toISOString();
+
+  let list = db.lessonAssignments || [];
+
+  if (user.role === "student") {
+    // Show only open assignments (opensAt <= now <= closesAt) for students
+    list = list.filter((asg: any) => {
+      const opensAt = asg.opensAt || "";
+      const closesAt = asg.closesAt || "";
+      return opensAt <= now && now <= closesAt;
+    });
+  }
+
+  // Join lesson metadata dynamically
+  const enrichedList = list.map((asg: any) => {
+    const lesson = db.lessons.find((l: any) => l.id === asg.lessonId);
+    return {
+      ...asg,
+      lessonTitle: lesson ? lesson.title : "Unknown Lesson",
+      lessonDescription: lesson ? lesson.description : "",
+      lessonEstimatedMinutes: lesson ? lesson.estimatedMinutes : 30,
+      lessonSettings: lesson ? lesson.settings : null,
+      lessonIsPublished: lesson ? lesson.isPublished : false,
+    };
+  });
+
+  res.json({ assignments: enrichedList });
+});
+
+// Teacher: Create a new lesson assignment
+app.post("/api/assignments", requireTeacher, async (req, res) => {
+  try {
+    const db = readDb();
+    const { lessonId, courseId, section, opensAt, dueAt, closesAt } = req.body;
+
+    if (!lessonId || !courseId || !opensAt || !dueAt || !closesAt) {
+      res.status(400).json({ error: "Missing required assignment parameters." });
+      return;
+    }
+
+    const lessonExists = db.lessons.some((l: any) => l.id === lessonId);
+    if (!lessonExists) {
+      res.status(404).json({ error: "Selected lesson not found." });
+      return;
+    }
+
+    const newAssignment = {
+      id: "asg_" + Math.random().toString(36).substring(2, 9),
+      lessonId,
+      courseId,
+      section: section || "All Sections",
+      opensAt,
+      dueAt,
+      closesAt,
+      createdAt: new Date().toISOString()
+    };
+
+    if (!db.lessonAssignments) {
+      db.lessonAssignments = [];
+    }
+    db.lessonAssignments.push(newAssignment);
+
+    await commitDb(db);
+    res.status(201).json({ success: true, assignment: newAssignment });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to create assignment." });
+  }
+});
+
+// Teacher: Delete an existing lesson assignment
+app.delete("/api/assignments/:id", requireTeacher, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = readDb();
+
+    if (!db.lessonAssignments) {
+      db.lessonAssignments = [];
+    }
+
+    const exists = db.lessonAssignments.some((asg: any) => asg.id === id);
+    if (!exists) {
+      res.status(404).json({ error: "Assignment not found." });
+      return;
+    }
+
+    db.lessonAssignments = db.lessonAssignments.filter((asg: any) => asg.id !== id);
+    await commitDb(db);
+
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete assignment." });
+  }
 });
 
 // ==========================================

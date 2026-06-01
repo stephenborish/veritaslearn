@@ -2,6 +2,7 @@ import { useState } from "react";
 import { MessageSquare, Check, RotateCcw, Award, AlertCircle, AlertTriangle, Clock, TrendingDown } from "lucide-react";
 import { motion } from "motion/react";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
+import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 
 type ReviewFilter = "all" | "grading" | "integrity" | "anomalies";
 
@@ -162,6 +163,22 @@ export default function AIReview({ students, lessons, blocks, attempts, response
             const isFailed = grading.status === "failed";
             const override = res.teacherOverride;
 
+            const block = blocks.find((b) => b.id === res.blockId);
+            const attempt = attempts.find((a) => a.id === res.attemptId);
+            const lesson = attempt ? lessons.find((l) => l.id === attempt.lessonId) : null;
+            
+            let question = null;
+            if (block) {
+              if (!res.checkpointId) {
+                question = block.singleQuestion || block.questionPool?.questions?.find((qu: any) => qu.id === res.questionId);
+              } else {
+                const ck = block.videoCheckpoints?.find((c: any) => c.id === res.checkpointId);
+                if (ck) {
+                  question = ck.singleQuestion || ck.questionPool?.questions?.find((qu: any) => qu.id === res.questionId);
+                }
+              }
+            }
+
             return (
               <motion.div
                 initial={{ opacity: 0, y: 5 }}
@@ -193,6 +210,29 @@ export default function AIReview({ students, lessons, blocks, attempts, response
 
                 <div className="p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
                   <div className="lg:col-span-7 space-y-4">
+                    <div>
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Academic Question / Prompt</span>
+                        {lesson && (
+                          <span className="text-[9px] font-mono text-slate-400 uppercase bg-slate-100 px-1.5 py-0.5 rounded">
+                            {lesson.title}
+                          </span>
+                        )}
+                      </div>
+                      <div className="p-4 bg-slate-50/50 border border-slate-200/60 rounded text-slate-800 font-serif text-sm leading-relaxed mb-4">
+                        {question ? (
+                          <RichContentRenderer content={question.stem} />
+                        ) : (
+                          <span className="italic text-slate-400">Written response prompt details not found.</span>
+                        )}
+                        {question?.studentInstructions && (
+                          <p className="text-[11px] text-slate-500 font-sans italic mt-2">
+                            Instructions: {question.studentInstructions}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
                     <div>
                       <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-widest font-mono">Student Response</span>
                       <div className="bg-slate-50 border border-slate-200 p-4 rounded font-serif text-sm leading-relaxed text-slate-800 shadow-inner">

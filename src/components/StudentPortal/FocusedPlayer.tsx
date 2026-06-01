@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { ShieldAlert, Play, EyeOff, Check, X, Expand, RefreshCw, AlertCircle, ArrowLeft, ChevronRight, Lock } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { auth } from "../../lib/firebase";
+import { auth, storage } from "../../lib/firebase";
+import { ref, getDownloadURL } from "firebase/storage";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 
 interface FocusedPlayerProps {
@@ -37,6 +38,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   // SA draft autosave
   const draftSaveTimers = useRef<{ [qId: string]: ReturnType<typeof setTimeout> }>({});
   const [draftSavedIndicator, setDraftSavedIndicator] = useState<{ [qId: string]: boolean }>({});
+  const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>("");
 
   // Active time-spent counters
   const activeTimeRef = useRef(0);
@@ -478,6 +480,29 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const activeBlock = blocks[currentBlockIndex];
   const assignedSet = assignments.filter((asg) => asg.blockId === activeBlock?.id);
 
+  // Dynamic resolution of video URL if storagePath exists
+  useEffect(() => {
+    if (activeBlock && activeBlock.type === "video") {
+      if (activeBlock.storagePath) {
+        const fileRef = ref(storage, activeBlock.storagePath);
+        getDownloadURL(fileRef)
+          .then((url) => {
+            setResolvedVideoUrl(url);
+          })
+          .catch((err) => {
+            console.warn("Student player: getDownloadURL failed, using videoUrl or guest link:", err);
+            setResolvedVideoUrl(activeBlock.videoUrl || `https://firebasestorage.googleapis.com/v1/b/gen-lang-client-0781925544.firebasestorage.app/o/${encodeURIComponent(activeBlock.storagePath)}?alt=media`);
+          });
+      } else if (activeBlock.videoUrl) {
+        setResolvedVideoUrl(activeBlock.videoUrl);
+      } else {
+        setResolvedVideoUrl("");
+      }
+    } else {
+      setResolvedVideoUrl("");
+    }
+  }, [activeBlock]);
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col md:flex-row relative overflow-hidden">
       
@@ -559,8 +584,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             {/* STAGE A: READING VIEWPORT */}
             {activeBlock.type === "reading" && (
               <div className="p-8 md:p-10 max-w-3xl mx-auto space-y-5 overflow-y-auto flex-1 select-text">
-                <h2 className="text-xl font-bold text-[#0A192F] tracking-tight leading-snug">{activeBlock.title}</h2>
-                <div className="border-t border-slate-100 pt-4 text-sm text-slate-600 leading-relaxed space-y-4">
+                <h2 className="text-2xl font-bold font-serif text-[#0A192F] tracking-tight leading-snug">{activeBlock.title}</h2>
+                <div className="border-t border-slate-100 pt-4 text-slate-800 font-serif text-base leading-relaxed space-y-4">
                   {/* Simplistic reading paragraphs */}
                   {activeBlock.content ? (
                     <RichContentRenderer content={activeBlock.content} />
@@ -576,7 +601,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
               <div className="flex-1 flex flex-col relative bg-black">
                 <video
                   ref={videoRef}
-                  src={activeBlock.videoUrl}
+                  src={resolvedVideoUrl}
                   controls
                   controlsList="nodownload noremoteplayback"
                   onTimeUpdate={handleVideoTimeUpdate}
@@ -605,7 +630,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
                             return (
                               <div key={q.id} className="space-y-2">
-                                <div className="text-xs text-slate-300 italic"><RichContentRenderer content={q.stem} /></div>
+                                <div className="text-sm text-slate-200 leading-relaxed font-serif italic">
+                                  <RichContentRenderer content={q.stem} />
+                                </div>
                                 
                                 {q.choices ? (
                                   <div className="grid grid-cols-1 gap-2">
@@ -631,7 +658,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                 ) : (
                                   <div className="space-y-1">
                                     <textarea
-                                      className="w-full text-xs text-slate-800 bg-white p-2.5 rounded focus:outline-none"
+                                      className="w-full text-sm text-slate-800 bg-white p-3 rounded focus:outline-none focus:bg-slate-50 transition-colors font-serif leading-relaxed"
                                       rows={3}
                                       value={saText[q.id] || ""}
                                       onChange={(e) => handleSaChange(q.id, e.target.value)}
@@ -694,7 +721,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
                   return (
                     <div key={asg.id} className="space-y-4">
-                      <div className="text-sm font-semibold text-slate-800 leading-relaxed"><RichContentRenderer content={q.stem} /></div>
+                      <div className="font-serif text-[15px] font-semibold text-slate-900 leading-relaxed"><RichContentRenderer content={q.stem} /></div>
 
                       {q.choices ? (
                         <div className="grid grid-cols-1 gap-2.5">
@@ -725,7 +752,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                             onChange={(e) => handleSaChange(q.id, e.target.value)}
                             rows={5}
                             placeholder="Compose your academic rationale here. Copying, pasting, and navigation out of focused screen is logged."
-                            className="w-full text-xs text-slate-800 bg-slate-50 border border-slate-200 rounded p-4 leading-relaxed focus:bg-white focus:outline-none focus:border-slate-400 transition-all font-mono"
+                            className="w-full text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded p-4 leading-relaxed focus:bg-white focus:outline-none focus:border-slate-400 transition-colors font-serif"
                           />
                           {!isSubmitted && draftSavedIndicator[q.id] && (
                             <span className="text-[9px] text-slate-400 font-mono uppercase tracking-wider">Draft saved</span>

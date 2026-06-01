@@ -49,7 +49,11 @@
         "lessonId": { "type": "string" },
         "order": { "type": "number" },
         "type": { "type": "string", "enum": ["video", "reading", "question"] },
-        "title": { "type": "string" }
+        "title": { "type": "string" },
+        "videoUrl": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "storagePath": { "type": "string" },
+        "duration": { "type": "number" }
       },
       "required": ["id", "lessonId", "order", "type", "title"]
     },
