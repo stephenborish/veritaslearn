@@ -1,23 +1,23 @@
 import { useState, type MouseEvent } from "react";
-import { 
-  Clock, 
-  CheckCircle2, 
-  Lock, 
-  Unlock, 
-  Users, 
-  AlertTriangle, 
-  HelpCircle, 
-  Eye, 
-  Monitor, 
-  List, 
-  Grid, 
-  Search, 
-  RotateCcw, 
-  UserX, 
-  ShieldCheck, 
-  ShieldAlert
+import {
+  Clock,
+  CheckCircle2,
+  Lock,
+  Unlock,
+  AlertTriangle,
+  Eye,
+  List,
+  Grid,
+  Search,
+  UserX,
+  Flag,
+  Circle,
+  Activity,
 } from "lucide-react";
 import { motion } from "motion/react";
+
+// Student is considered "active" if they had activity within this window
+const IDLE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 
 interface LiveMonitorProps {
   students: any[];
@@ -30,15 +30,15 @@ interface LiveMonitorProps {
   onUnlockStudent: (attemptId: string) => void;
 }
 
-export default function LiveMonitor({ 
-  students, 
-  attempts, 
-  responses, 
-  signals, 
-  lessons, 
-  blocks, 
-  onOpenDossier, 
-  onUnlockStudent 
+export default function LiveMonitor({
+  students,
+  attempts,
+  responses,
+  signals,
+  lessons,
+  blocks,
+  onOpenDossier,
+  onUnlockStudent,
 }: LiveMonitorProps) {
   const [selectedLessonId, setSelectedLessonId] = useState<string>("all");
   const [unlockingId, setUnlockingId] = useState<string | null>(null);
@@ -49,7 +49,6 @@ export default function LiveMonitor({
 
   const publishedLessons = lessons.filter((l) => l.isPublished);
 
-  // Dynamic max points calculator for a given lesson
   const calcMaxPoints = (lessonId: string): number => {
     const lessonBlocks = blocks.filter((b) => b.lessonId === lessonId);
     return lessonBlocks.reduce((sum: number, b: any) => {
@@ -63,89 +62,89 @@ export default function LiveMonitor({
     }, 0);
   };
 
-  // 1. Raw attempt candidates based on showPreviewAttempts configuration
-  const allFilteredAttemptsByPreview = showPreviewAttempts
-    ? attempts
-    : attempts.filter((a) => !a.isPreviewAttempt);
-
-  // 2. Filter attempts by selected lesson
-  const lessonFilteredAttempts = selectedLessonId === "all"
-    ? allFilteredAttemptsByPreview
-    : allFilteredAttemptsByPreview.filter((a) => a.lessonId === selectedLessonId);
-
-  // 3. Search and status helpers
-  const isAttemptActiveNow = (attempt: any) => {
+  // Status helpers
+  const isAttemptActive = (attempt: any): boolean => {
     if (attempt.status === "completed") return false;
     const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
     if (!lastActiveRaw) return false;
-    const lastActiveDate = new Date(lastActiveRaw);
-    const minutesAgo = Math.floor((Date.now() - lastActiveDate.getTime()) / 60000);
-    return minutesAgo <= 2;
+    return Date.now() - new Date(lastActiveRaw).getTime() <= IDLE_THRESHOLD_MS;
   };
 
-  const isAttemptIdle = (attempt: any) => {
+  const isAttemptIdle = (attempt: any): boolean => {
     if (attempt.status === "completed") return false;
     const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
     if (!lastActiveRaw) return true;
-    const lastActiveDate = new Date(lastActiveRaw);
-    const minutesAgo = Math.floor((Date.now() - lastActiveDate.getTime()) / 60000);
-    return minutesAgo > 2;
+    return Date.now() - new Date(lastActiveRaw).getTime() > IDLE_THRESHOLD_MS;
   };
 
-  const isAttemptLockedBlocked = (attempt: any) => {
-    return attempt.lockState === "locked_awaiting_teacher";
+  const isAttemptLocked = (attempt: any): boolean =>
+    attempt.lockState === "locked_awaiting_teacher";
+
+  const getAttemptSignalSummary = (attemptId: string) => {
+    const sSignals = signals.filter((s) => s.attemptId === attemptId);
+    const blurs = sSignals.filter(
+      (s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden"
+    ).length;
+    const fullscreenExits = sSignals.filter((s) => s.eventType === "fullscreen_exited").length;
+    const seekBlocks = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
+    const copyPastes = sSignals.filter(
+      (s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked"
+    ).length;
+    const total = blurs + fullscreenExits + seekBlocks + copyPastes;
+    const mostRecent = sSignals.sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    )[0];
+    return { total, blurs, fullscreenExits, seekBlocks, copyPastes, mostRecent };
   };
 
-  const isAttemptNeedsReview = (attempt: any) => {
-    const isLocked = isAttemptLockedBlocked(attempt);
-    if (isLocked) return true;
-
-    // Violations check
-    const sSignals = signals.filter((s) => s.attemptId === attempt.id);
-    const blurs = sSignals.filter((s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden").length;
-    const screens = sSignals.filter((s) => s.eventType === "fullscreen_exited").length;
-    const seekVio = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
-    const totalViolations = blurs + screens + seekVio;
-
-    if (totalViolations >= 3 || screens > 0 || seekVio > 0) return true;
-
-    // SA pending grading
+  const isAttemptNeedsReview = (attempt: any): boolean => {
+    if (isAttemptLocked(attempt)) return true;
+    const { total, fullscreenExits, seekBlocks } = getAttemptSignalSummary(attempt.id);
+    if (total >= 3 || fullscreenExits > 0 || seekBlocks > 0) return true;
     const sResponses = responses.filter((r) => r.attemptId === attempt.id);
-    const hasPendingGrading = sResponses.some(
-      (r) => r.type === "sa" && (!r.aiGrading || r.aiGrading.status === "pending" || r.aiGrading.status === "failed" || r.aiGrading.status === "needs_review")
+    return sResponses.some(
+      (r) =>
+        r.type === "sa" &&
+        (!r.aiGrading ||
+          r.aiGrading.status === "pending" ||
+          r.aiGrading.status === "failed" ||
+          r.aiGrading.status === "needs_review")
     );
-    if (hasPendingGrading) return true;
-
-    return false;
   };
 
-  // 4. Group "Not Started" students matching the selection scope
+  // Filter by preview preference
+  const allFilteredByPreview = showPreviewAttempts
+    ? attempts
+    : attempts.filter((a) => !a.isPreviewAttempt);
+
+  // Filter by selected lesson
+  const lessonFilteredAttempts =
+    selectedLessonId === "all"
+      ? allFilteredByPreview
+      : allFilteredByPreview.filter((a) => a.lessonId === selectedLessonId);
+
+  // "Not Started" students
   const studentsWithAttempt = new Set(
-    allFilteredAttemptsByPreview
-      .filter((a) => selectedLessonId === "all" ? true : a.lessonId === selectedLessonId)
+    allFilteredByPreview
+      .filter((a) => selectedLessonId === "all" || a.lessonId === selectedLessonId)
       .map((a) => a.studentId)
   );
-
   const rawNotStarted = students.filter((s) => !studentsWithAttempt.has(s.id));
 
-  // Counts for filters matching the current selected lesson scope
-  const totalAttemptsCount = lessonFilteredAttempts.length;
-  const activeCount = lessonFilteredAttempts.filter(isAttemptActiveNow).length;
+  // Counts
+  const activeCount = lessonFilteredAttempts.filter(isAttemptActive).length;
   const idleCount = lessonFilteredAttempts.filter(isAttemptIdle).length;
   const notStartedCount = rawNotStarted.length;
   const completedCount = lessonFilteredAttempts.filter((a) => a.status === "completed").length;
   const needsReviewCount = lessonFilteredAttempts.filter(isAttemptNeedsReview).length;
-  const lockedCount = lessonFilteredAttempts.filter(isAttemptLockedBlocked).length;
-  const grandTotalFilterCount = totalAttemptsCount + notStartedCount;
+  const lockedCount = lessonFilteredAttempts.filter(isAttemptLocked).length;
+  const grandTotal = lessonFilteredAttempts.length + notStartedCount;
 
-  // 5. Apply Search filter
+  // Search filter
   const searchFilteredAttempts = lessonFilteredAttempts.filter((attempt) => {
     let student = students.find((s) => s.id === attempt.studentId);
     if (!student && attempt.isPreviewAttempt) {
-      student = {
-        name: "Teacher Preview Student",
-        email: "teacher-preview@veritas.placeholder"
-      };
+      student = { name: "Teacher Preview", email: "preview@veritas.local" };
     }
     if (!student) return false;
     const term = searchTerm.toLowerCase().trim();
@@ -153,35 +152,51 @@ export default function LiveMonitor({
     return student.name.toLowerCase().includes(term) || student.email.toLowerCase().includes(term);
   });
 
-  const searchNotStartedStudents = rawNotStarted.filter((student) => {
+  const searchNotStarted = rawNotStarted.filter((student) => {
     const term = searchTerm.toLowerCase().trim();
     if (!term) return true;
     return student.name.toLowerCase().includes(term) || student.email.toLowerCase().includes(term);
   });
 
-  // 6. Apply Status Filter to attempts list
+  // Status filter
   let visibleAttempts = searchFilteredAttempts;
-  let showNotStartedUnderneath = statusFilter === "all" || statusFilter === "not_started";
+  let showNotStarted = statusFilter === "all" || statusFilter === "not_started";
 
   if (statusFilter === "active") {
-    visibleAttempts = searchFilteredAttempts.filter(isAttemptActiveNow);
-    showNotStartedUnderneath = false;
+    visibleAttempts = searchFilteredAttempts.filter(isAttemptActive);
+    showNotStarted = false;
   } else if (statusFilter === "idle") {
     visibleAttempts = searchFilteredAttempts.filter(isAttemptIdle);
-    showNotStartedUnderneath = false;
+    showNotStarted = false;
   } else if (statusFilter === "not_started") {
-    visibleAttempts = []; // only show searchNotStartedStudents
-    showNotStartedUnderneath = true;
+    visibleAttempts = [];
+    showNotStarted = true;
   } else if (statusFilter === "completed") {
     visibleAttempts = searchFilteredAttempts.filter((a) => a.status === "completed");
-    showNotStartedUnderneath = false;
+    showNotStarted = false;
   } else if (statusFilter === "needs_review") {
     visibleAttempts = searchFilteredAttempts.filter(isAttemptNeedsReview);
-    showNotStartedUnderneath = false;
+    showNotStarted = false;
   } else if (statusFilter === "locked") {
-    visibleAttempts = searchFilteredAttempts.filter(isAttemptLockedBlocked);
-    showNotStartedUnderneath = false;
+    visibleAttempts = searchFilteredAttempts.filter(isAttemptLocked);
+    showNotStarted = false;
   }
+
+  const sortAttempts = (list: any[]) =>
+    [...list].sort((a, b) => {
+      // Locked first
+      const lockA = isAttemptLocked(a) ? 2 : 0;
+      const lockB = isAttemptLocked(b) ? 2 : 0;
+      if (lockB !== lockA) return lockB - lockA;
+      // Needs review second
+      const revA = isAttemptNeedsReview(a) ? 1 : 0;
+      const revB = isAttemptNeedsReview(b) ? 1 : 0;
+      if (revB !== revA) return revB - revA;
+      // Active next
+      const actA = isAttemptActive(a) ? 1 : 0;
+      const actB = isAttemptActive(b) ? 1 : 0;
+      return actB - actA;
+    });
 
   const handleUnlock = async (e: MouseEvent, attemptId: string) => {
     e.stopPropagation();
@@ -193,25 +208,52 @@ export default function LiveMonitor({
     }
   };
 
+  const formatLastActive = (attempt: any): string => {
+    const raw = attempt.lastActiveAt || attempt.startedAt;
+    if (!raw) return "Unknown";
+    const date = new Date(raw);
+    const min = Math.floor((Date.now() - date.getTime()) / 60000);
+    if (min < 1) return "Active now";
+    if (min < 60) return `${min}m ago`;
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const formatDuration = (seconds: number): string => {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}m ${s}s`;
+  };
+
+  const signalEventLabel = (eventType: string): string => {
+    const labels: Record<string, string> = {
+      blur_focus_lost: "Focus lost",
+      visibility_hidden: "Tab hidden",
+      fullscreen_exited: "Fullscreen exit",
+      seek_attempt_blocked: "Seek blocked",
+      copy_blocked: "Copy blocked",
+      paste_blocked: "Paste blocked",
+      context_menu_blocked: "Right-click",
+      rapid_navigation: "Navigation skip",
+      checkpoint_triggered: "Checkpoint",
+    };
+    return labels[eventType] || eventType;
+  };
+
   return (
     <div className="space-y-5 font-sans">
-      {/* Search, Filter selection, and Layout switcher */}
+      {/* Filter/search toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm space-y-4">
-        {/* Row 1: Filters selector & Options */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono shrink-0">
-              Assigned Block:
+              Lesson:
             </label>
             <select
               value={selectedLessonId}
-              onChange={(e) => {
-                setSelectedLessonId(e.target.value);
-                setStatusFilter("all");
-              }}
-              className="text-xs border border-slate-250 rounded px-3 py-1.5 bg-white text-slate-800 font-bold focus:ring-0 focus:outline-none cursor-pointer max-w-xs transition hover:border-slate-300"
+              onChange={(e: any) => { setSelectedLessonId(e.target.value); setStatusFilter("all"); }}
+              className="text-xs border border-slate-200 rounded px-3 py-1.5 bg-white text-slate-800 font-semibold focus:outline-none cursor-pointer hover:border-slate-300 transition max-w-xs"
             >
-              <option value="all">All Lessons &amp; Activities</option>
+              <option value="all">All lessons</option>
               {publishedLessons.map((l) => (
                 <option key={l.id} value={l.id}>{l.title}</option>
               ))}
@@ -223,15 +265,15 @@ export default function LiveMonitor({
               </span>
               <input
                 type="text"
-                placeholder="Find student name..."
+                placeholder="Find student…"
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="text-xs pl-8 pr-3 py-1.5 border border-slate-250 rounded bg-white text-slate-800 font-medium placeholder:text-slate-400 focus:outline-none focus:border-slate-400 transition w-44 lg:w-56"
+                onChange={(e: any) => setSearchTerm(e.target.value)}
+                className="text-xs pl-8 pr-3 py-1.5 border border-slate-200 rounded bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-slate-400 transition w-44 lg:w-52"
               />
               {searchTerm && (
-                <button 
+                <button
                   onClick={() => setSearchTerm("")}
-                  className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600 font-bold text-[10px]"
+                  className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600"
                 >
                   ✕
                 </button>
@@ -240,29 +282,28 @@ export default function LiveMonitor({
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            {/* Show preview sandbox checkbox wrapper */}
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-800 cursor-pointer bg-slate-50 border border-slate-200 px-2.5 py-1.5 rounded select-none transition">
               <input
                 type="checkbox"
                 checked={showPreviewAttempts}
-                onChange={(e) => setShowPreviewAttempts(e.target.checked)}
+                onChange={(e: any) => setShowPreviewAttempts(e.target.checked)}
                 className="rounded text-indigo-600 focus:ring-0 cursor-pointer w-3.5 h-3.5"
               />
-              <span>Include preview test attempts</span>
+              <span>Show teacher previews</span>
             </label>
 
             <div className="flex bg-slate-100 rounded-sm p-0.5 border border-slate-200">
               <button
                 onClick={() => setLayoutMode("grid")}
                 className={`p-1 rounded-sm transition ${layoutMode === "grid" ? "bg-white text-slate-800 shadow-xs" : "text-slate-400 hover:text-slate-600"}`}
-                title="Grid Dashboard Cards"
+                title="Card view"
               >
                 <Grid className="w-4 h-4" />
               </button>
               <button
                 onClick={() => setLayoutMode("table")}
                 className={`p-1 rounded-sm transition ${layoutMode === "table" ? "bg-white text-slate-800 shadow-xs" : "text-slate-400 hover:text-slate-600"}`}
-                title="Dense Spreadsheet Row Table"
+                title="Table view"
               >
                 <List className="w-4 h-4" />
               </button>
@@ -270,45 +311,49 @@ export default function LiveMonitor({
           </div>
         </div>
 
-        {/* Row 2: Status tabs with dynamic counts */}
+        {/* Status filter tabs */}
         <div className="border-t border-slate-100 pt-3">
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+          <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {[
-              { id: "all", label: "All Candidates", count: grandTotalFilterCount, color: "slate" },
-              { id: "active", label: "Active Live", count: activeCount, color: "green" },
-              { id: "idle", label: "Idle / Offline", count: idleCount, color: "slate" },
-              { id: "not_started", label: "Not Started", count: notStartedCount, color: "slate" },
+              { id: "all", label: "All", count: grandTotal, color: "slate" },
+              { id: "active", label: "Active", count: activeCount, color: "green" },
+              { id: "idle", label: "Idle", count: idleCount, color: "slate" },
+              { id: "not_started", label: "Not started", count: notStartedCount, color: "slate" },
               { id: "completed", label: "Completed", count: completedCount, color: "blue" },
-              { id: "needs_review", label: "Needs Review", count: needsReviewCount, color: "amber" },
-              { id: "locked", label: "Locked Out", count: lockedCount, color: "red" },
+              { id: "needs_review", label: "Needs review", count: needsReviewCount, color: "amber" },
+              { id: "locked", label: "Locked", count: lockedCount, color: "red" },
             ].map((tab) => {
-              const active = statusFilter === tab.id;
-              
-              let badgeColor = "bg-slate-100 text-slate-600";
-              if (active) {
-                if (tab.color === "green") badgeColor = "bg-emerald-600 text-white";
-                else if (tab.color === "blue") badgeColor = "bg-indigo-600 text-white";
-                else if (tab.color === "amber") badgeColor = "bg-amber-500 text-slate-900 font-bold";
-                else if (tab.color === "red") badgeColor = "bg-red-600 text-white font-bold";
-                else badgeColor = "bg-slate-800 text-white";
-              } else {
-                if (tab.color === "green") badgeColor = "bg-emerald-50 text-emerald-700 font-bold group-hover:bg-emerald-100";
-                else if (tab.color === "amber" && tab.count > 0) badgeColor = "bg-amber-100 text-amber-800 font-bold border border-amber-200 animate-pulse";
-                else if (tab.color === "red" && tab.count > 0) badgeColor = "bg-red-100 text-red-700 font-bold border border-red-200 animate-bounce";
+              const isActive = statusFilter === tab.id;
+              const hasBadgeAlert = !isActive && (tab.color === "amber" || tab.color === "red") && tab.count > 0;
+
+              let badgeCls = "bg-slate-100 text-slate-500";
+              if (isActive) {
+                if (tab.color === "green") badgeCls = "bg-emerald-600 text-white";
+                else if (tab.color === "blue") badgeCls = "bg-indigo-600 text-white";
+                else if (tab.color === "amber") badgeCls = "bg-amber-500 text-slate-900";
+                else if (tab.color === "red") badgeCls = "bg-red-600 text-white";
+                else badgeCls = "bg-slate-800 text-white";
+              } else if (hasBadgeAlert) {
+                badgeCls =
+                  tab.color === "amber"
+                    ? "bg-amber-100 text-amber-800 border border-amber-200"
+                    : "bg-red-100 text-red-700 border border-red-200";
+              } else if (!isActive && tab.color === "green") {
+                badgeCls = "bg-emerald-50 text-emerald-700";
               }
 
               return (
                 <button
                   key={tab.id}
                   onClick={() => setStatusFilter(tab.id)}
-                  className={`group flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold whitespace-nowrap transition cursor-pointer select-none ${
-                    active 
-                      ? "bg-slate-100 text-slate-900 border border-slate-350"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold whitespace-nowrap transition cursor-pointer select-none ${
+                    isActive
+                      ? "bg-slate-100 text-slate-900 border border-slate-300"
                       : "text-slate-500 border border-transparent hover:bg-slate-50 hover:text-slate-800"
                   }`}
                 >
                   <span>{tab.label}</span>
-                  <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-full ${badgeColor} transition-colors`}>
+                  <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded-full ${badgeCls}`}>
                     {tab.count}
                   </span>
                 </button>
@@ -318,494 +363,366 @@ export default function LiveMonitor({
         </div>
       </div>
 
-      {/* Main activities layout */}
-      {visibleAttempts.length === 0 && (!showNotStartedUnderneath || searchNotStartedStudents.length === 0) ? (
-        <div className="text-center py-12 bg-white border border-slate-200 rounded-lg text-slate-400 shadow-sm space-y-2">
+      {/* Empty state */}
+      {visibleAttempts.length === 0 && (!showNotStarted || searchNotStarted.length === 0) ? (
+        <div className="text-center py-14 bg-white border border-slate-200 rounded-lg text-slate-400 shadow-sm space-y-2">
           <UserX className="w-8 h-8 mx-auto text-slate-300" />
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">No candidates active under this query</p>
-          <p className="text-[11px] text-slate-400 font-normal">Try clearing search parameters, incorporating sandbox attempts, or updating the state category.</p>
+          <p className="text-xs font-semibold text-slate-500">No students match this filter</p>
+          <p className="text-[11px] text-slate-400">Try adjusting the lesson, status, or search.</p>
         </div>
       ) : (
         <div className="space-y-6">
           {/* GRID CARD LAYOUT */}
           {layoutMode === "grid" && visibleAttempts.length > 0 && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {visibleAttempts
-                .sort((a, b) => {
-                  // Put locked first
-                  const lockA = isAttemptLockedBlocked(a) ? 1 : 0;
-                  const lockB = isAttemptLockedBlocked(b) ? 1 : 0;
-                  if (lockB !== lockA) return lockB - lockA;
+              {sortAttempts(visibleAttempts).map((latestAttempt) => {
+                let student = students.find((s) => s.id === latestAttempt.studentId);
+                if (!student && latestAttempt.isPreviewAttempt) {
+                  student = { id: latestAttempt.studentId, name: "Teacher Preview", email: "preview@veritas.local", role: "student" };
+                }
+                if (!student) return null;
 
-                  // Active next
-                  const actA = isAttemptActiveNow(a) ? 1 : 0;
-                  const actB = isAttemptActiveNow(b) ? 1 : 0;
-                  return actB - actA;
-                })
-                .map((latestAttempt) => {
-                  let student = students.find((s) => s.id === latestAttempt.studentId);
-                  if (!student && latestAttempt.isPreviewAttempt) {
-                    student = {
-                      id: latestAttempt.studentId,
-                      name: "Teacher Preview Student",
-                      email: "teacher-preview@veritas.placeholder",
-                      role: "student"
-                    };
-                  }
-                  if (!student) return null;
+                const sLesson = lessons.find((l) => l.id === latestAttempt.lessonId);
+                const lessonBlocks = blocks.filter((b) => b.lessonId === latestAttempt.lessonId).sort((a: any, b: any) => a.order - b.order);
+                const sResponses = responses.filter((r) => r.attemptId === latestAttempt.id);
+                const signals_ = getAttemptSignalSummary(latestAttempt.id);
 
-                  const sLesson = lessons.find((l) => l.id === latestAttempt.lessonId);
-                  const lessonBlocks = blocks
-                    .filter((b) => b.lessonId === latestAttempt.lessonId)
-                    .sort((a: any, b: any) => a.order - b.order);
-                  const sSignals = signals.filter((s) => s.attemptId === latestAttempt.id);
-                  const sResponses = responses.filter((r) => r.attemptId === latestAttempt.id);
+                const isLocked = isAttemptLocked(latestAttempt);
+                const isCompleted = latestAttempt.status === "completed";
+                const isActive = isAttemptActive(latestAttempt);
+                const needsReview = isAttemptNeedsReview(latestAttempt);
+                const blockCount = Math.max(lessonBlocks.length, 1);
+                const progressPct = isCompleted
+                  ? 100
+                  : Math.round((latestAttempt.currentBlockIndex / blockCount) * 100);
+                const currentBlock = lessonBlocks[latestAttempt.currentBlockIndex];
+                const currentBlockName = currentBlock
+                  ? currentBlock.title
+                  : `Segment ${latestAttempt.currentBlockIndex + 1}`;
+                const maxPoints = calcMaxPoints(latestAttempt.lessonId);
+                const earnedPoints = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
+                const hasPendingGrading = sResponses.some(
+                  (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
+                );
 
-                  // Quantify blur focus events
-                  const blurs = sSignals.filter((s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden").length;
-                  const screens = sSignals.filter((s) => s.eventType === "fullscreen_exited").length;
-                  const copyPastes = sSignals.filter((s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked").length;
-                  const seekVio = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
-                  const totalViolations = blurs + screens + copyPastes + seekVio;
+                const statusLabel = isLocked
+                  ? "Locked"
+                  : isCompleted
+                  ? "Completed"
+                  : isActive
+                  ? "Active"
+                  : "Idle";
 
-                  const isLocked = isAttemptLockedBlocked(latestAttempt);
-                  const isCompleted = latestAttempt.status === "completed";
-                  const isActiveNow = isAttemptActiveNow(latestAttempt);
+                const statusBadgeCls = isLocked
+                  ? "bg-red-50 text-red-700 border-red-200"
+                  : isCompleted
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : isActive
+                  ? "bg-green-50 text-green-700 border-green-200"
+                  : "bg-slate-100 text-slate-500 border-slate-200";
 
-                  let blockCount = Math.max(lessonBlocks.length, 1);
-                  let progressPercent = isCompleted
-                    ? 100
-                    : Math.round((latestAttempt.currentBlockIndex / blockCount) * 100);
-
-                  const currentBlock = lessonBlocks[latestAttempt.currentBlockIndex];
-                  const currentBlockName = currentBlock
-                    ? currentBlock.title
-                    : `Segment ${latestAttempt.currentBlockIndex + 1}`;
-
-                  const lastActiveRaw = latestAttempt.lastActiveAt || latestAttempt.startedAt;
-                  const lastActiveDate = new Date(lastActiveRaw || Date.now());
-                  const minutesAgo = Math.floor((Date.now() - lastActiveDate.getTime()) / 60000);
-                  const lastActiveDisplay = minutesAgo < 1 
-                    ? "Active now" 
-                    : minutesAgo < 60 
-                      ? `${minutesAgo}m ago` 
-                      : lastActiveDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-                  // Points calculation
-                  const maxLessonPoints = calcMaxPoints(latestAttempt.lessonId);
-                  const earnedPoints = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
-                  const hasShortAnswerPending = sResponses.some(
-                    (r) => r.type === "sa" && (!r.aiGrading || r.aiGrading.status === "pending" || r.aiGrading.status === "failed" || r.aiGrading.status === "needs_review")
-                  );
-
-                  // Highlight actionable alerts
-                  let riskDescription = "";
-                  if (isLocked) {
-                    riskDescription = "Classroom lockout activated. Exceeded blur thresholds.";
-                  } else if (screens > 0) {
-                    riskDescription = "Integrity warning: Left authorized fullscreen mode.";
-                  } else if (seekVio > 0) {
-                    riskDescription = "Integrity warning: Seeking timeline was blocked.";
-                  } else if (blurs >= 3) {
-                    riskDescription = `${blurs} tab switching/blur alerts recorded.`;
-                  } else if (hasShortAnswerPending && isCompleted) {
-                    riskDescription = "Response submitted. Short essay awaiting evaluation.";
-                  }
-
-                  return (
-                    <motion.div
-                      initial={{ opacity: 0.96 }}
-                      animate={{ opacity: 1 }}
-                      whileHover={{ y: -1 }}
-                      key={latestAttempt.id}
-                      onClick={() => onOpenDossier(student.id, latestAttempt.lessonId)}
-                      className={`bg-white border rounded-lg p-4 shadow-xs hover:shadow transition flex flex-col justify-between min-h-[220px] cursor-pointer group relative ${
-                        isLocked
-                          ? "border-amber-300 ring-2 ring-amber-100 bg-amber-50/50"
-                          : isAttemptNeedsReview(latestAttempt)
-                            ? "border-amber-200 hover:border-amber-300 bg-[#FCFBF8]"
-                            : "border-slate-205 hover:border-slate-300"
-                      }`}
-                    >
-                      {/* Top profile segment */}
-                      <div className="space-y-3">
-                        <div className="flex justify-between items-start gap-2">
-                          <div className="space-y-0.5">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              {/* Pulse heartbeat element */}
-                              {isCompleted ? (
-                                <span className="w-2.5 h-2.5 rounded-full bg-slate-300 select-none block shrink-0" title="Completed Assignment"></span>
-                              ) : isActiveNow ? (
-                                <span className="relative flex h-2.5 w-2.5 shrink-0" title="Pulse Heartbeat Active">
-                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                                </span>
-                              ) : (
-                                <span className="w-2.5 h-2.5 rounded-full bg-slate-250 select-none block shrink-0" title="Offline / Idle"></span>
-                              )}
-                              <h4 className="text-sm font-bold text-slate-900 truncate max-w-[170px] leading-tight">
-                                {student.name}
-                              </h4>
-                              {latestAttempt.isPreviewAttempt && (
-                                <span className="bg-amber-100 text-amber-800 text-[8px] font-mono font-bold px-1 py-0.5 rounded tracking-wider uppercase scale-90">
-                                  TEST
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[10px] font-mono text-slate-400 truncate max-w-[190px]">
-                              {student.email}
-                            </p>
-                          </div>
-
-                          <span className={`text-[8px] font-mono font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-sm shrink-0 border ${
-                            isLocked
-                              ? "bg-red-50 text-red-700 border-red-200 font-extrabold"
-                              : isAttemptNeedsReview(latestAttempt)
-                                ? "bg-amber-50 text-amber-800 border-amber-200 font-bold"
-                                : isCompleted
-                                  ? "bg-green-50 text-green-700 border-green-200"
-                                  : "bg-blue-50 text-blue-700 border-blue-200"
-                          }`}>
-                            {isLocked ? "LOCKOUT" : isCompleted ? "COMPLETED" : isAttemptNeedsReview(latestAttempt) ? "REVIEWS NEEDED" : "IN PROGRESS"}
-                          </span>
+                return (
+                  <motion.div
+                    key={latestAttempt.id}
+                    initial={{ opacity: 0.96 }}
+                    animate={{ opacity: 1 }}
+                    whileHover={{ y: -1 }}
+                    onClick={() => onOpenDossier(student.id, latestAttempt.lessonId)}
+                    className={`bg-white border rounded-lg p-4 shadow-xs hover:shadow transition flex flex-col gap-3 cursor-pointer group relative ${
+                      isLocked
+                        ? "border-amber-300 ring-1 ring-amber-100 bg-amber-50/30"
+                        : needsReview
+                        ? "border-amber-200 bg-[#FCFBF8] hover:border-amber-300"
+                        : "border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
+                    {/* Header */}
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          {/* Presence indicator */}
+                          {isCompleted ? (
+                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 block shrink-0" />
+                          ) : isActive ? (
+                            <span className="relative flex h-2.5 w-2.5 shrink-0">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                            </span>
+                          ) : (
+                            <span className="w-2.5 h-2.5 rounded-full bg-slate-300 block shrink-0" />
+                          )}
+                          <h4 className="text-sm font-bold text-slate-900 truncate">{student.name}</h4>
+                          {latestAttempt.isPreviewAttempt && (
+                            <span className="bg-amber-100 text-amber-800 text-[8px] font-mono font-bold px-1 py-0.5 rounded uppercase shrink-0">
+                              Preview
+                            </span>
+                          )}
                         </div>
-
-                        {/* Middle: Progress bar based on actual blocks layout */}
-                        <div>
-                          <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-                            <div 
-                              className={`h-full rounded-full transition-all ${
-                                isLocked 
-                                  ? "bg-red-500" 
-                                  : isCompleted 
-                                    ? "bg-emerald-500" 
-                                    : "bg-[#0A192F]"
-                              }`} 
-                              style={{ width: `${progressPercent}%` }}
-                            ></div>
-                          </div>
-                          <div className="flex justify-between items-center text-[10px] text-slate-500 font-bold mt-1.5">
-                            <span>{progressPercent}% PROGRESS</span>
-                            {/* Current Block positional denominator limit */}
-                            <span className="truncate max-w-[120px] text-right text-slate-400 font-normal" title={currentBlockName}>
-                              {isCompleted ? "Completed" : `${currentBlockName} (${latestAttempt.currentBlockIndex + 1}/${blockCount})`}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Diagnostics grid */}
-                        <div className="grid grid-cols-2 gap-2 bg-slate-50 border border-slate-150 p-2.5 rounded-md text-[11px] font-medium text-slate-600">
-                          <div className="space-y-0.5">
-                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">Duration</span>
-                            <span className="font-mono text-slate-800 flex items-center gap-1 font-semibold">
-                              <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                              {Math.floor(latestAttempt.activeTimeSpent / 60)}m {latestAttempt.activeTimeSpent % 60}s
-                            </span>
-                          </div>
-                          
-                          <div className="space-y-0.5">
-                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">Responses</span>
-                            <span className="text-slate-800 font-bold">
-                              {sResponses.length} submitted
-                            </span>
-                          </div>
-
-                          <div className="space-y-0.5">
-                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">Score Summary</span>
-                            <span className="text-slate-800 font-semibold font-mono">
-                              {earnedPoints} / {maxLessonPoints} pts
-                              {hasShortAnswerPending && (
-                                <span className="text-amber-600 text-[8.5px] block font-sans font-bold leading-tight">* SA review pending</span>
-                              )}
-                            </span>
-                          </div>
-
-                          <div className="space-y-0.5">
-                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block">Active Monitor</span>
-                            <span className={`text-[10px] font-semibold ${totalViolations > 0 ? "text-amber-700 font-bold" : "text-slate-600"}`}>
-                              {totalViolations > 0 
-                                ? `${totalViolations} focus exits` 
-                                : "Secure State"}
-                            </span>
-                          </div>
-                        </div>
-
-                        {sLesson && selectedLessonId === "all" && (
-                          <div className="text-[10px] text-slate-400 font-medium truncate flex items-center gap-1 border-t border-slate-100 pt-1.5">
-                            <span>Activity:</span>
-                            <strong className="text-slate-600 truncate">{sLesson.title}</strong>
-                          </div>
-                        )}
+                        <p className="text-[10px] text-slate-400 font-mono truncate">{student.email}</p>
                       </div>
 
-                      {/* Footer warning & Action */}
-                      <div className="mt-4 pt-2.5 border-t border-slate-100 space-y-2">
-                        {riskDescription && (
-                          <div className={`p-1.5 rounded text-[10px] flex items-center gap-1.5 font-bold ${
-                            isLocked 
-                              ? "bg-red-50 text-red-700 border border-red-200" 
-                              : isAttemptNeedsReview(latestAttempt) 
-                                ? "bg-amber-50 text-amber-700 border border-amber-200" 
-                                : "bg-slate-100 text-slate-600"
-                          }`}>
-                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                            <span className="truncate">{riskDescription}</span>
-                          </div>
-                        )}
+                      <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-sm shrink-0 border ${statusBadgeCls}`}>
+                        {statusLabel}
+                      </span>
+                    </div>
 
-                        <div className="flex justify-between items-center">
-                          <span className="text-[9.5px] text-slate-400 font-semibold">
-                            Last active: <span className="font-mono font-bold text-slate-500">{lastActiveDisplay}</span>
-                          </span>
-
-                          <div className="flex gap-1.5 shrink-0">
-                            {isLocked && (
-                              <button
-                                onClick={(e) => handleUnlock(e, latestAttempt.id)}
-                                disabled={unlockingId === latestAttempt.id}
-                                className="text-[9px] font-extrabold bg-[#E5B53B] hover:bg-amber-500 disabled:bg-slate-200 text-[#0A192F] px-2.5 py-1 rounded transition uppercase tracking-wider flex items-center gap-1 shadow-xs cursor-pointer border border-amber-400"
-                              >
-                                <Unlock className="w-2.5 h-2.5" />
-                                {unlockingId === latestAttempt.id ? "Unlocking" : "Unlock Student"}
-                              </button>
-                            )}
-
-                            <button
-                              type="button"
-                              className="text-[9px] font-bold border border-slate-250 text-slate-700 bg-white hover:bg-slate-50 px-2 py-1 rounded transition uppercase tracking-wider group-hover:border-slate-400 shadow-xs"
-                            >
-                              Open Dossier &rarr;
-                            </button>
-                          </div>
-                        </div>
+                    {/* Progress */}
+                    <div>
+                      <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${
+                            isLocked ? "bg-red-400" : isCompleted ? "bg-emerald-500" : "bg-[#0A192F]"
+                          }`}
+                          style={{ width: `${progressPct}%` }}
+                        />
                       </div>
-                    </motion.div>
-                  );
-                })}
+                      <div className="flex justify-between text-[10px] text-slate-500 mt-1.5">
+                        <span className="font-bold">{progressPct}%</span>
+                        <span className="truncate max-w-[140px] text-right text-slate-400">
+                          {isCompleted ? "Completed" : `${currentBlockName} (${latestAttempt.currentBlockIndex + 1}/${blockCount})`}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Stats grid */}
+                    <div className="grid grid-cols-2 gap-2 bg-slate-50 border border-slate-100 p-2.5 rounded-md text-[11px]">
+                      <div>
+                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Time active</span>
+                        <span className="font-mono text-slate-700 font-semibold flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                          {formatDuration(latestAttempt.activeTimeSpent || 0)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Responses</span>
+                        <span className="text-slate-700 font-bold">{sResponses.length}</span>
+                      </div>
+                      <div>
+                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Score</span>
+                        <span className="text-slate-700 font-mono font-semibold">
+                          {earnedPoints}/{maxPoints} pts
+                          {hasPendingGrading && (
+                            <span className="text-amber-600 text-[8px] block font-sans font-bold">SA pending</span>
+                          )}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Security signals</span>
+                        <span className={`font-semibold ${signals_.total > 0 ? "text-amber-700" : "text-slate-500"}`}>
+                          {signals_.total === 0 ? "None" : `${signals_.total} events`}
+                          {signals_.fullscreenExits > 0 && (
+                            <span className="text-[8px] text-red-600 block font-bold">{signals_.fullscreenExits} fullscreen exit{signals_.fullscreenExits !== 1 ? "s" : ""}</span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Lesson name (when "all lessons" view) */}
+                    {sLesson && selectedLessonId === "all" && (
+                      <p className="text-[10px] text-slate-400 truncate border-t border-slate-100 pt-1.5">
+                        <span className="text-slate-500">Lesson:</span> <strong className="text-slate-600">{sLesson.title}</strong>
+                      </p>
+                    )}
+
+                    {/* Footer */}
+                    <div className="pt-2 border-t border-slate-100 flex justify-between items-center">
+                      <span className="text-[10px] text-slate-400">
+                        Last active: <span className="font-mono font-semibold text-slate-500">{formatLastActive(latestAttempt)}</span>
+                      </span>
+                      <div className="flex gap-1.5">
+                        {isLocked && (
+                          <button
+                            onClick={(e: MouseEvent) => handleUnlock(e, latestAttempt.id)}
+                            disabled={unlockingId === latestAttempt.id}
+                            className="text-[9px] font-bold bg-[#E5B53B] hover:bg-amber-400 disabled:bg-slate-200 text-[#0A192F] px-2.5 py-1 rounded transition uppercase tracking-wider flex items-center gap-1 shadow-xs cursor-pointer border border-amber-400"
+                          >
+                            <Unlock className="w-2.5 h-2.5" />
+                            {unlockingId === latestAttempt.id ? "Unlocking…" : "Unlock"}
+                          </button>
+                        )}
+                        {needsReview && !isLocked && (
+                          <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded flex items-center gap-1">
+                            <Flag className="w-2.5 h-2.5" /> Review
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="text-[9px] font-semibold border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 px-2 py-1 rounded transition uppercase tracking-wider cursor-pointer shadow-xs"
+                        >
+                          View &rarr;
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
             </div>
           )}
 
-          {/* DENSE SPREADSHEET ROW TABLE LAYOUT */}
+          {/* TABLE LAYOUT */}
           {layoutMode === "table" && visibleAttempts.length > 0 && (
             <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm">
-              <div className="overflow-x-auto w-full">
+              <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-mono text-[9px] tracking-widest uppercase">
-                      <th className="py-3 px-4 font-bold">Status</th>
-                      <th className="py-3 px-4 font-bold">Student Name &amp; Email</th>
-                      <th className="py-3 px-4 font-bold">Assigned Activity</th>
-                      <th className="py-3 px-4 font-bold">Progress (Blocks)</th>
-                      <th className="py-3 px-4 font-bold">Current Position</th>
-                      <th className="py-3 px-4 font-bold">Diagnostics Telemetry</th>
-                      <th className="py-3 px-4 font-bold">Score Check</th>
-                      <th className="py-3 px-4 font-bold">Auditor Warnings / Actions</th>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4">Student</th>
+                      <th className="py-3 px-4">Lesson</th>
+                      <th className="py-3 px-4">Progress</th>
+                      <th className="py-3 px-4">Position</th>
+                      <th className="py-3 px-4">Time / Responses</th>
+                      <th className="py-3 px-4">Score</th>
+                      <th className="py-3 px-4">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 hover:bg-slate-50/20 text-slate-800">
-                    {visibleAttempts
-                      .sort((a, b) => {
-                        const lockA = isAttemptLockedBlocked(a) ? 1 : 0;
-                        const lockB = isAttemptLockedBlocked(b) ? 1 : 0;
-                        if (lockB !== lockA) return lockB - lockA;
-                        const actA = isAttemptActiveNow(a) ? 1 : 0;
-                        const actB = isAttemptActiveNow(b) ? 1 : 0;
-                        return actB - actA;
-                      })
-                      .map((attempt) => {
-                        let student = students.find((s) => s.id === attempt.studentId);
-                        if (!student && attempt.isPreviewAttempt) {
-                          student = {
-                            id: attempt.studentId,
-                            name: "Teacher Preview Student",
-                            email: "teacher-preview@veritas.placeholder"
-                          };
-                        }
-                        if (!student) return null;
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {sortAttempts(visibleAttempts).map((attempt) => {
+                      let student = students.find((s) => s.id === attempt.studentId);
+                      if (!student && attempt.isPreviewAttempt) {
+                        student = { id: attempt.studentId, name: "Teacher Preview", email: "preview@veritas.local" };
+                      }
+                      if (!student) return null;
 
-                        const sLesson = lessons.find((l) => l.id === attempt.lessonId);
-                        const lessonBlocks = blocks
-                          .filter((b) => b.lessonId === attempt.lessonId)
-                          .sort((a: any, b: any) => a.order - b.order);
-                        const sSignals = signals.filter((s) => s.attemptId === attempt.id);
-                        const sResponses = responses.filter((r) => r.attemptId === attempt.id);
+                      const sLesson = lessons.find((l) => l.id === attempt.lessonId);
+                      const lessonBlocks = blocks.filter((b) => b.lessonId === attempt.lessonId).sort((a: any, b: any) => a.order - b.order);
+                      const sResponses = responses.filter((r) => r.attemptId === attempt.id);
+                      const signals_ = getAttemptSignalSummary(attempt.id);
 
-                        const blurs = sSignals.filter((s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden").length;
-                        const screens = sSignals.filter((s) => s.eventType === "fullscreen_exited").length;
-                        const copyPastes = sSignals.filter((s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked").length;
-                        const seekVio = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
-                        const totalViolations = blurs + screens + copyPastes + seekVio;
+                      const isLocked = isAttemptLocked(attempt);
+                      const isCompleted = attempt.status === "completed";
+                      const isActive = isAttemptActive(attempt);
+                      const needsReview = isAttemptNeedsReview(attempt);
+                      const blockCount = Math.max(lessonBlocks.length, 1);
+                      const progressPct = isCompleted ? 100 : Math.round((attempt.currentBlockIndex / blockCount) * 100);
+                      const currentBlock = lessonBlocks[attempt.currentBlockIndex];
+                      const currentBlockName = currentBlock ? currentBlock.title : `Segment ${attempt.currentBlockIndex + 1}`;
+                      const maxPoints = calcMaxPoints(attempt.lessonId);
+                      const earnedPoints = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
+                      const hasPendingGrading = sResponses.some(
+                        (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
+                      );
 
-                        const isLocked = isAttemptLockedBlocked(attempt);
-                        const isCompleted = attempt.status === "completed";
-                        const isActiveNow = isAttemptActiveNow(attempt);
-
-                        let blockCount = Math.max(lessonBlocks.length, 1);
-                        let progressPercent = isCompleted
-                          ? 100
-                          : Math.round((attempt.currentBlockIndex / blockCount) * 100);
-
-                        const currentBlock = lessonBlocks[attempt.currentBlockIndex];
-                        const currentBlockName = currentBlock ? currentBlock.title : `Segment ${attempt.currentBlockIndex + 1}`;
-
-                        // Score summaries
-                        const maxLessonPoints = calcMaxPoints(attempt.lessonId);
-                        const earnedPoints = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
-                        const hasShortAnswerPending = sResponses.some(
-                          (r) => r.type === "sa" && (!r.aiGrading || r.aiGrading.status === "pending" || r.aiGrading.status === "failed" || r.aiGrading.status === "needs_review")
-                        );
-
-                        const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
-                        const lastActiveDate = new Date(lastActiveRaw || Date.now());
-                        const minutesAgo = Math.floor((Date.now() - lastActiveDate.getTime()) / 60000);
-                        const lastActiveDisplay = minutesAgo < 1 
-                          ? "Active" 
-                          : `${minutesAgo}m ago`;
-
-                        return (
-                          <tr 
-                            key={attempt.id} 
-                            onClick={() => onOpenDossier(student.id, attempt.lessonId)}
-                            className={`hover:bg-slate-50 transition cursor-pointer ${isLocked ? "bg-red-50/20" : attempt.isPreviewAttempt ? "bg-amber-50/10" : ""}`}
-                          >
-                            {/* Col 0: Status Circle dot indicator */}
-                            <td className="py-2.5 px-4 whitespace-nowrap">
-                              <div className="flex items-center gap-1.5">
-                                {isCompleted ? (
-                                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 block shrink-0" title="Completed"></span>
-                                ) : isActiveNow ? (
-                                  <span className="relative flex h-2.5 w-2.5 shrink-0" title="Active">
-                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                                  </span>
-                                ) : (
-                                  <span className="w-2.5 h-2.5 rounded-full bg-slate-300 block shrink-0" title="Idle"></span>
-                                )}
-                                <span className="font-semibold text-[10px] text-slate-500 uppercase tracking-tight">
-                                  {isCompleted ? "Done" : isActiveNow ? "Live" : `Idle (${lastActiveDisplay})`}
+                      return (
+                        <tr
+                          key={attempt.id}
+                          onClick={() => onOpenDossier(student.id, attempt.lessonId)}
+                          className={`hover:bg-slate-50 transition cursor-pointer ${isLocked ? "bg-red-50/20" : attempt.isPreviewAttempt ? "bg-amber-50/10" : ""}`}
+                        >
+                          <td className="py-2.5 px-4 whitespace-nowrap">
+                            <div className="flex items-center gap-1.5">
+                              {isCompleted ? (
+                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 block" />
+                              ) : isActive ? (
+                                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
                                 </span>
-                              </div>
-                            </td>
-
-                            {/* Col 1: Student detail */}
-                            <td className="py-2.5 px-4 font-sans font-bold text-slate-900 whitespace-nowrap">
-                              <div className="flex items-center gap-1 truncate max-w-[170px]">
-                                <span>{student.name}</span>
-                                {attempt.isPreviewAttempt && (
-                                  <span className="bg-amber-100 text-amber-800 text-[8px] px-1 py-0.5 rounded font-mono font-bold uppercase shrink-0">TEST</span>
-                                )}
-                              </div>
-                              <span className="text-[9px] font-mono text-slate-400 block font-normal">{student.email}</span>
-                            </td>
-
-                            {/* Col 2: Activity Title */}
-                            <td className="py-2.5 px-4 text-slate-600 whitespace-nowrap font-medium">
-                              <span className="truncate max-w-[140px] block" title={sLesson?.title || "Summer Lesson"}>
-                                {sLesson?.title || "Assigned Block"}
-                              </span>
-                            </td>
-
-                            {/* Col 3: Real progress bars */}
-                            <td className="py-2.5 px-4 whitespace-nowrap min-w-[110px]">
-                              <div className="flex items-center gap-2">
-                                <div className="h-2 w-14 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                                  <div 
-                                    className={`h-full rounded-full ${isLocked ? "bg-red-500" : isCompleted ? "bg-emerald-500" : "bg-indigo-600"}`}
-                                    style={{ width: `${progressPercent}%` }}
-                                  ></div>
-                                </div>
-                                <span className="font-bold text-[10.5px] font-mono">{progressPercent}%</span>
-                              </div>
-                            </td>
-
-                            {/* Col 4: Current position segment */}
-                            <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">
-                              <span className="truncate max-w-[150px] block" title={currentBlockName}>
-                                {isCompleted ? "Completed" : `${currentBlockName} (${attempt.currentBlockIndex + 1}/${blockCount})`}
-                              </span>
-                            </td>
-
-                            {/* Col 5: Duration / Submissions / Focus Exits */}
-                            <td className="py-1.5 px-4 text-slate-600 whitespace-nowrap space-y-0.5 font-medium">
-                              <div className="flex items-center gap-1.5 text-[10px]">
-                                <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                                <span className="font-mono text-slate-700">{Math.floor(attempt.activeTimeSpent / 60)}m {attempt.activeTimeSpent % 60}s</span>
-                              </div>
-                              <div className="text-[10px] text-slate-400">
-                                {sResponses.length} answers &bull; {totalViolations} focus exits
-                              </div>
-                            </td>
-
-                            {/* Col 6: Score Summary */}
-                            <td className="py-2.5 px-4 whitespace-nowrap font-bold text-slate-800">
-                              <div className="font-mono text-[11px]">
-                                {earnedPoints} / {maxLessonPoints} pts
-                              </div>
-                              {hasShortAnswerPending && (
-                                <span className="text-[8.5px] text-amber-600 font-sans block leading-tight font-extrabold">* essay pending</span>
+                              ) : (
+                                <span className="w-2.5 h-2.5 rounded-full bg-slate-300 block" />
                               )}
-                            </td>
-
-                            {/* Col 7: Actions warnings */}
-                            <td className="py-1.5 px-4 whitespace-nowrap">
-                              <div className="flex items-center gap-1.5">
-                                {isLocked ? (
-                                  <button
-                                    onClick={(e) => handleUnlock(e, attempt.id)}
-                                    disabled={unlockingId === attempt.id}
-                                    className="text-[9px] font-extrabold bg-[#E5B53B] hover:bg-amber-500 text-[#0A192F] px-2.5 py-1 rounded transition uppercase tracking-wider flex items-center gap-1 cursor-pointer border border-amber-400"
-                                  >
-                                    <Unlock className="w-3 h-3" />
-                                    {unlockingId === attempt.id ? "Unlocking..." : "Click to Unlock"}
-                                  </button>
-                                ) : isAttemptNeedsReview(attempt) ? (
-                                  <div className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-100 px-2 py-0.5 rounded flex items-center gap-1">
-                                    <AlertTriangle className="w-3 h-3" />
-                                    <span>{hasShortAnswerPending ? "Review Pending" : "Focus Incidents"}</span>
-                                  </div>
-                                ) : (
-                                  <div className="text-[10px] text-emerald-600 font-bold flex items-center gap-1">
-                                    <CheckCircle2 className="w-3 h-3 shrink-0" />
-                                    <span>Secure</span>
-                                  </div>
-                                )}
+                              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-tight">
+                                {isCompleted ? "Done" : isActive ? "Active" : `Idle (${formatLastActive(attempt)})`}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-4 whitespace-nowrap">
+                            <div className="font-bold text-slate-900 flex items-center gap-1">
+                              {student.name}
+                              {attempt.isPreviewAttempt && (
+                                <span className="bg-amber-100 text-amber-800 text-[8px] px-1 py-0.5 rounded font-mono font-bold uppercase shrink-0">Preview</span>
+                              )}
+                            </div>
+                            <span className="text-[9px] font-mono text-slate-400 block">{student.email}</span>
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-600 font-medium whitespace-nowrap">
+                            <span className="truncate max-w-[130px] block">{sLesson?.title || "—"}</span>
+                          </td>
+                          <td className="py-2.5 px-4 whitespace-nowrap min-w-[100px]">
+                            <div className="flex items-center gap-2">
+                              <div className="h-2 w-12 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                                <div
+                                  className={`h-full rounded-full ${isLocked ? "bg-red-400" : isCompleted ? "bg-emerald-500" : "bg-indigo-600"}`}
+                                  style={{ width: `${progressPct}%` }}
+                                />
                               </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                              <span className="font-bold text-[10px] font-mono">{progressPct}%</span>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">
+                            <span className="truncate max-w-[140px] block text-[11px]">
+                              {isCompleted ? "Completed" : `${currentBlockName} (${attempt.currentBlockIndex + 1}/${blockCount})`}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-4 whitespace-nowrap">
+                            <div className="flex items-center gap-1.5 text-[10px] text-slate-600">
+                              <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="font-mono">{formatDuration(attempt.activeTimeSpent || 0)}</span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">
+                              {sResponses.length} responses &bull; {signals_.total} signals
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-4 whitespace-nowrap font-bold text-slate-800">
+                            <div className="font-mono text-[11px]">{earnedPoints}/{maxPoints} pts</div>
+                            {hasPendingGrading && (
+                              <span className="text-[9px] text-amber-600 font-bold block">SA pending</span>
+                            )}
+                          </td>
+                          <td className="py-1.5 px-4 whitespace-nowrap">
+                            <div className="flex items-center gap-1.5">
+                              {isLocked ? (
+                                <button
+                                  onClick={(e: MouseEvent) => handleUnlock(e, attempt.id)}
+                                  disabled={unlockingId === attempt.id}
+                                  className="text-[9px] font-bold bg-[#E5B53B] hover:bg-amber-400 text-[#0A192F] px-2.5 py-1 rounded transition uppercase tracking-wider flex items-center gap-1 cursor-pointer border border-amber-400"
+                                >
+                                  <Unlock className="w-3 h-3" />
+                                  {unlockingId === attempt.id ? "Unlocking…" : "Unlock"}
+                                </button>
+                              ) : needsReview ? (
+                                <div className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3" />
+                                  {hasPendingGrading ? "Grade pending" : "Review signals"}
+                                </div>
+                              ) : (
+                                <div className="text-[9px] text-emerald-600 font-bold flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  Clear
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
 
-          {/* NOT STARTED ROSTERS SECTION */}
-          {showNotStartedUnderneath && searchNotStartedStudents.length > 0 && (
-            <div className="space-y-3 pt-2">
+          {/* NOT STARTED */}
+          {showNotStarted && searchNotStarted.length > 0 && (
+            <div className="space-y-3">
               <div className="flex items-center gap-2 border-b border-dashed border-slate-200 pb-2">
-                <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-slate-400">Rosters Not Active / Idle ({searchNotStartedStudents.length})</span>
-                <span className="text-[10px] text-slate-400 italic">No attempt recorded in chosen query bounds</span>
+                <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-slate-400">
+                  Not started ({searchNotStarted.length})
+                </span>
+                <span className="text-[10px] text-slate-400 italic">No attempt recorded yet</span>
               </div>
-
               <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {searchNotStartedStudents.map((student) => (
+                {searchNotStarted.map((student) => (
                   <div
                     key={student.id}
-                    className="bg-[#FAFAFA] border border-slate-200/80 hover:border-slate-300 rounded p-3 flex items-start gap-2.5 justify-between select-none transition"
+                    className="bg-white border border-slate-200 hover:border-slate-300 rounded-lg p-3 flex items-center justify-between gap-2 transition select-none"
                   >
-                    <div className="space-y-1">
-                      <div className="font-bold text-slate-800 text-[12px] flex items-center gap-1.5 leading-snug">
-                        {student.name}
-                        {student.isPreview && (
-                          <span className="bg-amber-100 text-amber-800 text-[8px] font-mono font-bold px-1 py-0.5 rounded uppercase">Preview</span>
-                        )}
-                      </div>
-                      <div className="text-[10px] font-mono text-slate-400">{student.isPreview ? "Local Simulation Student" : student.email}</div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-slate-800 text-[12px] truncate">{student.name}</div>
+                      <div className="text-[10px] font-mono text-slate-400 truncate">{student.email}</div>
                     </div>
-                    
                     <span className="text-[8px] font-mono font-bold uppercase tracking-widest bg-slate-100 border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded shrink-0">
-                      Not Started
+                      Not started
                     </span>
                   </div>
                 ))}
@@ -817,19 +734,3 @@ export default function LiveMonitor({
     </div>
   );
 }
-
-function Stat({ label, value, color }: { label: string; value: number; color: "slate" | "blue" | "amber" | "green" }) {
-  const colors = {
-    slate: "bg-slate-100 text-slate-600 border-slate-200",
-    blue: "bg-blue-50 text-indigo-700 border-blue-100",
-    amber: "bg-amber-50 text-amber-800 border-amber-100",
-    green: "bg-emerald-50 text-emerald-700 border-emerald-100",
-  };
-  return (
-    <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded border text-[10px] font-mono font-bold uppercase tracking-wider ${colors[color]}`}>
-      <span>{value}</span>
-      <span className="opacity-70">{label}</span>
-    </div>
-  );
-}
-

@@ -124,7 +124,8 @@ export interface LessonAttempt {
   inactiveTimeSpent: number; // in seconds
   lockState?: 'locked_awaiting_teacher' | null; // teacher-approval gate state
   lockedAt?: string | null; // ISO timestamp when lock was set
-  lastActiveAt?: string; // ISO timestamp of last heartbeat
+  lastActiveAt?: string; // ISO timestamp of last activity
+  securityReviewRequired?: boolean; // flagged for teacher review without full lockout
   blockTimeSpent?: { [blockId: string]: number }; // blockId -> cumulative active seconds
   attemptMode?: "real" | "preview" | "test";
   isPreviewAttempt?: boolean;
