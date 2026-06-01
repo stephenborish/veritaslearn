@@ -4,28 +4,30 @@ import LiveMonitor from "./components/TeacherDashboard/LiveMonitor";
 import LessonsBuilder from "./components/TeacherDashboard/LessonsBuilder";
 import Gradebook from "./components/TeacherDashboard/Gradebook";
 import AIReview from "./components/TeacherDashboard/AIReview";
+import CourseManager from "./components/TeacherDashboard/CourseManager";
 import StudentDossierModal from "./components/TeacherDashboard/StudentDossierModal";
 import PracticeDashboard from "./components/StudentPortal/PracticeDashboard";
 import FocusedPlayer from "./components/StudentPortal/FocusedPlayer";
-import { 
-  LessonsBuilderSkeleton, 
-  GradebookSkeleton, 
-  AIReviewSkeleton 
+import {
+  LessonsBuilderSkeleton,
+  GradebookSkeleton,
+  AIReviewSkeleton
 } from "./components/TeacherDashboard/SkeletonScreens";
 import { auth, onAuthStateChanged, signOut } from "./lib/firebase";
 
-import { 
-  GraduationCap, 
-  Settings, 
-  Award, 
-  LogOut, 
-  BookOpen, 
+import {
+  GraduationCap,
+  Settings,
+  Award,
+  LogOut,
+  BookOpen,
   HelpCircle,
   ChevronLeft,
   ChevronRight,
   Menu,
   Activity,
-  CheckSquare
+  CheckSquare,
+  Users
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -43,9 +45,10 @@ export default function App() {
   const [attempts, setAttempts] = useState<any[]>([]);
   const [responses, setResponses] = useState<any[]>([]);
   const [signals, setSignals] = useState<any[]>([]);
+  const [courses, setCourses] = useState<any[]>([]);
 
   // Selection states
-  const [activeTab, setActiveTab] = useState<"live" | "builder" | "gradebook" | "ai">("live");
+  const [activeTab, setActiveTab] = useState<"live" | "builder" | "courses" | "gradebook" | "ai">("live");
   const [activeDossier, setActiveDossier] = useState<{ studentId: string; lessonId: string } | null>(null);
   const [activeStudentAttempt, setActiveStudentAttempt] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
@@ -162,6 +165,13 @@ export default function App() {
         setAttempts(analyticsRaw.attempts || []);
         setResponses(analyticsRaw.responses || []);
         setSignals(analyticsRaw.signals || []);
+
+        // Fetch teacher's courses
+        const coursesRes = await fetch("/api/courses", { headers: authHeader });
+        if (coursesRes.ok) {
+          const coursesRaw = await coursesRes.json();
+          setCourses(coursesRaw.courses || []);
+        }
 
         // Flatten all lesson blocks
         const allBlocks: any[] = [];
@@ -428,12 +438,14 @@ export default function App() {
           </div>
         </nav>
         <div className="flex-1 overflow-y-auto">
-          <PracticeDashboard 
+          <PracticeDashboard
             assignments={assignments}
             attempts={attempts}
             onStartAttempt={handleLaunchStudentPlayer}
             onLogout={handleLogout}
             user={currentUser}
+            idToken={idToken}
+            onEnrollmentChange={() => fetchLmsPayload(currentUser)}
           />
         </div>
 
@@ -536,6 +548,17 @@ export default function App() {
             </button>
 
             <button
+              onClick={() => setActiveTab("courses")}
+              className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
+                activeTab === "courses" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
+              }`}
+              title={isSidebarCollapsed ? "Courses" : undefined}
+            >
+              <Users className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'courses' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
+              {!isSidebarCollapsed && <span className="truncate">Courses</span>}
+            </button>
+
+            <button
               onClick={() => setActiveTab("gradebook")}
               className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
                 activeTab === "gradebook" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
@@ -568,18 +591,14 @@ export default function App() {
         {/* Content Area */}
         <main className="flex-1 flex flex-col overflow-hidden bg-[#F4F5F7]">
           {/* Section Header */}
-          {activeTab !== "gradebook" && activeTab !== "builder" && activeTab !== "ai" && (
+          {activeTab !== "gradebook" && activeTab !== "builder" && activeTab !== "ai" && activeTab !== "courses" && (
             <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
               <div>
                 <h1 className="text-xl font-bold text-slate-800">
                   {activeTab === "live" && <>Lesson Tracking</>}
-                  {activeTab === "builder" && <>Lesson Builder & Curriculum Library</>}
-                  {activeTab === "ai" && <>Review Queue</>}
                 </h1>
                 <p className="text-xs text-slate-500 mt-0.5 font-medium">
                   {activeTab === "live" && <>{students.length} students registered &bull; Asynchronous assignment progress</>}
-                  {activeTab === "builder" && <>Draft and publish active lessons and multi-checkpoint assessments</>}
-                  {activeTab === "ai" && <>SA grading review, integrity signals, and attention flags</>}
                 </p>
               </div>
 
@@ -590,7 +609,7 @@ export default function App() {
                 </div>
                 <div className="flex flex-col items-center border-l border-slate-200 px-4">
                   <span className="text-lg font-bold text-amber-600">
-                    {signals.filter(s=>s.severity === 'high').length}
+                    {signals.filter((s: any) => s.severity === 'high').length}
                   </span>
                   <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Integrity Signals</span>
                 </div>
@@ -623,7 +642,7 @@ export default function App() {
                 isFetching && lessons.length === 0 ? (
                   <LessonsBuilderSkeleton />
                 ) : (
-                  <LessonsBuilder 
+                  <LessonsBuilder
                     lessons={lessons}
                     blocks={blocks}
                     onSaveLesson={handleSaveLessonCurriculum}
@@ -632,8 +651,16 @@ export default function App() {
                     onSaveAssignment={handleSaveAssignment}
                     onDeleteAssignment={handleDeleteAssignment}
                     onLaunchPreviewAttempt={handleLaunchPreviewAttempt}
+                    courses={courses}
                   />
                 )
+              )}
+
+              {activeTab === "courses" && (
+                <CourseManager
+                  idToken={idToken}
+                  onRefresh={() => fetchLmsPayload(currentUser)}
+                />
               )}
 
               {activeTab === "gradebook" && (

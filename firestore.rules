@@ -47,6 +47,13 @@ service cloud.firestore {
       allow write: if isTeacher();
     }
 
+    // 2b. Enrollments — students can read their own; teachers read/write all.
+    // Students CANNOT create enrollments client-side; enrollment goes through the API server.
+    match /enrollments/{enrollmentId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isTeacher();
+    }
+
     // 3. Lessons collection — teachers read/write all; students can read published lessons only
     match /lessons/{lessonId} {
       allow read: if isTeacher() || (isSignedIn() && resource.data.isPublished == true);
@@ -123,7 +130,15 @@ service cloud.firestore {
       allow write: if isTeacher();
     }
 
-    // 10. Gradebook Entries — teacher read/write; student can read their own entry
+    // 10. Lesson Assignments (teacher-created assignment records) — teachers write; students read only via API.
+    // Direct student reads are allowed here so offline-capable clients can cache; the server still
+    // filters to enrolled courses before delivering the payload.
+    match /lessonAssignments/{assignmentId} {
+      allow read: if isTeacher() || isSignedIn();
+      allow write: if isTeacher();
+    }
+
+    // 11. Gradebook Entries — teacher read/write; student can read their own entry
     match /gradebookEntries/{entryId} {
       allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
       allow write: if isTeacher();

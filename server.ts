@@ -123,6 +123,7 @@ function sanitizeForFirestore(val: any): any {
 const DB_COLLECTIONS = [
   "users",
   "courses",
+  "enrollments",
   "lessons",
   "blocks",
   "attempts",
@@ -197,7 +198,126 @@ function readDb() {
   if (!Array.isArray(dbMemory.questionAssignments)) {
     dbMemory.questionAssignments = Array.isArray(dbMemory.assignments) ? dbMemory.assignments : [];
   }
+  if (!Array.isArray(dbMemory.enrollments)) dbMemory.enrollments = [];
   return dbMemory;
+}
+
+// ==========================================
+// Join Code Generation
+// ==========================================
+
+const JOIN_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I, O, 0, 1 (ambiguous)
+
+function generateJoinCode(prefix?: string): string {
+  const suffix = Array.from({ length: 4 }, () =>
+    JOIN_CODE_CHARS[Math.floor(Math.random() * JOIN_CODE_CHARS.length)]
+  ).join("");
+  const base = suffix.slice(0, 2) + "-" + suffix.slice(2);
+  return prefix ? `${prefix.toUpperCase().slice(0, 6)}-${base.replace("-", "")}` : base;
+}
+
+// ==========================================
+// Learning Conditions Policy Compiler
+// ==========================================
+
+type IntegrityPreset = 'open' | 'guided' | 'focused' | 'verified' | 'custom';
+
+interface IntegrityPolicy {
+  preset: IntegrityPreset;
+  studentFlexibility: 'open' | 'guided' | 'structured' | 'locked_sequence';
+  focusSupport: 'off' | 'quiet' | 'guided' | 'focused' | 'locked';
+  responseControls: 'open' | 'recorded' | 'guarded' | 'restricted' | 'strict';
+  videoControls: 'open' | 'progress_aware' | 'checkpointed' | 'restricted' | 'verified';
+  reviewSensitivity: 'low' | 'balanced' | 'elevated' | 'high';
+  allowResume: boolean;
+  allowBackNavigation: boolean;
+  requireFullscreen: boolean;
+  restrictSeeking: boolean;
+  blockPaste: boolean;
+  logPaste: boolean;
+  blockCopy: boolean;
+  blockContextMenu: boolean;
+  watermarkVideo: boolean;
+  requireCheckpoints: boolean;
+  focusGraceSeconds: number;
+  reviewThreshold: number;
+  lockThreshold: number;
+}
+
+const PRESET_DIALS: Record<IntegrityPreset, Partial<IntegrityPolicy>> = {
+  open: {
+    studentFlexibility: "open",
+    focusSupport: "off",
+    responseControls: "open",
+    videoControls: "open",
+    reviewSensitivity: "low",
+  },
+  guided: {
+    studentFlexibility: "guided",
+    focusSupport: "quiet",
+    responseControls: "recorded",
+    videoControls: "checkpointed",
+    reviewSensitivity: "low",
+  },
+  focused: {
+    studentFlexibility: "structured",
+    focusSupport: "focused",
+    responseControls: "guarded",
+    videoControls: "restricted",
+    reviewSensitivity: "balanced",
+  },
+  verified: {
+    studentFlexibility: "locked_sequence",
+    focusSupport: "locked",
+    responseControls: "strict",
+    videoControls: "verified",
+    reviewSensitivity: "high",
+  },
+  custom: {},
+};
+
+function compileIntegrityPolicy(raw: Partial<IntegrityPolicy>): IntegrityPolicy {
+  const preset: IntegrityPreset = (raw.preset as IntegrityPreset) || "open";
+  const dials = preset !== "custom" ? { ...PRESET_DIALS[preset], ...raw } : { ...PRESET_DIALS.open, ...raw };
+
+  const sf = dials.studentFlexibility || "open";
+  const fs = dials.focusSupport || "off";
+  const rc = dials.responseControls || "open";
+  const vc = dials.videoControls || "open";
+  const rs = dials.reviewSensitivity || "low";
+
+  const reviewThresholdMap: Record<string, number> = { low: 5, balanced: 3, elevated: 2, high: 1 };
+  const lockThresholdMap: Record<string, number> = { low: 999, balanced: 6, elevated: 4, high: 3 };
+  const graceMap: Record<string, number> = { off: 0, quiet: 30, guided: 20, focused: 10, locked: 5 };
+
+  return {
+    preset,
+    studentFlexibility: sf as any,
+    focusSupport: fs as any,
+    responseControls: rc as any,
+    videoControls: vc as any,
+    reviewSensitivity: rs as any,
+    allowResume: sf !== "locked_sequence",
+    allowBackNavigation: sf === "open" || sf === "guided",
+    requireFullscreen: fs === "locked" || fs === "focused",
+    restrictSeeking: vc === "restricted" || vc === "verified",
+    blockPaste: rc === "restricted" || rc === "strict",
+    logPaste: rc !== "open",
+    blockCopy: rc === "strict",
+    blockContextMenu: rc === "restricted" || rc === "strict",
+    watermarkVideo: vc === "verified",
+    requireCheckpoints: vc === "checkpointed" || vc === "restricted" || vc === "verified",
+    focusGraceSeconds: graceMap[fs] ?? 30,
+    reviewThreshold: reviewThresholdMap[rs] ?? 5,
+    lockThreshold: lockThresholdMap[rs] ?? 999,
+  };
+}
+
+function getEffectivePolicy(assignment: any): IntegrityPolicy {
+  if (assignment?.integrityPolicy) {
+    return compileIntegrityPolicy(assignment.integrityPolicy);
+  }
+  return compileIntegrityPolicy({ preset: "open" });
 }
 
 // Utility to dynamically join AI grading records onto responses for client consumption
@@ -955,26 +1075,380 @@ app.delete("/api/lessons/:id", requireTeacher, (req, res) => {
 });
 
 // ==========================================
+// Course / Section APIs
+// ==========================================
+
+// Teacher: List all courses for this teacher
+app.get("/api/courses", requireTeacher, (req, res) => {
+  const user = (req as any).user;
+  const db = readDb();
+  const courses = db.courses.filter((c: any) => c.teacherId === user.id);
+  res.json({ courses });
+});
+
+// Teacher: Create a new course/section
+app.post("/api/courses", requireTeacher, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { name, sectionName, schoolYear } = req.body;
+
+    if (!name || !name.trim()) {
+      res.status(400).json({ error: "Course name is required." });
+      return;
+    }
+
+    const db = readDb();
+
+    // Generate unique join code with course abbreviation prefix
+    const prefix = name.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) || "CRS";
+    let joinCode = generateJoinCode(prefix);
+    // Ensure uniqueness
+    const existingCodes = new Set((db.courses || []).map((c: any) => c.joinCode));
+    let attempts = 0;
+    while (existingCodes.has(joinCode) && attempts < 10) {
+      joinCode = generateJoinCode(prefix);
+      attempts++;
+    }
+
+    const now = new Date().toISOString();
+    const newCourse = {
+      id: "course_" + Math.random().toString(36).substring(2, 9),
+      teacherId: user.id,
+      name: name.trim(),
+      sectionName: sectionName?.trim() || "",
+      schoolYear: schoolYear?.trim() || "",
+      status: "active",
+      joinCode,
+      joinCodeEnabled: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    db.courses.push(newCourse);
+    await commitDb(db);
+    res.status(201).json({ success: true, course: newCourse });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Teacher: Update a course
+app.put("/api/courses/:id", requireTeacher, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const { name, sectionName, schoolYear, status } = req.body;
+    const db = readDb();
+
+    const idx = db.courses.findIndex((c: any) => c.id === id && c.teacherId === user.id);
+    if (idx === -1) {
+      res.status(404).json({ error: "Course not found." });
+      return;
+    }
+
+    if (name !== undefined) db.courses[idx].name = name.trim();
+    if (sectionName !== undefined) db.courses[idx].sectionName = sectionName.trim();
+    if (schoolYear !== undefined) db.courses[idx].schoolYear = schoolYear.trim();
+    if (status !== undefined) db.courses[idx].status = status;
+    db.courses[idx].updatedAt = new Date().toISOString();
+
+    await commitDb(db);
+    res.json({ success: true, course: db.courses[idx] });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Teacher: Regenerate join code
+app.post("/api/courses/:id/regenerate-code", requireTeacher, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const db = readDb();
+
+    const idx = db.courses.findIndex((c: any) => c.id === id && c.teacherId === user.id);
+    if (idx === -1) {
+      res.status(404).json({ error: "Course not found." });
+      return;
+    }
+
+    const prefix = db.courses[idx].name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) || "CRS";
+    const existingCodes = new Set((db.courses || []).map((c: any, i: number) => i !== idx ? c.joinCode : null).filter(Boolean));
+    let joinCode = generateJoinCode(prefix);
+    let tries = 0;
+    while (existingCodes.has(joinCode) && tries < 10) {
+      joinCode = generateJoinCode(prefix);
+      tries++;
+    }
+
+    db.courses[idx].joinCode = joinCode;
+    db.courses[idx].joinCodeEnabled = true;
+    db.courses[idx].updatedAt = new Date().toISOString();
+
+    await commitDb(db);
+    res.json({ success: true, joinCode });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Teacher: Enable or disable join code
+app.post("/api/courses/:id/toggle-join-code", requireTeacher, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const { enabled } = req.body;
+    const db = readDb();
+
+    const idx = db.courses.findIndex((c: any) => c.id === id && c.teacherId === user.id);
+    if (idx === -1) {
+      res.status(404).json({ error: "Course not found." });
+      return;
+    }
+
+    db.courses[idx].joinCodeEnabled = !!enabled;
+    db.courses[idx].updatedAt = new Date().toISOString();
+
+    await commitDb(db);
+    res.json({ success: true, joinCodeEnabled: db.courses[idx].joinCodeEnabled });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Teacher: List enrolled students for a course
+app.get("/api/courses/:id/enrollments", requireTeacher, (req, res) => {
+  const user = (req as any).user;
+  const { id } = req.params;
+  const db = readDb();
+
+  const course = db.courses.find((c: any) => c.id === id && c.teacherId === user.id);
+  if (!course) {
+    res.status(404).json({ error: "Course not found." });
+    return;
+  }
+
+  const enrollments = (db.enrollments || []).filter(
+    (e: any) => e.courseId === id && e.status === "active"
+  );
+  res.json({ enrollments });
+});
+
+// Teacher: Remove a student enrollment
+app.delete("/api/courses/:id/enrollments/:enrollmentId", requireTeacher, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id, enrollmentId } = req.params;
+    const db = readDb();
+
+    const course = db.courses.find((c: any) => c.id === id && c.teacherId === user.id);
+    if (!course) {
+      res.status(404).json({ error: "Course not found." });
+      return;
+    }
+
+    const eIdx = db.enrollments.findIndex((e: any) => e.id === enrollmentId && e.courseId === id);
+    if (eIdx === -1) {
+      res.status(404).json({ error: "Enrollment not found." });
+      return;
+    }
+
+    db.enrollments[eIdx].status = "removed";
+    db.enrollments[eIdx].removedAt = new Date().toISOString();
+    db.enrollments[eIdx].removedBy = user.id;
+
+    await commitDb(db);
+    res.json({ success: true });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// ==========================================
+// Student Enrollment APIs
+// ==========================================
+
+// Student: Join a course by join code
+app.post("/api/enrollments/join", requireAuth, async (req, res) => {
+  try {
+    const user = (req as any).user;
+
+    // Students only
+    if (user.role === "teacher") {
+      res.status(403).json({ error: "Teachers do not enroll in courses." });
+      return;
+    }
+
+    const { joinCode } = req.body;
+    if (!joinCode || typeof joinCode !== "string") {
+      res.status(400).json({ error: "Join code is required." });
+      return;
+    }
+
+    // Domain verification: require school email or allowlisted teacher email
+    const emailDomain = user.email.split("@")[1]?.toLowerCase() || "";
+    if (emailDomain !== ALLOWED_DOMAIN && !TEACHER_EMAILS.has(user.email.toLowerCase())) {
+      res.status(403).json({
+        error: "Use your Malvern Prep Google account to join this course.",
+        code: "DOMAIN_MISMATCH",
+      });
+      return;
+    }
+
+    const db = readDb();
+    const normalizedCode = joinCode.trim().toUpperCase();
+
+    // Find the course with this join code
+    const course = db.courses.find(
+      (c: any) => c.joinCode?.toUpperCase() === normalizedCode && c.status === "active"
+    );
+
+    if (!course) {
+      res.status(404).json({
+        error: "That code was not found. Check the code and try again.",
+        code: "INVALID_CODE",
+      });
+      return;
+    }
+
+    if (!course.joinCodeEnabled) {
+      res.status(403).json({
+        error: "This join code has been disabled by your teacher.",
+        code: "CODE_DISABLED",
+      });
+      return;
+    }
+
+    // Check if already enrolled
+    if (!db.enrollments) db.enrollments = [];
+    const existing = db.enrollments.find(
+      (e: any) => e.courseId === course.id && e.studentId === user.id && e.status === "active"
+    );
+
+    if (existing) {
+      res.status(409).json({
+        error: "You are already enrolled in this course.",
+        code: "ALREADY_ENROLLED",
+        courseId: course.id,
+        courseName: course.name,
+        sectionName: course.sectionName,
+      });
+      return;
+    }
+
+    // Re-activate a previously removed enrollment instead of creating a duplicate
+    const removedEnrollment = db.enrollments.find(
+      (e: any) => e.courseId === course.id && e.studentId === user.id && e.status === "removed"
+    );
+
+    if (removedEnrollment) {
+      const rIdx = db.enrollments.findIndex((e: any) => e.id === removedEnrollment.id);
+      db.enrollments[rIdx].status = "active";
+      db.enrollments[rIdx].enrolledAt = new Date().toISOString();
+      delete db.enrollments[rIdx].removedAt;
+      delete db.enrollments[rIdx].removedBy;
+      await commitDb(db);
+      res.json({
+        success: true,
+        enrollment: db.enrollments[rIdx],
+        courseId: course.id,
+        courseName: course.name,
+        sectionName: course.sectionName,
+      });
+      return;
+    }
+
+    const newEnrollment = {
+      id: "enr_" + Math.random().toString(36).substring(2, 9),
+      courseId: course.id,
+      studentId: user.id,
+      studentEmail: user.email,
+      studentName: user.name,
+      status: "active",
+      enrolledAt: new Date().toISOString(),
+    };
+
+    db.enrollments.push(newEnrollment);
+    await commitDb(db);
+
+    res.status(201).json({
+      success: true,
+      enrollment: newEnrollment,
+      courseId: course.id,
+      courseName: course.name,
+      sectionName: course.sectionName,
+    });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Student: List my enrollments
+app.get("/api/enrollments", requireAuth, (req, res) => {
+  const user = (req as any).user;
+  const db = readDb();
+
+  if (user.role === "teacher") {
+    // Teachers see all enrollments across their courses
+    const teacherCourseIds = new Set(
+      db.courses.filter((c: any) => c.teacherId === user.id).map((c: any) => c.id)
+    );
+    const enrollments = (db.enrollments || []).filter((e: any) => teacherCourseIds.has(e.courseId));
+    res.json({ enrollments });
+    return;
+  }
+
+  const enrollments = (db.enrollments || []).filter(
+    (e: any) => e.studentId === user.id && e.status === "active"
+  );
+
+  // Enrich with course info
+  const enriched = enrollments.map((e: any) => {
+    const course = db.courses.find((c: any) => c.id === e.courseId);
+    return {
+      ...e,
+      courseName: course?.name || "Unknown Course",
+      sectionName: course?.sectionName || "",
+      courseStatus: course?.status || "active",
+    };
+  });
+
+  res.json({ enrollments: enriched });
+});
+
+// ==========================================
 // Lesson Assignments APIs
 // ==========================================
 
-// Fetch lesson assignments (All for teachers; all for students with access metadata)
+// Fetch lesson assignments (All for teachers; enrollment-filtered for students)
 app.get("/api/assignments", requireAuth, (req, res) => {
   const user = (req as any).user;
   const db = readDb();
   const nowDate = new Date();
-  const nowIso = nowDate.toISOString();
 
-  const list = db.lessonAssignments || [];
+  let list = db.lessonAssignments || [];
 
-  // Join lesson metadata and compute per-assignment access state for students.
-  // Teachers receive raw records; students receive all assignments so the dashboard
-  // can categorize them as upcoming / open / past-due / closed / completed.
-  //
-  // TODO: When a roster/enrollment model is implemented, filter list here
-  // to only assignments whose courseId the student is enrolled in.
+  // For students: filter to assignments in courses they are enrolled in.
+  // Legacy assignments without a matching enrollment (no real courseId) are
+  // preserved for backward compatibility — show them if courseId is absent/unknown.
+  if (user.role === "student") {
+    const activeEnrollments = (db.enrollments || []).filter(
+      (e: any) => e.studentId === user.id && e.status === "active"
+    );
+    const enrolledCourseIds = new Set(activeEnrollments.map((e: any) => e.courseId));
+    const knownCourseIds = new Set(db.courses.map((c: any) => c.id));
+
+    list = list.filter((asg: any) => {
+      // Legacy assignment: courseId not in courses collection → show it (backward compat)
+      if (!knownCourseIds.has(asg.courseId)) return true;
+      // New assignment: only show if student is enrolled
+      return enrolledCourseIds.has(asg.courseId);
+    });
+  }
+
   const enrichedList = list.map((asg: any) => {
     const lesson = db.lessons.find((l: any) => l.id === asg.lessonId);
+    const course = db.courses.find((c: any) => c.id === asg.courseId);
 
     const base = {
       ...asg,
@@ -983,9 +1457,18 @@ app.get("/api/assignments", requireAuth, (req, res) => {
       lessonEstimatedMinutes: lesson ? lesson.estimatedMinutes : 30,
       lessonSettings: lesson ? lesson.settings : null,
       lessonIsPublished: lesson ? lesson.isPublished : false,
+      courseTitle: course ? course.name : asg.courseId || "",
+      sectionName: course ? course.sectionName : (asg.section || ""),
     };
 
     if (user.role !== "student") return base;
+
+    // Find student's attempt for this assignment
+    const attempt = db.attempts.find((a: any) =>
+      a.studentId === user.id &&
+      !a.isPreviewAttempt &&
+      (asg.id && a.assignmentId ? a.assignmentId === asg.id : a.lessonId === asg.lessonId)
+    );
 
     // Compute student-facing access metadata.
     const opensAt = asg.opensAt ? new Date(asg.opensAt) : null;
@@ -999,39 +1482,66 @@ app.get("/api/assignments", requireAuth, (req, res) => {
       (opensAt === null || nowDate >= opensAt) &&
       (closesAt === null || nowDate <= closesAt);
 
+    const isCompleted = attempt?.status === "completed";
+    const isLocked = attempt?.lockState === "locked_awaiting_teacher";
+    const isInProgress = attempt && attempt.status === "started";
+    const needsReview = attempt?.securityReviewRequired === true;
+
     let accessState: string;
     let canBegin = false;
     let canResume = false;
+    let canReview = false;
     let reason: string | undefined;
 
-    if (isUpcoming) {
+    if (isCompleted) {
+      accessState = "completed";
+      canReview = true;
+    } else if (isLocked) {
+      accessState = "locked";
+      reason = "Your attempt requires teacher review before you can continue.";
+    } else if (isUpcoming) {
       accessState = "upcoming";
       reason = "This assignment has not opened yet.";
-    } else if (isClosed) {
+    } else if (isClosed && !isInProgress) {
       accessState = "closed";
       reason = "This assignment is no longer accepting submissions.";
+    } else if (needsReview && isInProgress) {
+      accessState = "needs_review";
+    } else if (isInProgress) {
+      accessState = isPastDue ? "past_due" : "in_progress";
+      canResume = true;
     } else if (isCurrentlyOpen && isPastDue) {
       accessState = "past_due";
       canBegin = true;
-      canResume = true;
     } else if (isCurrentlyOpen) {
       accessState = "open";
       canBegin = true;
-      canResume = true;
     } else {
       accessState = "open";
       canBegin = true;
-      canResume = true;
     }
+
+    let primaryAction: string = "none";
+    if (canResume) primaryAction = "resume";
+    else if (canBegin) primaryAction = "begin";
+    else if (canReview) primaryAction = "review";
 
     return {
       ...base,
       accessState,
       canBegin,
       canResume,
-      canReview: false,
-      primaryAction: canResume ? "resume" : canBegin ? "begin" : "none",
+      canReview,
+      primaryAction,
       ...(reason ? { reason } : {}),
+      ...(attempt ? {
+        attemptId: attempt.id,
+        attemptStatus: attempt.status,
+        lastActiveAt: attempt.lastActiveAt,
+        completedAt: attempt.completedAt,
+        progress: attempt.currentBlockIndex,
+        securityReviewRequired: attempt.securityReviewRequired,
+      } : {}),
     };
   });
 
@@ -1042,7 +1552,7 @@ app.get("/api/assignments", requireAuth, (req, res) => {
 app.post("/api/assignments", requireTeacher, async (req, res) => {
   try {
     const db = readDb();
-    const { lessonId, courseId, section, opensAt, dueAt, closesAt } = req.body;
+    const { lessonId, courseId, section, opensAt, dueAt, closesAt, integrityPolicy } = req.body;
 
     if (!lessonId || !courseId || !opensAt || !dueAt || !closesAt) {
       res.status(400).json({ error: "Missing required assignment parameters." });
@@ -1055,15 +1565,20 @@ app.post("/api/assignments", requireTeacher, async (req, res) => {
       return;
     }
 
-    const newAssignment = {
+    const now = new Date().toISOString();
+    const compiledPolicy = compileIntegrityPolicy(integrityPolicy || { preset: "open" });
+
+    const newAssignment: any = {
       id: "asg_" + Math.random().toString(36).substring(2, 9),
       lessonId,
       courseId,
-      section: section || "All Sections",
+      section: section || "",
       opensAt,
       dueAt,
       closesAt,
-      createdAt: new Date().toISOString()
+      integrityPolicy: compiledPolicy,
+      createdAt: now,
+      updatedAt: now,
     };
 
     if (!db.lessonAssignments) {
@@ -1270,9 +1785,7 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
 
     // --- Assignment-aware eligibility check ---
     // Students must provide an assignmentId that references an open, published assignment.
-    // This prevents a student from starting an arbitrary published lesson by guessing a lessonId.
-    // TODO: When a roster/enrollment model is added, also verify the student is enrolled
-    // in the assignment's courseId before permitting access.
+    // Enrollment is verified server-side: only enrolled students may begin.
     let resolvedLessonId: string = lessonId;
     let resolvedAssignmentId: string | null = null;
 
@@ -1280,7 +1793,6 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
       const lessonAssignments = db.lessonAssignments || [];
 
       if (assignmentId) {
-        // Explicit assignment path: validate that the given assignment is valid for this student.
         const asg = lessonAssignments.find((a: any) => a.id === assignmentId);
         if (!asg) {
           fail(res, "NOT_FOUND", "Assignment not found.");
@@ -1294,11 +1806,23 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
           fail(res, "FORBIDDEN", "This assignment is no longer accepting submissions.");
           return;
         }
+
+        // Enrollment check: student must be enrolled in the course for new-style assignments.
+        const knownCourse = db.courses.find((c: any) => c.id === asg.courseId);
+        if (knownCourse) {
+          const enrolled = (db.enrollments || []).some(
+            (e: any) => e.courseId === asg.courseId && e.studentId === user.id && e.status === "active"
+          );
+          if (!enrolled) {
+            fail(res, "FORBIDDEN", "You are not enrolled in the course for this assignment.");
+            return;
+          }
+        }
+
         resolvedLessonId = asg.lessonId;
         resolvedAssignmentId = asg.id;
       } else {
         // Legacy path: lessonId only — find the first open assignment for this lesson.
-        // Kept for backward compatibility; prefer passing assignmentId going forward.
         const openAsg = lessonAssignments.find((a: any) => {
           if (a.lessonId !== (lessonId || resolvedLessonId)) return false;
           if (a.opensAt && a.opensAt > nowIso) return false;
@@ -1976,12 +2500,6 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
 
   db.securitySignals.push(signal);
 
-  // Tiered violation response thresholds (named constants for clarity and easy tuning).
-  // Low severity: warn only. Moderate: flag for review. High: lock and require teacher approval.
-  const FULLSCREEN_REVIEW_THRESHOLD = 1;  // exits before securityReviewRequired is set
-  const FULLSCREEN_LOCK_THRESHOLD = 3;    // exits before hard lock (requires teacher unlock)
-  const BLUR_REVIEW_THRESHOLD = 4;        // repeated blur events (medium severity) before review flag
-
   let lockState: string | null = null;
   let securityReviewRequired: boolean | null = null;
 
@@ -1991,21 +2509,30 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
       const attempt = db.attempts[attemptIdx];
       const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
 
-      // --- Fullscreen exit: tiered response ---
-      if (eventType === "fullscreen_exited" && lesson?.settings?.requireFullscreen) {
-        // Count exits including the signal just pushed.
+      // Resolve the Learning Conditions policy for this attempt's assignment.
+      const asg = attempt.assignmentId
+        ? (db.lessonAssignments || []).find((a: any) => a.id === attempt.assignmentId)
+        : null;
+      const policy = getEffectivePolicy(asg);
+
+      // Thresholds driven by reviewSensitivity dial.
+      const FULLSCREEN_REVIEW_THRESHOLD = policy.reviewThreshold;
+      const FULLSCREEN_LOCK_THRESHOLD = policy.lockThreshold;
+      const BLUR_REVIEW_THRESHOLD = policy.reviewThreshold + 1;
+
+      // --- Fullscreen exit: tiered response (only if fullscreen is enforced by policy or lesson settings) ---
+      const fullscreenRequired = policy.requireFullscreen || lesson?.settings?.requireFullscreen;
+      if (eventType === "fullscreen_exited" && fullscreenRequired) {
         const exitCount = db.securitySignals.filter(
           (s: any) => s.attemptId === attemptId && s.eventType === "fullscreen_exited"
         ).length;
 
         if (attempt.lockState !== "locked_awaiting_teacher") {
           if (exitCount >= FULLSCREEN_LOCK_THRESHOLD) {
-            // Hard lock: student needs teacher approval to continue.
             db.attempts[attemptIdx].lockState = "locked_awaiting_teacher";
             db.attempts[attemptIdx].lockedAt = new Date().toISOString();
             lockState = "locked_awaiting_teacher";
           } else if (exitCount >= FULLSCREEN_REVIEW_THRESHOLD && !attempt.securityReviewRequired) {
-            // Soft flag: mark for teacher review without locking.
             db.attempts[attemptIdx].securityReviewRequired = true;
             db.attempts[attemptIdx].securityReviewAt = new Date().toISOString();
             db.attempts[attemptIdx].securityReviewReason = `Fullscreen exited ${exitCount} time(s)`;
@@ -2014,8 +2541,14 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
         }
       }
 
-      // --- Repeated blur events at medium severity: flag for review ---
-      if (eventType === "blur_focus_lost" && severity === "medium" && !attempt.securityReviewRequired) {
+      // --- Repeated blur events: flag for review based on focusSupport dial ---
+      if (
+        eventType === "blur_focus_lost" &&
+        severity === "medium" &&
+        policy.focusSupport !== "off" &&
+        policy.focusSupport !== "quiet" &&
+        !attempt.securityReviewRequired
+      ) {
         const blurCount = db.securitySignals.filter(
           (s: any) => s.attemptId === attemptId && s.eventType === "blur_focus_lost"
         ).length;
@@ -2023,6 +2556,23 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
           db.attempts[attemptIdx].securityReviewRequired = true;
           db.attempts[attemptIdx].securityReviewAt = new Date().toISOString();
           db.attempts[attemptIdx].securityReviewReason = "Repeated focus loss detected";
+          securityReviewRequired = true;
+        }
+      }
+
+      // --- Paste/copy events flagged when responseControls is guarded+ ---
+      if (
+        (eventType === "paste_blocked" || eventType === "copy_blocked") &&
+        (policy.responseControls === "guarded" || policy.responseControls === "restricted" || policy.responseControls === "strict") &&
+        !attempt.securityReviewRequired
+      ) {
+        const pasteCount = db.securitySignals.filter(
+          (s: any) => s.attemptId === attemptId && (s.eventType === "paste_blocked" || s.eventType === "copy_blocked")
+        ).length;
+        if (pasteCount >= policy.reviewThreshold) {
+          db.attempts[attemptIdx].securityReviewRequired = true;
+          db.attempts[attemptIdx].securityReviewAt = new Date().toISOString();
+          db.attempts[attemptIdx].securityReviewReason = "Repeated paste/copy pattern detected";
           securityReviewRequired = true;
         }
       }

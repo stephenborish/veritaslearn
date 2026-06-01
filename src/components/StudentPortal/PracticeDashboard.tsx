@@ -1,4 +1,9 @@
-import { Play, CheckCircle, Calendar, Clock3, BookOpen, Lock, AlertCircle, ArrowRight, ChevronRight, FileText } from "lucide-react";
+import { useState } from "react";
+import {
+  Play, CheckCircle, Calendar, Clock3, BookOpen, Lock, AlertCircle,
+  ArrowRight, ChevronRight, FileText, GraduationCap, Plus, X, Loader2,
+  BookMarked, Users
+} from "lucide-react";
 
 interface PracticeDashboardProps {
   assignments: any[];
@@ -6,10 +11,86 @@ interface PracticeDashboardProps {
   onStartAttempt: (lessonId: string, assignmentId: string) => void;
   onLogout: () => void;
   user: any;
+  idToken?: string | null;
+  onEnrollmentChange?: () => void;
 }
 
-export default function PracticeDashboard({ assignments, attempts, onStartAttempt, onLogout, user }: PracticeDashboardProps) {
+export default function PracticeDashboard({
+  assignments,
+  attempts,
+  onStartAttempt,
+  onLogout,
+  user,
+  idToken,
+  onEnrollmentChange,
+}: PracticeDashboardProps) {
   const now = new Date();
+
+  // Enrollment state
+  const [enrollments, setEnrollments] = useState<any[]>([]);
+  const [enrollmentsLoaded, setEnrollmentsLoaded] = useState(false);
+  const [joinCode, setJoinCode] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joinSuccess, setJoinSuccess] = useState<string | null>(null);
+  const [showJoinInput, setShowJoinInput] = useState(false);
+
+  const authHeader: Record<string, string> = idToken ? { Authorization: `Bearer ${idToken}` } : {};
+
+  const fetchEnrollments = async () => {
+    if (!idToken) return;
+    try {
+      const res = await fetch("/api/enrollments", { headers: authHeader });
+      if (res.ok) {
+        const data = await res.json();
+        setEnrollments(data.enrollments || []);
+        setEnrollmentsLoaded(true);
+      }
+    } catch (e) {
+      console.error("Failed to fetch enrollments:", e);
+    }
+  };
+
+  if (!enrollmentsLoaded && idToken) {
+    fetchEnrollments();
+  }
+
+  const handleJoin = async () => {
+    if (!joinCode.trim()) return;
+    setJoining(true);
+    setJoinError(null);
+    setJoinSuccess(null);
+    try {
+      const res = await fetch("/api/enrollments/join", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify({ joinCode: joinCode.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const name = [data.courseName, data.sectionName].filter(Boolean).join(" — ");
+        setJoinSuccess(`You joined ${name}. Assignments for this course are now available.`);
+        setJoinCode("");
+        setShowJoinInput(false);
+        setEnrollmentsLoaded(false); // trigger refetch
+        onEnrollmentChange?.();
+      } else if (data.code === "ALREADY_ENROLLED") {
+        setJoinError("You are already enrolled in this course.");
+      } else if (data.code === "DOMAIN_MISMATCH") {
+        setJoinError("Use your Malvern Prep Google account to join this course.");
+      } else if (data.code === "INVALID_CODE") {
+        setJoinError("That code was not found. Check the code and try again.");
+      } else if (data.code === "CODE_DISABLED") {
+        setJoinError("This join code has been disabled by your teacher.");
+      } else {
+        setJoinError(data.error || "Something went wrong. Try again.");
+      }
+    } catch (e) {
+      setJoinError("Could not connect. Please try again.");
+    } finally {
+      setJoining(false);
+    }
+  };
 
   const formatDateTime = (isoStr: string) => {
     if (!isoStr) return "N/A";
@@ -98,7 +179,6 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
   const completedList: any[] = [];
 
   assignments.forEach((asg) => {
-    // Match attempt by assignmentId when available (assignment-aware), else fall back to lessonId.
     const attempt = attempts.find((a) =>
       a.studentId === user.id &&
       !a.isPreviewAttempt &&
@@ -119,7 +199,13 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
     }
   });
 
-  // In-progress card — resume-first design
+  const getCourseLabel = (asg: any) => {
+    const title = asg.courseTitle || asg.courseId || "";
+    const section = asg.sectionName || asg.section || "";
+    return [title, section].filter(Boolean).join(" · ");
+  };
+
+  // In-progress card
   const renderInProgressCard = ({ asg, attempt }: { asg: any; attempt: any }) => {
     const { label, buttonText, buttonDisabled, badgeClass } = getAssignmentStatus(asg, attempt);
     const estMin = asg.lessonEstimatedMinutes;
@@ -130,15 +216,12 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
     const desc = getDescriptionText(asg.lessonDescription);
 
     return (
-      <div
-        key={asg.id}
-        className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition duration-150"
-      >
+      <div key={asg.id} className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden shadow-sm hover:shadow-md transition duration-150">
         <div className="p-5">
           <div className="flex justify-between items-start gap-3 mb-3">
             <div className="space-y-0.5 min-w-0">
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">
-                {asg.courseId}{asg.section ? ` · ${asg.section}` : ""}
+                {getCourseLabel(asg)}
               </div>
               <h4 className="text-[17px] font-bold text-slate-800 tracking-tight leading-snug">
                 {asg.lessonTitle || "Untitled Lesson"}
@@ -200,7 +283,7 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
     );
   };
 
-  // Standard card for available, needs-attention, completed
+  // Standard assignment card
   const renderStandardCard = ({ asg, attempt }: { asg: any; attempt: any }) => {
     const { label, buttonText, buttonDisabled, badgeClass } = getAssignmentStatus(asg, attempt);
     const estMin = asg.lessonEstimatedMinutes;
@@ -216,18 +299,14 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
       <div
         key={asg.id}
         className={`bg-white border text-slate-800 rounded-lg overflow-hidden shadow-xs flex flex-col justify-between hover:shadow-sm transition duration-150 ${
-          isLocked
-            ? "border-rose-200 bg-rose-50/20"
-            : isCompleted
-            ? "border-emerald-200"
-            : "border-slate-200 hover:border-slate-300"
+          isLocked ? "border-rose-200 bg-rose-50/20" : isCompleted ? "border-emerald-200" : "border-slate-200 hover:border-slate-300"
         }`}
       >
         <div className="p-5">
           <div className="flex justify-between items-start gap-3">
             <div className="space-y-0.5 min-w-0">
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider truncate">
-                {asg.courseId}{asg.section ? ` · ${asg.section}` : ""}
+                {getCourseLabel(asg)}
               </div>
               <h4 className="text-[16px] font-bold text-slate-800 tracking-tight leading-snug">
                 {asg.lessonTitle || "Untitled Lesson"}
@@ -236,23 +315,17 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
             <span className={`shrink-0 text-[10px] font-bold rounded-full px-2.5 py-0.5 whitespace-nowrap ${badgeClass}`}>{label}</span>
           </div>
 
-          {desc && (
-            <p className="text-xs text-slate-500 mt-3 line-clamp-2 leading-relaxed">{desc}</p>
-          )}
+          {desc && <p className="text-xs text-slate-500 mt-3 line-clamp-2 leading-relaxed">{desc}</p>}
 
           {isOpenSoon && timeUntilOpen && (
-            <div className="mt-3 text-xs text-blue-600 font-medium">
-              Opens in {timeUntilOpen}
-            </div>
+            <div className="mt-3 text-xs text-blue-600 font-medium">Opens in {timeUntilOpen}</div>
           )}
-
           {isLocked && (
             <div className="mt-3 text-xs text-rose-700 font-medium flex items-center gap-1.5">
               <Lock className="w-3.5 h-3.5 shrink-0" />
               Your attempt requires teacher review before you can continue.
             </div>
           )}
-
           {isCompleted && (
             <div className="mt-3 text-xs text-emerald-700 font-medium flex items-center gap-1.5">
               <CheckCircle className="w-3.5 h-3.5 shrink-0" />
@@ -336,7 +409,9 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
 
   const totalAssigned = assignments.length;
   const totalCompleted = completedList.length;
-  const totalOpen = inProgressList.length + availableList.length;
+
+  const hasEnrollments = enrollments.length > 0;
+  const hasAssignments = assignments.length > 0;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-6">
@@ -374,16 +449,121 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
           </div>
         </div>
 
-        {/* 1. CONTINUE WORKING — most prominent, shown only when there's work to resume */}
+        {/* Course Enrollment Area */}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5 border-b border-slate-200 pb-2 flex-1">
+              <GraduationCap className="w-4 h-4 text-slate-600 shrink-0" />
+              <h3 className="text-xs font-bold uppercase tracking-widest font-mono text-slate-800">My Courses</h3>
+              {enrollments.length > 0 && (
+                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full font-mono bg-slate-200 text-slate-700">
+                  {enrollments.length}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Join success message */}
+          {joinSuccess && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex items-start gap-2.5">
+              <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <p className="text-sm text-emerald-800 font-medium">{joinSuccess}</p>
+              <button onClick={() => setJoinSuccess(null)} className="ml-auto text-emerald-500 hover:text-emerald-700">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Enrolled courses */}
+          {hasEnrollments && (
+            <div className="flex flex-wrap gap-2">
+              {enrollments.map((e) => (
+                <div
+                  key={e.id}
+                  className="flex items-center gap-2 bg-white border border-slate-200 rounded-full px-3 py-1.5 text-sm font-semibold text-slate-700 shadow-xs"
+                >
+                  <BookMarked className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                  <span>{e.courseName}{e.sectionName ? ` — ${e.sectionName}` : ""}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Join code input */}
+          {showJoinInput ? (
+            <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+              <p className="text-xs text-slate-500">Use the code your teacher shared with you.</p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={joinCode}
+                  onChange={(e) => {
+                    setJoinCode(e.target.value.toUpperCase());
+                    setJoinError(null);
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+                  placeholder="e.g. APBIO-4M8X"
+                  className="flex-1 px-4 py-2.5 border border-slate-200 rounded-lg font-mono font-bold text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 uppercase tracking-widest placeholder:normal-case placeholder:font-normal placeholder:tracking-normal"
+                  autoFocus
+                />
+                <button
+                  onClick={handleJoin}
+                  disabled={joining || !joinCode.trim()}
+                  className="px-4 py-2.5 bg-[#0A192F] hover:bg-[#15294b] disabled:opacity-50 text-white text-sm font-bold rounded-lg transition flex items-center gap-2 cursor-pointer"
+                >
+                  {joining ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  Join
+                </button>
+                <button
+                  onClick={() => {
+                    setShowJoinInput(false);
+                    setJoinCode("");
+                    setJoinError(null);
+                  }}
+                  className="px-3 py-2.5 border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              {joinError && (
+                <p className="text-xs text-rose-600 font-medium flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  {joinError}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div>
+              {!hasEnrollments && (
+                <div className="border border-dashed border-slate-300 rounded-xl p-8 bg-white text-center mb-3">
+                  <GraduationCap className="w-10 h-10 mx-auto text-slate-300 mb-3" />
+                  <p className="text-sm font-semibold text-slate-500">Join a course to see your assignments.</p>
+                  <p className="text-xs text-slate-400 mt-1 mb-4">Use the code your teacher shared with you.</p>
+                  <button
+                    onClick={() => setShowJoinInput(true)}
+                    className="px-4 py-2 bg-[#0A192F] text-white text-sm font-semibold rounded-lg hover:bg-[#15294b] transition cursor-pointer"
+                  >
+                    Enter Join Code
+                  </button>
+                </div>
+              )}
+              {hasEnrollments && (
+                <button
+                  onClick={() => setShowJoinInput(true)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Join another course
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 1. CONTINUE WORKING */}
         {inProgressList.length > 0 && (
           <div className="space-y-4">
-            <SectionHeader
-              icon={ArrowRight}
-              title="Continue Working"
-              count={inProgressList.length}
-              color="indigo"
-              subtitle="Pick up where you left off"
-            />
+            <SectionHeader icon={ArrowRight} title="Continue Working" count={inProgressList.length} color="indigo" subtitle="Pick up where you left off" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {inProgressList.map(renderInProgressCard)}
             </div>
@@ -393,12 +573,7 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
         {/* 2. AVAILABLE ASSIGNMENTS */}
         {availableList.length > 0 && (
           <div className="space-y-4">
-            <SectionHeader
-              icon={BookOpen}
-              title="Available Assignments"
-              count={availableList.length}
-              color="slate"
-            />
+            <SectionHeader icon={BookOpen} title="Available Assignments" count={availableList.length} color="slate" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {availableList.map(renderStandardCard)}
             </div>
@@ -408,12 +583,7 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
         {/* 3. NEEDS ATTENTION */}
         {needsAttentionList.length > 0 && (
           <div className="space-y-4">
-            <SectionHeader
-              icon={AlertCircle}
-              title="Needs Attention"
-              count={needsAttentionList.length}
-              color="amber"
-            />
+            <SectionHeader icon={AlertCircle} title="Needs Attention" count={needsAttentionList.length} color="amber" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {needsAttentionList.map(renderStandardCard)}
             </div>
@@ -423,36 +593,25 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
         {/* 4. COMPLETED */}
         {completedList.length > 0 && (
           <div className="space-y-4">
-            <SectionHeader
-              icon={CheckCircle}
-              title="Completed"
-              count={completedList.length}
-              color="emerald"
-            />
+            <SectionHeader icon={CheckCircle} title="Completed" count={completedList.length} color="emerald" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {completedList.map(renderStandardCard)}
             </div>
           </div>
         )}
 
-        {/* 5. UPCOMING — opens in future */}
+        {/* 5. UPCOMING */}
         {upcomingList.length > 0 && (
           <div className="space-y-4">
-            <SectionHeader
-              icon={Calendar}
-              title="Upcoming"
-              count={upcomingList.length}
-              color="slate"
-              subtitle="Not yet open"
-            />
+            <SectionHeader icon={Calendar} title="Upcoming" count={upcomingList.length} color="slate" subtitle="Not yet open" />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {upcomingList.map(renderStandardCard)}
             </div>
           </div>
         )}
 
-        {/* Empty state */}
-        {assignments.length === 0 && (
+        {/* Empty state — only when enrolled but no assignments */}
+        {hasEnrollments && assignments.length === 0 && (
           <div className="border border-dashed border-slate-200 rounded-lg p-12 bg-white text-center">
             <FileText className="w-10 h-10 mx-auto text-slate-300 mb-3" />
             <p className="text-sm font-semibold text-slate-500">No assignments yet</p>
