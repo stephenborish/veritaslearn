@@ -950,7 +950,8 @@ app.post("/api/lessons", requireTeacher, async (req, res) => {
     }
 
     await commitDb(db);
-    res.status(201).json({ success: true, lesson: newLesson });
+    const savedBlocks = db.blocks.filter((b: any) => b.lessonId === newLesson.id);
+    res.status(201).json({ success: true, lesson: newLesson, blocks: savedBlocks });
   } catch (err) {
     sendAppError(res, err);
   }
@@ -1017,7 +1018,8 @@ app.put("/api/lessons/:id", requireTeacher, async (req, res) => {
     }
 
     await commitDb(db);
-    res.json({ success: true, lesson: db.lessons[lessonIdx] });
+    const updatedBlocks = db.blocks.filter((b: any) => b.lessonId === id);
+    res.json({ success: true, lesson: db.lessons[lessonIdx], blocks: updatedBlocks });
   } catch (err) {
     sendAppError(res, err);
   }

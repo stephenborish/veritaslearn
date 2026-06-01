@@ -10,7 +10,12 @@ function hasContent(v: any): boolean {
   if (v === null || v === undefined) return false;
   if (typeof v === "string") return v.trim().length > 0;
   if (typeof v === "object") {
-    // RichContent: treat as present unless it is an empty container.
+    // RichContent format: check plainText stripped of whitespace or html stripped of tags
+    if (v.format === "veritas-rich-content") {
+      const fromPlain = typeof v.plainText === "string" ? v.plainText.trim() : "";
+      const fromHtml = typeof v.html === "string" ? v.html.replace(/<[^>]*>/g, "").trim() : "";
+      return fromPlain.length > 0 || fromHtml.length > 0;
+    }
     if (typeof v.text === "string") return v.text.trim().length > 0;
     if (Array.isArray(v.blocks)) return v.blocks.length > 0;
     return Object.keys(v).length > 0;

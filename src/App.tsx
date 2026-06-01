@@ -250,8 +250,17 @@ export default function App() {
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      await fetchLmsPayload(currentUser, token);
-      return data;
+      if (!res.ok) {
+        throw new Error(data.message || `Save failed (${res.status})`);
+      }
+      // Background refresh (non-blocking) to keep the library list current
+      fetchLmsPayload(currentUser, token);
+      // Return canonical shape: { ...lessonFields, blocks: [] }
+      // LessonsBuilder uses .id, .blocks, .isPublished, .settings, etc.
+      return {
+        ...data.lesson,
+        blocks: data.blocks || []
+      };
     } catch (e) {
       console.error(e);
       throw e;
