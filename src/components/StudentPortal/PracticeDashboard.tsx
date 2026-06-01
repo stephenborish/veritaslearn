@@ -3,7 +3,7 @@ import { Play, CheckCircle, Calendar, Clock3, BookOpen, Lock, AlertCircle, Arrow
 interface PracticeDashboardProps {
   assignments: any[];
   attempts: any[];
-  onStartAttempt: (id: string) => void;
+  onStartAttempt: (lessonId: string, assignmentId: string) => void;
   onLogout: () => void;
   user: any;
 }
@@ -72,13 +72,14 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
       return { label: "Closed", buttonText: "No longer available", buttonDisabled: true, statusType: "closed", badgeClass: "bg-slate-100 text-slate-500 border border-slate-200" };
     }
     if (isOpenSoon) {
-      return { label: `Opens ${formatDateTime(asg.opensAt)}`, buttonText: "Not yet open", buttonDisabled: true, statusType: "upcoming", badgeClass: "bg-blue-50 text-blue-600 border border-blue-200" };
+      const timeUntil = formatTimeUntil(asg.opensAt);
+      return { label: timeUntil ? `Opens in ${timeUntil}` : "Opening soon", buttonText: "Not yet open", buttonDisabled: true, statusType: "upcoming", badgeClass: "bg-blue-50 text-blue-600 border border-blue-200" };
     }
     if (isLocked) {
-      return { label: "Locked — contact teacher", buttonText: "Locked", buttonDisabled: true, statusType: "locked", badgeClass: "bg-rose-50 text-rose-700 border border-rose-200" };
+      return { label: "Locked", buttonText: "Locked", buttonDisabled: true, statusType: "locked", badgeClass: "bg-rose-50 text-rose-700 border border-rose-200" };
     }
     if (isInProgress && isPastDue) {
-      return { label: "Past due", buttonText: "Resume", buttonDisabled: false, statusType: "in_progress_past_due", badgeClass: "bg-amber-50 text-amber-700 border border-amber-200" };
+      return { label: "Past due — in progress", buttonText: "Resume", buttonDisabled: false, statusType: "in_progress_past_due", badgeClass: "bg-amber-50 text-amber-700 border border-amber-200" };
     }
     if (isInProgress) {
       return { label: "In progress", buttonText: "Resume", buttonDisabled: false, statusType: "in_progress", badgeClass: "bg-indigo-50 text-indigo-700 border border-indigo-200" };
@@ -93,16 +94,24 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
   const inProgressList: any[] = [];
   const availableList: any[] = [];
   const needsAttentionList: any[] = [];
+  const upcomingList: any[] = [];
   const completedList: any[] = [];
 
   assignments.forEach((asg) => {
-    const attempt = attempts.find((a) => a.lessonId === asg.lessonId && a.studentId === user.id);
+    // Match attempt by assignmentId when available (assignment-aware), else fall back to lessonId.
+    const attempt = attempts.find((a) =>
+      a.studentId === user.id &&
+      !a.isPreviewAttempt &&
+      (asg.id && a.assignmentId ? a.assignmentId === asg.id : a.lessonId === asg.lessonId)
+    );
     const { statusType } = getAssignmentStatus(asg, attempt);
 
     if (statusType === "in_progress" || statusType === "in_progress_past_due") {
       inProgressList.push({ asg, attempt });
     } else if (statusType === "completed") {
       completedList.push({ asg, attempt });
+    } else if (statusType === "upcoming") {
+      upcomingList.push({ asg, attempt });
     } else if (statusType === "past_due" || statusType === "locked" || statusType === "closed") {
       needsAttentionList.push({ asg, attempt });
     } else {
@@ -179,7 +188,7 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
 
         <div className="bg-indigo-50 border-t border-indigo-100 px-5 py-3 flex justify-end">
           <button
-            onClick={() => !buttonDisabled && onStartAttempt(asg.lessonId)}
+            onClick={() => !buttonDisabled && onStartAttempt(asg.lessonId, asg.id)}
             disabled={buttonDisabled}
             className="text-sm font-bold px-5 py-2 rounded flex items-center gap-2 transition shadow-sm bg-indigo-700 hover:bg-indigo-800 text-white cursor-pointer"
           >
@@ -278,7 +287,7 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
 
         <div className="bg-slate-50 border-t border-slate-100 px-5 py-3 flex justify-end items-center">
           <button
-            onClick={() => !buttonDisabled && onStartAttempt(asg.lessonId)}
+            onClick={() => !buttonDisabled && onStartAttempt(asg.lessonId, asg.id)}
             disabled={buttonDisabled}
             className={`text-[12px] font-bold px-4 py-1.5 rounded flex items-center gap-1.5 transition shadow-xs ${
               buttonDisabled
@@ -327,6 +336,7 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
 
   const totalAssigned = assignments.length;
   const totalCompleted = completedList.length;
+  const totalOpen = inProgressList.length + availableList.length;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-6">
@@ -421,6 +431,22 @@ export default function PracticeDashboard({ assignments, attempts, onStartAttemp
             />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {completedList.map(renderStandardCard)}
+            </div>
+          </div>
+        )}
+
+        {/* 5. UPCOMING — opens in future */}
+        {upcomingList.length > 0 && (
+          <div className="space-y-4">
+            <SectionHeader
+              icon={Calendar}
+              title="Upcoming"
+              count={upcomingList.length}
+              color="slate"
+              subtitle="Not yet open"
+            />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {upcomingList.map(renderStandardCard)}
             </div>
           </div>
         )}

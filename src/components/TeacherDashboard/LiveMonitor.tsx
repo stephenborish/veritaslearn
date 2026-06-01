@@ -16,8 +16,12 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 
-// Student is considered "active" if they had activity within this window
-const IDLE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+// Named presence thresholds. "Active recently" means activity within the last 2 minutes.
+// "Idle" means no activity for 2–30 minutes. "Stale" means no activity for over 30 minutes.
+// These are heuristic labels — they reflect last-reported heartbeat, not live socket presence.
+const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000;   // 2 minutes
+const IDLE_THRESHOLD_MS = ACTIVE_THRESHOLD_MS; // alias kept for backward compat
+const STALE_THRESHOLD_MS = 30 * 60 * 1000;    // 30 minutes
 
 interface LiveMonitorProps {
   students: any[];
@@ -62,19 +66,28 @@ export default function LiveMonitor({
     }, 0);
   };
 
-  // Status helpers
+  // Status helpers — based on last heartbeat timestamp, not live socket presence.
   const isAttemptActive = (attempt: any): boolean => {
     if (attempt.status === "completed") return false;
     const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
     if (!lastActiveRaw) return false;
-    return Date.now() - new Date(lastActiveRaw).getTime() <= IDLE_THRESHOLD_MS;
+    return Date.now() - new Date(lastActiveRaw).getTime() <= ACTIVE_THRESHOLD_MS;
   };
 
   const isAttemptIdle = (attempt: any): boolean => {
     if (attempt.status === "completed") return false;
     const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
-    if (!lastActiveRaw) return true;
-    return Date.now() - new Date(lastActiveRaw).getTime() > IDLE_THRESHOLD_MS;
+    if (!lastActiveRaw) return false;
+    const elapsed = Date.now() - new Date(lastActiveRaw).getTime();
+    return elapsed > ACTIVE_THRESHOLD_MS && elapsed <= STALE_THRESHOLD_MS;
+  };
+
+  // Stale: started but no heartbeat for >30 minutes. Possibly disconnected.
+  const isAttemptStale = (attempt: any): boolean => {
+    if (attempt.status === "completed") return false;
+    const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
+    if (!lastActiveRaw) return true; // no timestamp at all → assume stale
+    return Date.now() - new Date(lastActiveRaw).getTime() > STALE_THRESHOLD_MS;
   };
 
   const isAttemptLocked = (attempt: any): boolean =>
@@ -99,6 +112,8 @@ export default function LiveMonitor({
 
   const isAttemptNeedsReview = (attempt: any): boolean => {
     if (isAttemptLocked(attempt)) return true;
+    // Respect the durable server-side review flag set by the proctoring system.
+    if (attempt.securityReviewRequired) return true;
     const { total, fullscreenExits, seekBlocks } = getAttemptSignalSummary(attempt.id);
     if (total >= 3 || fullscreenExits > 0 || seekBlocks > 0) return true;
     const sResponses = responses.filter((r) => r.attemptId === attempt.id);
@@ -134,6 +149,7 @@ export default function LiveMonitor({
   // Counts
   const activeCount = lessonFilteredAttempts.filter(isAttemptActive).length;
   const idleCount = lessonFilteredAttempts.filter(isAttemptIdle).length;
+  const staleCount = lessonFilteredAttempts.filter((a) => a.status !== "completed" && isAttemptStale(a)).length;
   const notStartedCount = rawNotStarted.length;
   const completedCount = lessonFilteredAttempts.filter((a) => a.status === "completed").length;
   const needsReviewCount = lessonFilteredAttempts.filter(isAttemptNeedsReview).length;
@@ -167,6 +183,9 @@ export default function LiveMonitor({
     showNotStarted = false;
   } else if (statusFilter === "idle") {
     visibleAttempts = searchFilteredAttempts.filter(isAttemptIdle);
+    showNotStarted = false;
+  } else if (statusFilter === "stale") {
+    visibleAttempts = searchFilteredAttempts.filter((a) => a.status !== "completed" && isAttemptStale(a));
     showNotStarted = false;
   } else if (statusFilter === "not_started") {
     visibleAttempts = [];
@@ -316,12 +335,13 @@ export default function LiveMonitor({
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {[
               { id: "all", label: "All", count: grandTotal, color: "slate" },
-              { id: "active", label: "Active", count: activeCount, color: "green" },
-              { id: "idle", label: "Idle", count: idleCount, color: "slate" },
-              { id: "not_started", label: "Not started", count: notStartedCount, color: "slate" },
-              { id: "completed", label: "Completed", count: completedCount, color: "blue" },
-              { id: "needs_review", label: "Needs review", count: needsReviewCount, color: "amber" },
+              { id: "needs_review", label: "Needs Review", count: needsReviewCount, color: "amber" },
               { id: "locked", label: "Locked", count: lockedCount, color: "red" },
+              { id: "active", label: "Active Recently", count: activeCount, color: "green" },
+              { id: "idle", label: "Idle", count: idleCount, color: "slate" },
+              { id: "stale", label: "Possibly Disconnected", count: staleCount, color: "slate" },
+              { id: "not_started", label: "Not Started", count: notStartedCount, color: "slate" },
+              { id: "completed", label: "Completed", count: completedCount, color: "blue" },
             ].map((tab) => {
               const isActive = statusFilter === tab.id;
               const hasBadgeAlert = !isActive && (tab.color === "amber" || tab.color === "red") && tab.count > 0;
@@ -405,12 +425,16 @@ export default function LiveMonitor({
                   (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
                 );
 
+                const isStale = !isCompleted && !isActive && isAttemptStale(latestAttempt);
+
                 const statusLabel = isLocked
                   ? "Locked"
                   : isCompleted
                   ? "Completed"
                   : isActive
-                  ? "Active"
+                  ? "Active Recently"
+                  : isStale
+                  ? "Possibly Disconnected"
                   : "Idle";
 
                 const statusBadgeCls = isLocked
@@ -419,6 +443,8 @@ export default function LiveMonitor({
                   ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                   : isActive
                   ? "bg-green-50 text-green-700 border-green-200"
+                  : isStale
+                  ? "bg-orange-50 text-orange-700 border-orange-200"
                   : "bg-slate-100 text-slate-500 border-slate-200";
 
                 return (
@@ -622,7 +648,7 @@ export default function LiveMonitor({
                                 <span className="w-2.5 h-2.5 rounded-full bg-slate-300 block" />
                               )}
                               <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-tight">
-                                {isCompleted ? "Done" : isActive ? "Active" : `Idle (${formatLastActive(attempt)})`}
+                                {isCompleted ? "Done" : isActive ? "Active Recently" : isAttemptStale(attempt) ? `Possibly Disconnected (${formatLastActive(attempt)})` : `Idle (${formatLastActive(attempt)})`}
                               </span>
                             </div>
                           </td>

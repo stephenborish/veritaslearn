@@ -325,8 +325,9 @@ export default function App() {
     }
   };
 
-  // Launch Focus player
-  const handleLaunchStudentPlayer = async (lessonId: string) => {
+  // Launch Focus player — pass assignmentId so the server can verify eligibility
+  // and tie the attempt to the correct assignment record.
+  const handleLaunchStudentPlayer = async (lessonId: string, assignmentId?: string) => {
     const token = await getFreshToken();
     if (!token) return;
     try {
@@ -334,16 +335,18 @@ export default function App() {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${token}`
       };
-      
+
       const res = await fetch("/api/attempts", {
         method: "POST",
         headers: authHeader,
-        body: JSON.stringify({ lessonId })
+        body: JSON.stringify({ lessonId, assignmentId })
       });
       const data = await res.json();
-      
+
       if (data.attempt) {
         setActiveStudentAttempt(data.attempt.id);
+      } else if (data.error) {
+        console.error("Failed to start attempt:", data.error);
       }
     } catch (e) {
       console.error(e);
