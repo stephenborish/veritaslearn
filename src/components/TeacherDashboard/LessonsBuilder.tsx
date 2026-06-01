@@ -128,7 +128,7 @@ export default function LessonsBuilder({
   const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
 
   const toggleBlockExpanded = (blockId: string) => {
-    setExpandedBlocks(prev => ({
+    setExpandedBlocks((prev: Record<string, boolean>) => ({
       ...prev,
       [blockId]: !prev[blockId]
     }));
@@ -172,7 +172,7 @@ export default function LessonsBuilder({
 
   const startNewLesson = () => {
     setSelectedLesson({ id: "new" });
-    setTitle("New VERITAS Readiness Lesson");
+    setTitle("New Lesson");
     setDescription("");
     setEstimatedMinutes(25);
     setIsPublished(false);
@@ -211,11 +211,11 @@ export default function LessonsBuilder({
   };
 
   const handleDeleteBlock = (index: number) => {
-    setCurrentBlocks(currentBlocks.filter((_, idx) => idx !== index));
+    setCurrentBlocks(currentBlocks.filter((_: any, idx: number) => idx !== index));
   };
 
   const handleBlockChange = (index: number, key: string, val: any) => {
-    setCurrentBlocks((prev) => {
+    setCurrentBlocks((prev: any[]) => {
       const updated = [...prev];
       updated[index] = { ...updated[index], [key]: val };
       return updated;
@@ -223,7 +223,7 @@ export default function LessonsBuilder({
   };
 
   const handleBlockMultipleChanges = (index: number, changes: Record<string, any>) => {
-    setCurrentBlocks((prev) => {
+    setCurrentBlocks((prev: any[]) => {
       const updated = [...prev];
       updated[index] = { ...updated[index], ...changes };
       return updated;
@@ -439,7 +439,7 @@ export default function LessonsBuilder({
 
                         {/* Block Summary Statistics */}
                         <div className="bg-slate-50/50 border border-slate-200/60 rounded-md p-3.5 space-y-2">
-                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Lesson Plan Components</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Lesson Structure</div>
                           <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-[11px] text-slate-600 font-medium">
                             <div className="flex items-center gap-1.5">
                               <span>Videos: <strong>{videoCount}</strong> watch block(s)</span>
@@ -456,23 +456,23 @@ export default function LessonsBuilder({
                           </div>
                         </div>
 
-                        {/* Security / Focus Settings Summary */}
+                        {/* Delivery Settings Summary */}
                         <div className="border-t border-slate-100 pt-3.5 space-y-2">
-                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Interactive Monitoring Rules</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Delivery Settings</div>
                           <div className="flex flex-wrap gap-1.5">
                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-sm border ${
-                              lesson.settings?.restrictSeeking 
-                                ? "bg-red-50 text-red-700 border-red-100" 
+                              lesson.settings?.restrictSeeking
+                                ? "bg-red-50 text-red-700 border-red-100"
                                 : "bg-slate-50 text-slate-500 border-slate-100"
                             }`}>
-                              {lesson.settings?.restrictSeeking ? "Seeker Locked" : "Open Seeking"}
+                              {lesson.settings?.restrictSeeking ? "Seeking restricted" : "Open seeking"}
                             </span>
                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-sm border ${
-                              lesson.settings?.requireFullscreen 
-                                ? "bg-amber-50 text-amber-700 border-amber-100 animate-pulse" 
+                              lesson.settings?.requireFullscreen
+                                ? "bg-amber-50 text-amber-700 border-amber-100"
                                 : "bg-slate-50 text-slate-500 border-slate-100"
                             }`}>
-                              {lesson.settings?.requireFullscreen ? "Tab Blur Protected" : "No Monitor"}
+                              {lesson.settings?.requireFullscreen ? "Focus monitoring" : "No focus monitoring"}
                             </span>
                             <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-sm bg-slate-100 text-slate-600 border border-slate-200">
                               {lesson.estimatedMinutes || 30} mins
@@ -602,7 +602,7 @@ export default function LessonsBuilder({
                             onClick={() => startEditing(lesson)}
                             className="text-slate-700 hover:bg-slate-50 font-bold uppercase text-[9px] tracking-widest border border-slate-200 px-2.5 py-1.5 rounded transition cursor-pointer shadow-xs"
                           >
-                            Configure
+                            Edit
                           </button>
                           <button
                             onClick={() => onArchived(lesson.id)}
@@ -670,7 +670,7 @@ export default function LessonsBuilder({
                       <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Select Lesson *</label>
                       <select
                         value={asgLessonId}
-                        onChange={(e) => setAsgLessonId(e.target.value)}
+                        onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setAsgLessonId(e.target.value)}
                         className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
                       >
                         <option value="">-- Choose Published Lesson --</option>
@@ -688,7 +688,7 @@ export default function LessonsBuilder({
                       <input
                         type="text"
                         value={asgCourseId}
-                        onChange={(e) => setAsgCourseId(e.target.value)}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgCourseId(e.target.value)}
                         placeholder="e.g. VERITAS 101"
                         className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
                         required
@@ -700,7 +700,7 @@ export default function LessonsBuilder({
                       <input
                         type="text"
                         value={asgSection}
-                        onChange={(e) => setAsgSection(e.target.value)}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgSection(e.target.value)}
                         placeholder="e.g. Section A"
                         className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
                       />
@@ -711,7 +711,7 @@ export default function LessonsBuilder({
                       <input
                         type="datetime-local"
                         value={asgOpensAt}
-                        onChange={(e) => setAsgOpensAt(e.target.value)}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgOpensAt(e.target.value)}
                         className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
                         required
                       />
@@ -722,7 +722,7 @@ export default function LessonsBuilder({
                       <input
                         type="datetime-local"
                         value={asgDueAt}
-                        onChange={(e) => setAsgDueAt(e.target.value)}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgDueAt(e.target.value)}
                         className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
                         required
                       />
@@ -733,7 +733,7 @@ export default function LessonsBuilder({
                       <input
                         type="datetime-local"
                         value={asgClosesAt}
-                        onChange={(e) => setAsgClosesAt(e.target.value)}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgClosesAt(e.target.value)}
                         className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
                         required
                       />
@@ -889,17 +889,18 @@ export default function LessonsBuilder({
                   type="button"
                   onClick={() => onLaunchPreviewAttempt && onLaunchPreviewAttempt(selectedLesson.id)}
                   className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                  title="Preview the student experience — teacher-only fields are hidden"
                 >
-                  Preview Student
+                  <Eye className="w-3.5 h-3.5" /> Preview as Student
                 </button>
               ) : (
                 <button
                   type="button"
                   disabled
-                  className="bg-slate-100 text-slate-400 border border-slate-200 text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 cursor-not-allowed shadow-none"
-                  title="Save lesson first to enable student-mode previewing"
+                  className="bg-slate-100 text-slate-400 border border-slate-200 text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 cursor-not-allowed"
+                  title="Save the lesson first to enable student preview"
                 >
-                  Preview (Save first)
+                  Preview (save first)
                 </button>
               )}
             </div>
@@ -910,7 +911,7 @@ export default function LessonsBuilder({
               <div className="font-bold flex items-center gap-1.5">
                 <AlertCircle className="w-4 h-4" /> Cannot publish — fix these questions:
               </div>
-              {saveError.map((e, i) => (
+              {saveError.map((e: string, i: number) => (
                 <div key={i} className="pl-5">• {e}</div>
               ))}
               <div className="pl-5 text-[11px] text-red-500">Tip: uncheck "Mark Published" to save as a draft.</div>
@@ -930,8 +931,8 @@ export default function LessonsBuilder({
                   <label className="font-bold text-slate-700 block mb-1">Lesson Title</label>
                   <input 
                     type="text" 
-                    value={title} 
-                    onChange={(e) => setTitle(e.target.value)}
+                    value={title}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
                     className="w-full bg-slate-50/50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800 font-medium"
                   />
                 </div>
@@ -940,7 +941,7 @@ export default function LessonsBuilder({
                   <label className="font-bold text-slate-700 block mb-1">Lesson Overview</label>
                   <RichContentEditor
                     value={description}
-                    onChange={(val) => setDescription(val.html)}
+                    onChange={(val: any) => setDescription(val.html)}
                     mode="compact"
                     placeholder="Enter lesson description..."
                   />
@@ -950,174 +951,204 @@ export default function LessonsBuilder({
                   <label className="font-bold text-slate-700 block mb-1">Estimated Minutes Profile</label>
                   <input 
                     type="number" 
-                    value={estimatedMinutes} 
-                    onChange={(e) => setEstimatedMinutes(Number(e.target.value))}
+                    value={estimatedMinutes}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEstimatedMinutes(Number(e.target.value))}
                     className="w-full bg-slate-50/50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800"
                   />
                 </div>
 
                 <div className="pt-3 border-t border-slate-100 space-y-2.5">
-                  <span className="font-bold text-slate-700 block mb-1">Interactive Policy Rules</span>
-                  
+                  <span className="font-bold text-slate-700 block mb-1">Delivery Rules</span>
+
                   <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
-                    <input type="checkbox" checked={restrictSeeking} onChange={(e) => setRestrictSeeking(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                    Disable Forward Skip (Anti-Seeking)
+                    <input type="checkbox" checked={restrictSeeking} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRestrictSeeking(e.target.checked)} className="focus:ring-0 rounded-sm" />
+                    Restrict video seeking — students cannot skip ahead
                   </label>
 
                   <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
-                    <input type="checkbox" checked={requireFullscreen} onChange={(e) => setRequireFullscreen(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                    Enforce Focus Player & Tab blurs
+                    <input type="checkbox" checked={requireFullscreen} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRequireFullscreen(e.target.checked)} className="focus:ring-0 rounded-sm" />
+                    Require fullscreen focus — log and enforce focus monitoring
                   </label>
 
                   <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
-                    <input type="checkbox" checked={allowRetakes} onChange={(e) => setAllowRetakes(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                    Allow Assessment Retakes
+                    <input type="checkbox" checked={allowRetakes} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAllowRetakes(e.target.checked)} className="focus:ring-0 rounded-sm" />
+                    Allow retakes after completion
                   </label>
 
                   <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
-                    <input type="checkbox" checked={randomizeChoices} onChange={(e) => setRandomizeChoices(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                    Scramble Multiple-Choice Options
+                    <input type="checkbox" checked={randomizeChoices} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setRandomizeChoices(e.target.checked)} className="focus:ring-0 rounded-sm" />
+                    Randomize answer choices per student
                   </label>
 
                   <div className="bg-slate-50 border border-slate-205 rounded p-3 mt-1.5 space-y-1.5">
                     <label className="flex items-start gap-2 font-semibold text-slate-800 cursor-pointer text-[12px] hover:text-slate-900 transition">
-                      <input type="checkbox" checked={isPublished} onChange={(e) => setIsPublished(e.target.checked)} className="focus:ring-0 rounded-sm mt-0.5" />
+                      <input type="checkbox" checked={isPublished} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIsPublished(e.target.checked)} className="focus:ring-0 rounded-sm mt-0.5" />
                       <div>
-                        <span>Publish Lesson &amp; Make Assignable</span>
+                        <span>Published — make assignable</span>
                         <p className="text-[10px] font-normal text-slate-500 mt-0.5 leading-relaxed">
-                          Once published, instructors can map assignments to this lesson under the <strong>Assignments Manager</strong> sub-tab. Drafts are locked/hidden from all student portals.
+                          Once published, this lesson can be assigned to students. Drafts are hidden from all student portals.
                         </p>
                       </div>
                     </label>
                   </div>
                 </div>
 
-                {/* Student View Summary Panel */}
+                {/* Publish Readiness Panel */}
                 <div className="pt-4 border-t border-slate-100 space-y-3">
                   <div className="flex items-center gap-2 mb-1">
-                    <ShieldAlert className="w-4 h-4 text-amber-600" />
-                    <span id="student-view-summary-title" className="font-bold text-xs uppercase tracking-wider text-slate-850 font-sans">Active Student Status</span>
+                    <CheckCircle className="w-4 h-4 text-emerald-600" />
+                    <span className="font-bold text-xs uppercase tracking-wider text-slate-800 font-sans">Publish Readiness</span>
                   </div>
 
-                  <div className="bg-slate-50 border border-slate-150 rounded-lg p-3 text-[11px] text-slate-600 space-y-2.5 shadow-xs">
-                    {/* Delivery Status */}
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Roster Visibility</span>
-                      <div className="flex items-center gap-1.5 mt-1">
-                        <span className={`inline-block w-2.5 h-2.5 rounded-full ${isPublished ? "bg-green-500 animate-pulse" : "bg-amber-500"}`}></span>
-                        <span className="font-bold text-slate-750">{isPublished ? "Authorized Lesson" : "Draft (Blocked/Hidden)"}</span>
-                      </div>
-                      <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                        {isPublished 
-                          ? "This lesson is published. Active assignments scheduled under the Assignments tab will render normally."
-                          : "This lesson is in Draft. Students cannot access or start any assignments derived from this lesson."}
-                      </p>
-                    </div>
+                  {(() => {
+                    // Compute readiness checks
+                    const issues: string[] = [];
+                    let gradedQCount = 0;
+                    let practiceQCount = 0;
+                    let videoCount = 0;
+                    let readingCount = 0;
 
-                    {/* What Students See First */}
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">First Impression</span>
-                      <p className="mt-0.5 text-slate-705 font-semibold truncate">{title || "Untitled Assessment"}</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">
-                        Students begin with the title, description, and an estimation of <strong className="text-slate-600">{estimatedMinutes} minutes</strong> of active learning.
-                      </p>
-                    </div>
+                    if (!title.trim()) issues.push("Lesson title is required.");
+                    if (currentBlocks.length === 0) issues.push("Add at least one block.");
 
-                    {/* Live Sequence Timeline */}
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Learning Pathway</span>
-                      {currentBlocks.length === 0 ? (
-                        <p className="text-[10px] text-slate-400 italic mt-1 font-sans">No learning blocks designed yet.</p>
-                      ) : (
-                        <div className="mt-1.5 space-y-1.5 border-l-2 border-slate-200 pl-2">
-                           {currentBlocks.map((b, idx) => {
-                            let typeLabel = "Unknown";
-                            let iconText = "";
-                            if (b.type === "video") {
-                              typeLabel = `Video Watch (${b.videoCheckpoints?.length || 0} Checkpoints)`;
-                              iconText = "Video:";
-                            } else if (b.type === "reading") {
-                              typeLabel = "Read Passage & Acknowledge";
-                              iconText = "Passage:";
-                            } else if (b.type === "question") {
-                              typeLabel = `${b.isPractice ? "Practice" : "Graded"} Question (${b.singleQuestion?.points || 5} pts)`;
-                              iconText = b.isPractice ? "Practice:" : "Graded:";
+                    currentBlocks.forEach((b: any, i: number) => {
+                      if (!b.title?.trim()) issues.push(`Block ${i + 1}: title is missing.`);
+                      if (b.type === "video") {
+                        videoCount++;
+                        if (!b.videoUrl && !b.storagePath) issues.push(`Block ${i + 1}: no video source.`);
+                        const cps: any[] = b.videoCheckpoints || [];
+                        cps.forEach((cp: any, ci: number) => {
+                          const q = cp.questions?.[0];
+                          if (!cp.isPractice) {
+                            gradedQCount++;
+                            if (q?.type === "mc") {
+                              if (!q.correctChoiceId) issues.push(`Block ${i + 1} checkpoint ${ci + 1}: no correct answer selected.`);
+                              const nonBlank = (q.choices || []).filter((c: any) => c.text?.toString().trim());
+                              if (nonBlank.length < 2) issues.push(`Block ${i + 1} checkpoint ${ci + 1}: need at least 2 choices.`);
                             }
-                            return (
-                              <div key={b.id} className="flex items-start gap-1">
-                                <span className="font-mono text-[9px] text-slate-400">#{idx + 1}</span>
-                                <div>
-                                  <span className="font-semibold text-slate-700 block text-[10px]">{b.title || `Untitled ${b.type}`}</span>
-                                  <span className="text-[9px] text-slate-400 flex items-center gap-1">
-                                    <span className="font-mono text-slate-500 uppercase text-[8px] tracking-wider font-bold">{iconText}</span> {typeLabel}
-                                  </span>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
+                          } else {
+                            practiceQCount++;
+                          }
+                        });
+                      } else if (b.type === "reading") {
+                        readingCount++;
+                        const hasContent = typeof b.content === "string"
+                          ? b.content.trim().length > 0
+                          : !!(b.content?.plainText || b.content?.html);
+                        if (!hasContent) issues.push(`Block ${i + 1}: reading content is empty.`);
+                      } else if (b.type === "question" && b.singleQuestion) {
+                        if (!b.isPractice) {
+                          gradedQCount++;
+                          const q = b.singleQuestion;
+                          if (q.type === "mc") {
+                            if (!q.correctChoiceId) issues.push(`Block ${i + 1}: no correct answer selected.`);
+                            const nonBlank = (q.choices || []).filter((c: any) => c.text?.toString().trim());
+                            if (nonBlank.length < 2) issues.push(`Block ${i + 1}: need at least 2 answer choices.`);
+                          } else if (q.type === "sa") {
+                            if (!(q.rubricCategories?.length >= 1)) issues.push(`Block ${i + 1}: add a rubric category for grading.`);
+                          }
+                        } else {
+                          practiceQCount++;
+                        }
+                      }
+                    });
 
-                    {/* Interactive Security & Integrity Policies */}
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Integrity & Focus Rules</span>
-                      <div className="mt-1 space-y-1">
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Immersive Fullscreen:</span>
-                          <span className={`font-bold ${requireFullscreen ? "text-green-600" : "text-amber-500"}`}>
-                            {requireFullscreen ? "Enforced Focus" : "Off"}
-                          </span>
+                    const canPublish = issues.length === 0;
+
+                    return (
+                      <div className={`rounded-lg border p-3 text-[11px] space-y-3 ${canPublish ? "bg-emerald-50 border-emerald-200" : "bg-white border-slate-200"}`}>
+                        {/* Summary counts */}
+                        <div className="grid grid-cols-2 gap-2 text-[11px]">
+                          <div className="bg-white border border-slate-200 rounded p-2 text-center">
+                            <div className="font-bold text-slate-800 text-base">{currentBlocks.length}</div>
+                            <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Total blocks</div>
+                          </div>
+                          <div className="bg-white border border-slate-200 rounded p-2 text-center">
+                            <div className="font-bold text-slate-800 text-base">{gradedQCount}</div>
+                            <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Graded questions</div>
+                          </div>
+                          {practiceQCount > 0 && (
+                            <div className="bg-white border border-slate-200 rounded p-2 text-center">
+                              <div className="font-bold text-slate-800 text-base">{practiceQCount}</div>
+                              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Practice checks</div>
+                            </div>
+                          )}
+                          {videoCount > 0 && (
+                            <div className="bg-white border border-slate-200 rounded p-2 text-center">
+                              <div className="font-bold text-slate-800 text-base">{videoCount}</div>
+                              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Video blocks</div>
+                            </div>
+                          )}
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Anti-Seeking (Video Skip):</span>
-                          <span className={`font-bold ${restrictSeeking ? "text-green-600" : "text-amber-500"}`}>
-                            {restrictSeeking ? "Seeking Blocked" : "Open Seeking"}
-                          </span>
+
+                        {/* Publish status */}
+                        <div className={`rounded p-2 flex items-center gap-2 ${canPublish ? "bg-emerald-100/60 text-emerald-800" : "bg-amber-50 text-amber-800 border border-amber-200"}`}>
+                          {canPublish ? (
+                            <>
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span className="text-[11px] font-bold">Ready to publish</span>
+                            </>
+                          ) : (
+                            <>
+                              <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                              <span className="text-[11px] font-bold">{issues.length} issue{issues.length !== 1 ? "s" : ""} to fix</span>
+                            </>
+                          )}
                         </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Tab Focus Logging:</span>
-                          <span className={`font-bold ${requireFullscreen ? "text-green-600" : "text-slate-400"}`}>
-                            {requireFullscreen ? "Active" : "Inactive"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Copy/Paste Blocks:</span>
-                          <span className={`font-bold ${requireFullscreen ? "text-green-600" : "text-slate-400"}`}>
-                            {requireFullscreen ? "Blocked" : "Unrestricted"}
-                          </span>
+
+                        {/* Issues list */}
+                        {issues.length > 0 && (
+                          <ul className="space-y-1">
+                            {issues.map((issue, i) => (
+                              <li key={i} className="text-[10px] text-rose-700 flex items-start gap-1.5">
+                                <span className="shrink-0 mt-0.5">•</span>
+                                <span>{issue}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+
+                        {/* Student preview note */}
+                        <div className="border-t border-slate-200 pt-2 text-[10px] text-slate-500">
+                          <strong className="text-slate-600">Student Preview</strong> hides all teacher-only fields (answer keys, rubrics, AI guidance). Use it to confirm the student experience before assigning.
                         </div>
                       </div>
-                    </div>
+                    );
+                  })()}
+                </div>
 
-                    {/* Grading and Scoring Feedback */}
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Assessment Grading Policy</span>
-                      <div className="mt-1 space-y-1">
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Option Scrambling:</span>
-                          <span className="font-semibold text-slate-700">{randomizeChoices ? "Enabled" : "Disabled"}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Practice Feedback:</span>
-                          <span className="font-semibold text-slate-700">Immediate</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Graded Questions:</span>
-                          <span className="font-bold text-amber-600">Hidden answer key (sanitized server-side)</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Short Answers:</span>
-                          <span className="font-semibold text-blue-600">AI-suggested + Teacher manual override</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-500">Assessment Retakes:</span>
-                          <span className="font-semibold text-slate-700">{allowRetakes ? "Allowed" : "One-time submission"}</span>
-                        </div>
-                      </div>
+                {/* Student sequence map */}
+                <div className="pt-3 border-t border-slate-100 space-y-2">
+                  <span className="font-bold text-xs uppercase tracking-wider text-slate-600 block">Student Sequence</span>
+                  {currentBlocks.length === 0 ? (
+                    <p className="text-[10px] text-slate-400 italic">No blocks yet.</p>
+                  ) : (
+                    <div className="space-y-1 border-l-2 border-slate-200 pl-3">
+                      {currentBlocks.map((b: any, idx: number) => {
+                        let typeLabel = "";
+                        let labelCls = "text-slate-500";
+                        if (b.type === "video") { typeLabel = "Video"; labelCls = "text-blue-600"; }
+                        else if (b.type === "reading") { typeLabel = "Reading"; labelCls = "text-purple-600"; }
+                        else if (b.type === "question") {
+                          typeLabel = b.isPractice ? "Practice check" : "Graded question";
+                          labelCls = b.isPractice ? "text-amber-600" : "text-emerald-700";
+                        }
+                        return (
+                          <div
+                            key={b.id}
+                            onClick={() => setExpandedBlocks((prev: Record<string, boolean>) => ({ ...prev, [b.id]: true }))}
+                            className="flex items-start gap-1.5 cursor-pointer hover:bg-slate-50 rounded p-0.5 transition"
+                          >
+                            <span className="font-mono text-[9px] text-slate-400 shrink-0 mt-0.5">#{idx + 1}</span>
+                            <div className="min-w-0">
+                              <span className="text-[11px] font-semibold text-slate-700 block truncate">{b.title || `Untitled ${b.type}`}</span>
+                              <span className={`text-[9px] font-bold uppercase tracking-wide ${labelCls}`}>{typeLabel}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-
-                  </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1142,7 +1173,7 @@ export default function LessonsBuilder({
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {currentBlocks.map((block, index) => {
+                  {currentBlocks.map((block: any, index: number) => {
                     const isExpanded = expandedBlocks[block.id] !== false;
                     const numCps = Array.isArray(block.videoCheckpoints) ? block.videoCheckpoints.length : 0;
                     
@@ -1294,8 +1325,8 @@ export default function LessonsBuilder({
                               <label className="font-bold text-slate-700 block mb-1">Block Title Label</label>
                               <input 
                                 type="text" 
-                                value={block.title} 
-                                onChange={(e) => handleBlockChange(index, "title", e.target.value)}
+                                value={block.title}
+                                onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleBlockChange(index, "title", e.target.value)}
                                 className="w-full bg-slate-50/50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800 font-medium"
                               />
                             </div>
@@ -1333,8 +1364,8 @@ export default function LessonsBuilder({
                                       <label className="font-semibold text-slate-600 block mb-1">Direct Video URL Link (Backup/Manual Override)</label>
                                       <input 
                                         type="text" 
-                                        value={block.videoUrl || ""} 
-                                        onChange={(e) => handleBlockChange(index, "videoUrl", e.target.value)}
+                                        value={block.videoUrl || ""}
+                                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleBlockChange(index, "videoUrl", e.target.value)}
                                         placeholder="https://example.com/video.mp4"
                                         className="w-full bg-slate-50/50 border border-slate-200 rounded px-3 py-1.5 font-mono text-[11px] focus:outline-none focus:border-slate-400"
                                       />
@@ -1366,7 +1397,7 @@ export default function LessonsBuilder({
                                         <input
                                           type="text"
                                           value={cp.title || ""}
-                                          onChange={(e) => updateCheckpoint(index, cp.id, { title: e.target.value })}
+                                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateCheckpoint(index, cp.id, { title: e.target.value })}
                                           placeholder="Checkpoint title"
                                           className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs focus:outline-none focus:border-slate-400"
                                         />
@@ -1382,7 +1413,7 @@ export default function LessonsBuilder({
                                             type="number"
                                             min={0}
                                             value={cp.timestamp ?? 0}
-                                            onChange={(e) => updateCheckpoint(index, cp.id, { timestamp: Number(e.target.value) })}
+                                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateCheckpoint(index, cp.id, { timestamp: Number(e.target.value) })}
                                             className="w-full bg-white border border-slate-200 rounded px-2 py-1 focus:outline-none focus:border-slate-400"
                                           />
                                         </div>
@@ -1390,7 +1421,7 @@ export default function LessonsBuilder({
                                           <label className="font-semibold text-slate-600 block mb-1">Question Type</label>
                                           <select
                                             value={cp.questionType || "mc"}
-                                            onChange={(e) => {
+                                            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
                                               const t = e.target.value as "mc" | "sa";
                                               const existing = (cp.questions && cp.questions[0]) || newQuestionTemplate(t);
                                               const q = { ...existing, type: t };
@@ -1412,15 +1443,15 @@ export default function LessonsBuilder({
 
                                       <div className="flex flex-wrap gap-4 text-[11px]">
                                         <label className="flex items-center gap-1.5 cursor-pointer">
-                                          <input type="checkbox" checked={!!cp.isRequired} onChange={(e) => updateCheckpoint(index, cp.id, { isRequired: e.target.checked })} />
+                                          <input type="checkbox" checked={!!cp.isRequired} onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateCheckpoint(index, cp.id, { isRequired: e.target.checked })} />
                                           Required (blocks progress)
                                         </label>
                                         <label className="flex items-center gap-1.5 cursor-pointer">
-                                          <input type="checkbox" checked={!!cp.pauseVideo} onChange={(e) => updateCheckpoint(index, cp.id, { pauseVideo: e.target.checked })} />
+                                          <input type="checkbox" checked={!!cp.pauseVideo} onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateCheckpoint(index, cp.id, { pauseVideo: e.target.checked })} />
                                           Pause video
                                         </label>
                                         <label className="flex items-center gap-1.5 cursor-pointer">
-                                          <input type="checkbox" checked={!!cp.isPractice} onChange={(e) => updateCheckpoint(index, cp.id, { isPractice: e.target.checked })} />
+                                          <input type="checkbox" checked={!!cp.isPractice} onChange={(e: React.ChangeEvent<HTMLInputElement>) => updateCheckpoint(index, cp.id, { isPractice: e.target.checked })} />
                                           Practice (reveals feedback)
                                         </label>
                                       </div>
@@ -1442,7 +1473,7 @@ export default function LessonsBuilder({
                                 <label className="font-bold text-slate-700 block mb-1">Instructional Reading Passage Content</label>
                                 <RichContentEditor
                                   value={block.content || ""}
-                                  onChange={(val) => handleBlockChange(index, "content", val)}
+                                  onChange={(val: any) => handleBlockChange(index, "content", val)}
                                   mode="full"
                                 />
                               </div>
@@ -1457,7 +1488,7 @@ export default function LessonsBuilder({
                                     <label className="font-semibold text-slate-600 block mb-1">Question Type</label>
                                     <select
                                       value={block.questionType || "mc"}
-                                      onChange={(e) => {
+                                      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
                                         const t = e.target.value as "mc" | "sa";
                                         handleBlockChange(index, "questionType", t);
                                         const existing = block.singleQuestion || newQuestionTemplate(t);
@@ -1483,7 +1514,7 @@ export default function LessonsBuilder({
                                     <label className="font-semibold text-slate-600 block mb-1">Practice Mode vs Graded</label>
                                     <select
                                       value={block.isPractice ? "true" : "false"}
-                                      onChange={(e) => handleBlockChange(index, "isPractice", e.target.value === "true")}
+                                      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => handleBlockChange(index, "isPractice", e.target.value === "true")}
                                       className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-800 focus:outline-none"
                                     >
                                       <option value="false">Graded Assessment (Keeps answers secret)</option>
