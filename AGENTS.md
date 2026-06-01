@@ -2274,4 +2274,242 @@ Future-agent warning:
     handles this, but callers must pass the right thing.
   - GET /api/attempts is now the correct endpoint for student dashboard population.
     POST /api/attempts is the correct endpoint for intentional attempt creation only.
+
+---
+
+### Step 1: Add Preview/Test Attempt Data Model
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Step 1 — Add a safe data model foundation for teacher preview/test student work.
+
+FILES CHANGED:
+- src/types.ts: Added fields `attemptMode`, `isPreviewAttempt`, `previewOwnerTeacherId`, and `excludeFromAnalytics` to `LessonAttempt`.
+- server.ts: 
+  - Excluded preview attempts from standard student and teacher listing in `GET /api/attempts`.
+  - Excluded preview attempts from student-attempt checking/creation in `POST /api/attempts`.
+  - Added new endpoint `POST /api/teacher/lessons/:lessonId/preview-attempt` allowing teachers to create/resume preview/test attempts.
+  - Excluded preview attempts from all Teacher Analytics, Gradebook, AI review, and Live monitor data queries in `GET /api/analytics`.
+
+TRUSTED DATA OPERATIONS CHANGED:
+- `POST /api/teacher/lessons/:lessonId/preview-attempt`: Creates or returns an active preview attempt for teachers, strictly authenticated with `requireTeacher`.
+- `GET /api/analytics`: Dynamically filters out `isPreviewAttempt === true` attempts, corresponding responses, and focus/security signals from the returned dataset to ensure student analytics are completely safe from preview pollution.
+
+MODELS CHANGED:
+- `LessonAttempt` model extended with:
+  - `attemptMode?: "real" | "preview" | "test";`
+  - `isPreviewAttempt?: boolean;`
+  - `previewOwnerTeacherId?: string;`
+  - `excludeFromAnalytics?: boolean;`
+
+VERIFICATION:
+- `npm run lint`: PASS
+- `npm run build`: PASS
+
+---
+
+### Step 2: Teacher “Preview as Student” Using Real Student Player
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Step 2 — Allow teachers to preview lessons inside the immersive, real student player view without exposing teacher-only correct answers, rubrics, model answers or polluting analytics.
+
+FILES CHANGED:
+- `src/App.tsx`:
+  - Added `handleLaunchPreviewAttempt` callback triggering `POST /api/teacher/lessons/:lessonId/preview-attempt` to start/resume the teacher's preview attempt.
+  - Intercepted rendering inside the teacher path to load the real `FocusedPlayer` if an active preview attempt is set for the faculty user.
+  - Passed `onLaunchPreviewAttempt` down to the `LessonsBuilder` component.
+- `src/components/TeacherDashboard/LessonsBuilder.tsx`:
+  - Added "Preview as Student" button to individual lesson cards under active lesson listings.
+  - Added another conspicuous "Preview as Student" button within the top active design canvas header controls of the workspace.
+- `src/components/StudentPortal/FocusedPlayer.tsx`:
+  - Provided automatic `?preview=true` block query injection to ensure that blocks returned during preview requests are student-facing sanitized representations.
+  - Intercepted rendering dynamically to display a conspicuous, prominent top amber banner labeling preview mode: `"Preview as Student — test data excluded from real analytics"` with an elevated visual backdrop and a clear `"Exit Preview"` action button.
+- `server.ts`:
+  - Modified `GET /api/lessons/:id` to dynamically enforce block sanitization on demand if `req.query.preview === "true"`, purging any correct choice indices, explanation fields, grading rubrics, model answers, AI guidance, and confidential notes.
+
+VERIFICATION:
+- `npm run lint`: PASS (TypeScript static verification verified green)
+- `npm run build`: PASS (Production build tested and compiled fully green)
+
+---
+
+### Step 3: Student View Summary Panel
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Step 3 — On the teacher side, add a clear “Student View Summary” panel so the teacher can preview what students see and verify security/grading/focus parameters before launching.
+
+FILES CHANGED:
+- `src/components/TeacherDashboard/LessonsBuilder.tsx`:
+  - Implemented the compact, highly styled **Student View Summary** panel at the bottom of the sticky configurations sidebar.
+  - Coupled state bindings directly with the lesson properties (e.g. `title`, `estimatedMinutes`, `isPublished`, `restrictSeeking`, `requireFullscreen`, `randomizeChoices`, and `allowRetakes`).
+  - Added a reactive **Learning Pathway** timeline mapping exactly out the sequence of active blocks, including counts of embedded checkpoints in videos, passage acknowledgement requests, and point breakdowns.
+
+REAL SETTINGS DISPLAYED:
+- **Delivery Status**: Dynamically tracks whether the lesson is in draft state or published for student rosters.
+- **First Impression**: Displays the initial heading title and time estimations students interact with on start.
+- **Learning Pathway**: Highlights chronological segments, labeled with interactive video durations or points structures.
+- **Integrity & Focus Rules**: Explicitly displays whether fullscreen immersive mode, copy-paste protection, tab-blur alert tracking, and skip-ahead seeking blocks are active.
+- **Assessment Grading Policy**: Summarizes choice scrambling, point valuations, and immediate/delayed feedback policy controls.
+
+VERIFICATION:
+- `npm run lint`: PASS
+- `npm run build`: PASS
+
+---
+
+### Step 4: React Hook Order Violation Bugfix
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Fix Hook Order Violation inside FocusedPlayer causing runtime errors when transitioning between the loading state and the active layout representation.
+
+FILES CHANGED:
+- `src/components/StudentPortal/FocusedPlayer.tsx`:
+  - Moved the dynamic video URL resolution `useEffect` hook and its associated `activeBlock` variable declaration above the conditional loading early-return `if (loading)` checkpoint. This guarantees that all functional hooks are mounted and executed in exact, invariant order during every single render flow regardless of the internal loading states.
+
+VERIFICATION:
+- `npm run lint`: PASS (Verified green)
+- `npm run build`: PASS (Verified fully compiled without errors)
+
+---
+
+### Step 5: Empty Video-Src Warning Bugfix
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Correct the empty string `src=""` console warning on the HTML5 video element when `resolvedVideoUrl` is uninitialized.
+
+FILES CHANGED:
+- `src/components/StudentPortal/FocusedPlayer.tsx`:
+  - Updated the `<video>` element's `src` attribute binding to use `resolvedVideoUrl || undefined`. This tells React to completely omit the attribute from the DOM when empty, rather than rendering an empty string which causes redundant network requests or console warnings.
+
+VERIFICATION:
+- `npm run lint`: PASS (No warning elements)
+- `npm run build`: PASS (Production build tested and compiled fully green)
+
+---
+
+### Step 6: Make Lesson Builder Match Student Experience
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Reorganize building blocks around sequential student action pathways, utilize neutral/clear academic terminology, and introduce central sticky top-level actions (Save Draft, Publish Live, Assign, and Live Preview).
+
+FILES CHANGED:
+- `src/components/TeacherDashboard/LessonsBuilder.tsx`:
+  - Reorganized active block cards with integrated **Student Action, Rule Gatekeeper, and Live Preview Indicators**, displaying block orders, titles, and edit configuration toggles.
+  - Replaced antiquated/awkward labels like `"Educational Narrative Description"` with `"Lesson Overview"`, and `"Active Deliveries Log"` with `"Assignments"`.
+  - Refactored course and title placeholders to use academic VERITAS branding (e.g. `"VERITAS 101"`, `"New VERITAS Readiness Lesson"`) instead of stagnant placeholder text.
+  - Introduced four dedicated, polished sticky top action buttons in the designer workspace header: `Save Draft`, `Publish Live`, `Assign & Launch`, and `Preview Student`. These actions trigger background saving, client-side block validation gates, layout routing, and real student player previewing instantly.
+- `src/components/TeacherDashboard/StudentDossierModal.tsx`:
+  - Standardized the user-facing checkpoint alert text inside the dossier timeline layout to say `"student"` instead of `"pupil"`.
+
+VERIFICATION:
+- `npm run lint`: PASS (Fully type checked and clean)
+- `npm run build`: PASS (Production compiler bundled successfully)
+
+---
+
+### Step 7: Preview/Test Data Handling in Teacher Screens
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Design and implement sandbox/test-student isolation across the Live Monitor, Gradebook, Student Dossier, and Analytics screens, including query/filter toggles, distinct score markers, and custom informational alerts.
+
+FILES CHANGED:
+- `server.ts`:
+  - Updated `GET /api/analytics` to return all attempts, responses, and security focus signals to the client rather than hard-filtering at the server-database level. This allows the teacher dashboard components to dynamically toggle, filter, and label preview attempts cleanly based on the actual `isPreviewAttempt` and `attemptMode` attributes.
+- `src/components/TeacherDashboard/LiveMonitor.tsx`:
+  - Introduced a "Show preview/test attempts" checkbox toggle in the Filter bar.
+  - Excluded preview data from all normal summary metrics (Not Started, In Progress, Completed, Locked) by default.
+  - Implemented a smart fallback inside the card-rendering mapping so that if a teacher preview attempt doesn't have a matching Student record (since teachers aren't in the student roster), it synthesizes a gorgeous "Teacher Preview Student" entity.
+  - Labeled cards corresponding to preview attempts with highly prominent amber badges saying "Preview / Test" and set a descriptive email sublabel.
+- `src/components/TeacherDashboard/Gradebook.tsx`:
+  - Introduced a "Include teacher preview/test sandbox attempts" checkbox toggle in the header controls.
+  - Excluded preview attempts from the normal grade list and Class Average calculations by default.
+  - Added support for adding a mock "Teacher Preview Student" student row that holds the corresponding preview attempt cells if the toggle is checked.
+  - Colorized preview-mode cells with a soft amber background and clear "[Test]" sublabels.
+  - Updated the CSV exporter to respect the active filter options and include a column tracking if an attempt type is "Preview/Test" or "Real Student".
+- `src/components/TeacherDashboard/StudentDossierModal.tsx`:
+  - Handled the special case of rendering dossiers for preview attempts by mapping student placeholders when student information is absent.
+  - Embedded a beautiful highlight banner in the dossier workspace informing the teacher that the session details display safe, sandboxed preview/test data isolated from real averages.
+  - Indicated sandbox scores with distinctive "[TEST ONLY]" labels across standard questions and timeline checkpoints.
+
+VERIFICATION:
+- `npm run lint`: PASS (No warning elements, fully typechecked)
+- `npm run build`: PASS (Production bundler compiles fully green)
+```
+
+---
+
+### Step 8: Improve Launch / Assignment Clarity
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Design a premium, highly informative assignments/launch interface within the Lesson Library cards, clarify the layout publication versus course roster assignment boundaries, and standardise terms and alerts supporting scheduled, open, and closed pacing states.
+
+FILES CHANGED:
+- `src/components/TeacherDashboard/LessonsBuilder.tsx`:
+  - Redesigned the individual Lesson Library grid cards to embed a high-fidelity information panel showing publication status (colorized badges for Draft vs. Published), active student release parameters (Scheduled, Available, Closed), active timing boundaries (Opens, Due, Closes), focus-mode player settings, and a numerical summary of practice/graded segments.
+  - Formulated direct context synchronization from the lesson cards which transitions to the Assignments creator and pre-fills selected items.
+  - Incorporated clear informational alerts into the design canvas, detailing that only published templates are authorized for delivery assignment and that drafts are locked/blocked from all active student portals.
+  - Imported comprehensive Lucide graphics (`Eye`, `Play`, `CheckCircle`) to style state badges.
+
+VERIFICATION:
+- `npm run lint`: PASS (Verified green)
+- `npm run build`: PASS (Production compiler bundled successfully)
+```
+
+---
+
+### Step 9: Live Monitor Classroom Usability Pass
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Improve the Live Monitor view to optimize classroom usability for ~20 students by integrating high-density components, query filters, search, pulse indicators, and detailed warning systems.
+
+FILES CHANGED:
+- `src/components/TeacherDashboard/LiveMonitor.tsx`:
+  - Upgraded header controls to introduce real-time search filtration by student name and email.
+  - Implemented a dual-layout modes switch allowing teachers to toggle between a rich "Grid Cards" dashboard and a high-density "Spreadsheet row Table" layout (essential for monitoring ~20 students simultaneously).
+  - Designed responsive state pill filters with real-time numeric badges tracking Active Live, Idle/Offline, Not Started, Completed, Needs Review, and Locked counts.
+  - Excluded preview/sandbox attempts from regular student analytics unless explicit "Include preview test attempts" configuration is selected.
+  - Configured status checks to detect tab blur lockouts, left fullscreen exits, timeline seek blockages, and pending short-answer/essay evaluation triggers to supply accurate warning alerts.
+  - Calculated exact point denominators dynamically using the real blocks structure to display precise earned scores and pending evaluations.
+  - Added real-time green pulsing dot indicators of active focus heartbeats (less than 2 mins of activity).
+
+VERIFICATION:
+- `npm run lint`: PASS (Successful, 100% typechecked)
+- `npm run build`: PASS (Production build bundled successfully)
+```
+
+---
+
+### Step 10: Student Dossier Review Pass
+
+Date: 2026-06-01
+Agent: Google AI Studio Coding Agent
+Task: Upgrade the Student Dossier Modal into the teacher's primary central audit surface for evaluating single student attempts, and integrate critical review actions and academic integrity logs.
+
+FILES CHANGED:
+- `src/App.tsx`:
+  - Connected the `onUnlockStudent` action callback handler directly to the `StudentDossierModal` instance parameters, ensuring lockout overrides trigger actual database updates.
+- `src/components/TeacherDashboard/StudentDossierModal.tsx`:
+  - Implemented an elegant student brand card containing details including: avatar initials, full name, email, account permission role, and Authorized domain clearance flags.
+  - Formulated a rich overview of the assessed Course Module (Lesson Topic), description, estimated duration, and draft templates versus published master status rules.
+  - Designed dynamic statistic widgets tracking active study pace durations, lost blurs/visibility exits, block metrics completed, overall points earned, and total final grades.
+  - Appended detailed temporal start times and submitted/completed timestamps, reflecting unsubmitted active progress clearly.
+  - Implemented a complete timeline map detailing sequence orders, spent minutes per segment, and a custom watching percentage for video materials.
+  - Created an interactive focus safety telemetry manager displaying chronologically blurred tab lost warnings, allowing teachers to mark each warning checked/reviewed on-screen with visual checklist fade effects.
+  - Overhauled responses logging to display question stems with corresponding multiple-choice correctness details or written free-form essays.
+  - Integrated AI rubric confidence percentages and rational criteria feedback matches.
+  - Bound real-time "Section Grade Correction & feedback Panel" state controllers inside standard and checkpoint assessment modules, supporting live score typing, text commenting, and saving directly to the Firestore/api layers.
+  - Built an active lock re-entry alert panel that renders a direct "Approve Re-Entry" action when a candidate gets classroom-locked out.
+
+VERIFICATION:
+- `npm run lint`: PASS (Completed successfully, 100% clean)
+- `npm run build`: PASS (Bundled production successfully)
+```,TargetContent:
 ```

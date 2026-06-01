@@ -77,8 +77,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setAssignments(data.questionAssignments || data.assignments || []);
       setResponses(data.responses);
 
-      // Fetch accompanying lesson blocks
-      const lResponse = await fetch(`/api/lessons/${data.attempt.lessonId}`, {
+      // Fetch accompanying lesson blocks (passing ?preview=true if it is a preview attempt)
+      const lResponse = await fetch(`/api/lessons/${data.attempt.lessonId}${data.attempt.isPreviewAttempt ? "?preview=true" : ""}`, {
         headers: authHeader
       });
       const lData = await lResponse.json();
@@ -468,17 +468,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col items-center justify-center font-sans">
-        <RefreshCw className="w-8 h-8 animate-spin text-[#0A192F] mb-3" />
-        <span className="text-[10px] font-mono font-bold tracking-widest text-slate-400 uppercase">Verifying Academic Handshake...</span>
-      </div>
-    );
-  }
-
   const activeBlock = blocks[currentBlockIndex];
-  const assignedSet = assignments.filter((asg) => asg.blockId === activeBlock?.id);
 
   // Dynamic resolution of video URL if storagePath exists
   useEffect(() => {
@@ -503,8 +493,36 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     }
   }, [activeBlock]);
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col items-center justify-center font-sans">
+        <RefreshCw className="w-8 h-8 animate-spin text-[#0A192F] mb-3" />
+        <span className="text-[10px] font-mono font-bold tracking-widest text-slate-400 uppercase">Loading Lesson...</span>
+      </div>
+    );
+  }
+
+  const assignedSet = assignments.filter((asg) => asg.blockId === activeBlock?.id);
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col md:flex-row relative overflow-hidden">
+    <div className={`min-h-screen bg-slate-50 text-slate-800 font-sans flex flex-col md:flex-row relative overflow-hidden ${
+      attemptData?.isPreviewAttempt ? "pt-10" : ""
+    }`}>
+      
+      {/* Preview Alert Banner */}
+      {attemptData?.isPreviewAttempt && (
+        <div className="fixed top-0 inset-x-0 bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 px-4 py-2.5 text-center text-xs font-bold font-sans tracking-wide shadow-md z-[60] flex items-center justify-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>Preview as Student — test data excluded from real analytics</span>
+          <button 
+            type="button"
+            onClick={onExit}
+            className="ml-4 bg-slate-950 hover:bg-slate-900 text-white rounded-md px-3 py-1 font-mono hover:opacity-90 transition text-[10px] uppercase cursor-pointer"
+          >
+            Exit Preview
+          </button>
+        </div>
+      )}
       
       {/* Teacher-approval lock overlay — student cannot self-dismiss */}
       <AnimatePresence>
@@ -564,7 +582,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             onClick={onExit}
             className="text-[10px] font-bold text-slate-500 hover:text-red-700 flex items-center gap-1 cursor-pointer font-mono tracking-wider uppercase transition-colors"
           >
-            <ArrowLeft className="w-4 h-4" /> EXIT FOCUS STAGE
+            <ArrowLeft className="w-4 h-4" /> EXIT LESSON
           </button>
           
           <div className="text-center">
@@ -601,7 +619,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
               <div className="flex-1 flex flex-col relative bg-black">
                 <video
                   ref={videoRef}
-                  src={resolvedVideoUrl}
+                  src={resolvedVideoUrl || undefined}
                   controls
                   controlsList="nodownload noremoteplayback"
                   onTimeUpdate={handleVideoTimeUpdate}
@@ -697,7 +715,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                             }}
                             className="w-full mt-4 bg-white hover:bg-slate-100 text-[#0A192F] font-bold uppercase text-[10px] py-2 rounded cursor-pointer tracking-widest transition-colors shadow-sm"
                           >
-                            Resume Instruction Lecture &rarr;
+                            Resume Video Instruction &rarr;
                           </button>
                         )}
                       </div>
@@ -751,7 +769,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                             value={saText[q.id] || ""}
                             onChange={(e) => handleSaChange(q.id, e.target.value)}
                             rows={5}
-                            placeholder="Compose your academic rationale here. Copying, pasting, and navigation out of focused screen is logged."
+                            placeholder="Compose your response here. Focus monitoring is active."
                             className="w-full text-sm text-slate-800 bg-slate-50 border border-slate-200 rounded p-4 leading-relaxed focus:bg-white focus:outline-none focus:border-slate-400 transition-colors font-serif"
                           />
                           {!isSubmitted && draftSavedIndicator[q.id] && (
@@ -775,7 +793,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           feedback.correct ? "bg-green-50 text-green-800 border border-green-200" : "bg-red-50 text-red-800 border border-red-200"
                         }`}>
                           <strong className="uppercase font-mono block text-[9px] tracking-widest">Instant Evaluator Response</strong>
-                          <p className="font-semibold">{feedback.correct ? "Correct Choice! Excellent synthesis of historical references." : "Incorrect selection. Review instruction timestamps carefully."}</p>
+                          <p className="font-semibold">{feedback.correct ? "Correct Answer! Excellent selection." : "Incorrect selection. Review instruction carefully."}</p>
                           {feedback.desc && <p className="italic mt-1 text-slate-600">"{feedback.desc}"</p>}
                         </div>
                       )}

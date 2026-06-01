@@ -758,11 +758,11 @@ app.get("/api/lessons/:id", requireAuth, (req, res) => {
     .filter((b: any) => b.lessonId === id)
     .sort((a: any, b: any) => a.order - b.order);
 
-  // SECURITY: students receive an explicitly sanitized payload — every embedded
+  // SECURITY: students or previewing teachers receive an explicitly sanitized payload — every embedded
   // question is stripped of correct answers, rubrics, model answers, AI scoring
   // guidance, and teacher notes (graded AND practice). Feedback is delivered
   // separately via the submit response when the feedback policy allows.
-  if (user.role === "student") {
+  if (user.role === "student" || req.query?.preview === "true") {
     blocks = sanitizeLessonBlocksForStudent(blocks);
     const leaks = findLeakedSecretFields(blocks);
     if (leaks.length > 0) {
@@ -1092,20 +1092,118 @@ function buildQuestionAssignment(
   };
 }
 
-// List all attempts for the logged-in student (or all attempts for teachers)
+// List all attempts for the logged-in student (or all attempts for teachers) (excludes preview attempts by default)
 app.get("/api/attempts", requireAuth, (req, res) => {
   const user = (req as any).user;
   const db = readDb();
   let attempts: any[];
   if (user.role === "teacher") {
-    attempts = db.attempts;
+    attempts = db.attempts.filter((a: any) => !a.isPreviewAttempt);
   } else {
-    attempts = db.attempts.filter((a: any) => a.studentId === user.id);
+    attempts = db.attempts.filter((a: any) => a.studentId === user.id && !a.isPreviewAttempt);
   }
   res.json({ attempts });
 });
 
-// Start Lesson Attempt (deterministic seed questions generation)
+// Teacher: Start or resume a teacher preview/test attempt
+app.post("/api/teacher/lessons/:lessonId/preview-attempt", requireTeacher, async (req, res) => {
+  try {
+    const { lessonId } = req.params;
+    const user = (req as any).user;
+    const db = readDb();
+
+    const lesson = db.lessons.find((l: any) => l.id === lessonId);
+    if (!lesson) {
+      fail(res, "NOT_FOUND", "Lesson not found.");
+      return;
+    }
+
+    // See if there's an existing started preview attempt for this teacher
+    const existingAttempts = db.attempts.filter((a: any) => 
+      a.lessonId === lessonId && 
+      a.studentId === user.id && 
+      a.isPreviewAttempt === true
+    );
+    const activeAttempt = existingAttempts.find((a: any) => a.status === "started");
+
+    if (activeAttempt) {
+      res.json({ attempt: activeAttempt });
+      return;
+    }
+
+    // Create a new preview attempt with preview/test flags
+    const seed = Math.floor(Math.random() * 900000) + 100000;
+    const newAttempt = {
+      id: "attempt_preview_" + Math.random().toString(36).substring(2, 9),
+      lessonId,
+      studentId: user.id,
+      seed,
+      startedAt: new Date().toISOString(),
+      status: "started",
+      currentBlockIndex: 0,
+      furthestVideoTimestamps: {},
+      activeTimeSpent: 0,
+      inactiveTimeSpent: 0,
+      attemptMode: "preview",
+      isPreviewAttempt: true,
+      previewOwnerTeacherId: user.id,
+      excludeFromAnalytics: true
+    };
+
+    db.attempts.push(newAttempt);
+
+    // Generate and lock deterministic, sanitized question assignments.
+    const randFn = lcg(seed);
+    const randomize = !!lesson.settings.randomizeChoices;
+    const lessonBlocks = db.blocks.filter((b: any) => b.lessonId === lessonId);
+
+    lessonBlocks.forEach((block: any) => {
+      if (block.type === "question") {
+        if (block.singleQuestion) {
+          db.questionAssignments.push(
+            buildQuestionAssignment(newAttempt.id, block, undefined, block.singleQuestion, block.id, randomize, randFn)
+          );
+        } else if (block.questionPool && Array.isArray(block.questionPool.questions)) {
+          const shuffledPool = shuffleWithSeed(block.questionPool.questions, randFn);
+          const count = Math.min(block.questionPool.numToSelect || 1, shuffledPool.length);
+          shuffledPool.slice(0, count).forEach((q: any, qi: number) => {
+            db.questionAssignments.push(
+              buildQuestionAssignment(newAttempt.id, block, undefined, q, `${block.id}_p${qi}`, randomize, randFn)
+            );
+          });
+        }
+      }
+
+      if (block.type === "video" && Array.isArray(block.videoCheckpoints)) {
+        block.videoCheckpoints.forEach((cp: any) => {
+          const shuffledCpQuestions = shuffleWithSeed(cp.questions || [], randFn);
+          const cpCount = Math.min(cp.numToSelect || 1, shuffledCpQuestions.length);
+          shuffledCpQuestions.slice(0, cpCount).forEach((q: any, qi: number) => {
+            db.questionAssignments.push(
+              buildQuestionAssignment(newAttempt.id, block, cp.id, q, `${block.id}_cp_${cp.id}_q${qi}`, randomize, randFn)
+            );
+          });
+        });
+      }
+    });
+
+    // Defensive check
+    const myAssignments = db.questionAssignments.filter((a: any) => a.attemptId === newAttempt.id);
+    const leaks = findLeakedSecretFields(myAssignments);
+    if (leaks.length > 0) {
+      console.error("VERITAS Learn - SECURITY: question assignment leaked fields:", leaks);
+      fail(res, "VALIDATION_ERROR", "Question delivery sanitization failed.");
+      return;
+    }
+
+    await commitDb(db);
+    res.status(201).json({ attempt: newAttempt });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Start Lesson Attempt (deterministic seed questions generation) (excludes preview attempts)
 app.post("/api/attempts", requireAuth, async (req, res) => {
   try {
     const user = (req as any).user;
@@ -1118,8 +1216,8 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
       return;
     }
 
-    // Handle existing incomplete attempt or check retake policy
-    const existingAttempts = db.attempts.filter((a: any) => a.lessonId === lessonId && a.studentId === user.id);
+    // Handle existing incomplete attempt or check retake policy (ignore preview attempts)
+    const existingAttempts = db.attempts.filter((a: any) => a.lessonId === lessonId && a.studentId === user.id && !a.isPreviewAttempt);
     const activeAttempt = existingAttempts.find((a: any) => a.status === "started");
 
     if (activeAttempt) {
@@ -1808,9 +1906,13 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
   // Roster lists
   const students = db.users.filter((u: any) => u.role === "student");
   const lessons = db.lessons;
+  
+  // Do NOT filter out preview attempts/responses/signals at the server level.
+  // Returning both normal and preview attempts with their isPreviewAttempt field
+  // allows the teacher portal screens to exclude them by default but still support
+  // toggling, labeling, and student dossier previews.
   const attempts = db.attempts;
-  const rawResponses = db.responses;
-  const responses = mergeResponsesWithAiGrading(rawResponses, db);
+  const responses = mergeResponsesWithAiGrading(db.responses, db);
   const signals = db.securitySignals;
 
   res.json({

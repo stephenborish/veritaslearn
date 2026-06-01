@@ -547,7 +547,7 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
             <UploadCloud className="w-9 h-9 text-slate-400 mx-auto" />
             <div>
               <p className="text-xs font-bold text-slate-700">
-                Drag and drop lecture video stream, or <span className="text-blue-600 hover:underline">browse files</span>
+                Drag and drop video stream, or <span className="text-blue-600 hover:underline">browse files</span>
               </p>
               <p className="text-[10px] text-slate-500 mt-1 uppercase tracking-wide font-medium">
                 Supports MP4, WebM up to 600 MB files

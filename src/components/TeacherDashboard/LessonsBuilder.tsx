@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock, ChevronUp, ChevronDown, ArrowUp, ArrowDown, BookOpen, Calendar, ShieldAlert } from "lucide-react";
+import { Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock, ChevronUp, ChevronDown, ArrowUp, ArrowDown, BookOpen, Calendar, ShieldAlert, Eye, Play, CheckCircle } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
@@ -30,6 +30,7 @@ interface LessonsBuilderProps {
   assignments?: any[];
   onSaveAssignment?: (payload: any) => Promise<void>;
   onDeleteAssignment?: (id: string) => Promise<void>;
+  onLaunchPreviewAttempt?: (lessonId: string) => Promise<void>;
 }
 
 export default function LessonsBuilder({ 
@@ -39,7 +40,8 @@ export default function LessonsBuilder({
   onArchived,
   assignments = [],
   onSaveAssignment,
-  onDeleteAssignment
+  onDeleteAssignment,
+  onLaunchPreviewAttempt
 }: LessonsBuilderProps) {
   const [selectedLesson, setSelectedLesson] = useState<any>(null);
   const [title, setTitle] = useState("");
@@ -58,7 +60,7 @@ export default function LessonsBuilder({
   // Assignment Creator Form state
   const [showAssignmentForm, setShowAssignmentForm] = useState(false);
   const [asgLessonId, setAsgLessonId] = useState("");
-  const [asgCourseId, setAsgCourseId] = useState("AP US History");
+  const [asgCourseId, setAsgCourseId] = useState("VERITAS 101");
   const [asgSection, setAsgSection] = useState("Section A");
 
   // Time generators for date inputs
@@ -170,7 +172,7 @@ export default function LessonsBuilder({
 
   const startNewLesson = () => {
     setSelectedLesson({ id: "new" });
-    setTitle("New APUSH Assessment Lesson");
+    setTitle("New VERITAS Readiness Lesson");
     setDescription("");
     setEstimatedMinutes(25);
     setIsPublished(false);
@@ -183,7 +185,7 @@ export default function LessonsBuilder({
       {
         id: "b_new_1",
         type: "video",
-        title: "Lecture Video",
+        title: "Video Instruction",
         videoUrl: "",
         videoCheckpoints: []
       }
@@ -196,9 +198,9 @@ export default function LessonsBuilder({
     const newBlock = {
       id: freshId,
       type,
-      title: type === "video" ? "New Lecture Video" : type === "reading" ? "Documentary Source Reading" : "Multiple Choice Assessment",
+      title: type === "video" ? "New Video Segment" : type === "reading" ? "Primary Source Reading" : "Multiple Choice Quiz",
       videoUrl: type === "video" ? "" : undefined,
-      content: type === "reading" ? "### Historical Context\nEnter passage context here." : undefined,
+      content: type === "reading" ? "### Lesson Passage\nEnter reading content here." : undefined,
       questionType: type === "question" ? "mc" : undefined,
       isPractice: type === "question" ? false : undefined,
       singleQuestion: type === "question" ? newQuestionTemplate("mc") : undefined
@@ -262,11 +264,11 @@ export default function LessonsBuilder({
 
   const [saveError, setSaveError] = useState<string[] | null>(null);
 
-  const handleSave = async () => {
+  const saveWithPublishedStatus = async (publishedStatus: boolean) => {
     setSaveError(null);
 
     // Published lessons must contain valid graded questions (client gate; server re-validates).
-    if (isPublished) {
+    if (publishedStatus) {
       const problems: string[] = [];
       currentBlocks.forEach((b: any, i: number) => {
         if (b.type === "question" && b.singleQuestion) {
@@ -286,7 +288,7 @@ export default function LessonsBuilder({
       });
       if (problems.length > 0) {
         setSaveError(problems);
-        return;
+        return false;
       }
     }
 
@@ -295,7 +297,7 @@ export default function LessonsBuilder({
       title,
       description,
       estimatedMinutes,
-      isPublished,
+      isPublished: publishedStatus,
       settings: {
         restrictSeeking,
         requireFullscreen,
@@ -308,6 +310,40 @@ export default function LessonsBuilder({
 
     await onSaveLesson(payload);
     setSelectedLesson(null);
+    return true;
+  };
+
+  const handleSave = async () => {
+    await saveWithPublishedStatus(isPublished);
+  };
+
+  const handleSaveAsDraft = async () => {
+    await saveWithPublishedStatus(false);
+  };
+
+  const handlePublishLive = async () => {
+    const success = await saveWithPublishedStatus(true);
+    if (!success) {
+      // If validation error occurred, keep editor open so they can resolve errors listed in saveError
+      setIsPublished(true);
+    }
+  };
+
+  const handleAssignAndLaunch = async () => {
+    // Determine status to save, then route student assignments form context
+    const success = await saveWithPublishedStatus(isPublished);
+    if (success) {
+      if (selectedLesson.id !== "new") {
+        setAsgLessonId(selectedLesson.id);
+        setShowAssignmentForm(true);
+        setBuilderSubTab("assignments");
+      } else {
+        // Fallback for new lesson - direct user to form
+        setAsgLessonId("");
+        setShowAssignmentForm(true);
+        setBuilderSubTab("assignments");
+      }
+    }
   };
 
   return (
@@ -350,57 +386,235 @@ export default function LessonsBuilder({
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {lessons.map((lesson) => (
-                  <div 
-                    key={lesson.id}
-                    className="bg-white border text-slate-800 border-slate-200 p-5 rounded shadow-sm hover:border-slate-300 transition flex flex-col justify-between min-h-[160px]"
-                  >
-                    <div>
-                      <div className="flex justify-between items-start">
-                        <h3 className="text-sm font-bold text-slate-800 tracking-tight">{lesson.title}</h3>
-                        <span className={`text-[8px] font-bold font-mono uppercase tracking-widest px-2 py-0.5 rounded-sm border ${
-                          lesson.isPublished ? "bg-green-50 text-green-700 border-green-100":"bg-slate-100 text-slate-500 border-slate-200"
-                        }`}>
-                          {lesson.isPublished ? "Published":"Draft"}
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-500 mt-2 line-clamp-2">
-                        {(() => {
-                          const desc = lesson.description;
-                          if (!desc) return "No description provided.";
-                          if (typeof desc === "object") {
-                            return desc.plainText || (desc.html ? desc.html.replace(/<[^>]*>/g, "") : "");
-                          }
-                          const stripped = String(desc).replace(/<[^>]*>/g, "").trim();
-                          return stripped || "No description provided.";
-                        })()}
-                      </p>
-                    </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {lessons.map((lesson) => {
+                  const now = new Date().toISOString();
+                  
+                  // Filter deliveries assigned to this lesson
+                  const lessonAsgs = assignments.filter((asg) => asg.lessonId === lesson.id);
+                  
+                  // Count structural segments
+                  const lessonBlocks = blocks.filter((b) => b.lessonId === lesson.id);
+                  const videoCount = lessonBlocks.filter((b) => b.type === "video").length;
+                  const readingCount = lessonBlocks.filter((b) => b.type === "reading").length;
+                  const practiceCount = lessonBlocks.filter((b) => b.type === "question" && b.isPractice).length;
+                  const gradedCount = lessonBlocks.filter((b) => b.type === "question" && !b.isPractice).length;
 
-                    <div className="mt-4 border-t border-slate-100 pt-4 flex justify-between items-center text-[10px] text-slate-400 font-semibold">
-                      <div className="flex gap-3 uppercase tracking-wide">
-                        <span className="font-mono text-slate-500 text-[9px]">MIN: {lesson.estimatedMinutes}m</span>
-                        <span>•</span>
-                        <span className="text-slate-500 text-[9px]">RESTRICT SEEK: {lesson.settings.restrictSeeking ? "YES":"NO"}</span>
+                  return (
+                    <div 
+                      key={lesson.id}
+                      className="bg-white border text-slate-800 border-slate-250 p-6 rounded shadow-sm hover:border-slate-300 hover:shadow-md transition flex flex-col justify-between min-h-[300px] font-sans"
+                    >
+                      <div className="space-y-4">
+                        {/* Header: Title and Publication Status */}
+                        <div className="flex justify-between items-start gap-4">
+                          <div className="space-y-1">
+                            <h3 className="text-base font-bold text-slate-900 tracking-tight text-left">{lesson.title}</h3>
+                            <span className="text-[10px] font-mono font-bold text-slate-400 block tracking-tight">ID: {lesson.id.toUpperCase()}</span>
+                          </div>
+                          
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <span className={`text-[9px] font-bold font-mono uppercase tracking-widest px-2 py-0.5 rounded-sm border ${
+                              lesson.isPublished
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-100"
+                                : "bg-slate-100 text-slate-550 border-slate-200"
+                            }`}>
+                              {lesson.isPublished ? "Published" : "Draft State"}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Description */}
+                        <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">
+                          {(() => {
+                            const desc = lesson.description;
+                            if (!desc) return "Complete this lesson segment.";
+                            if (typeof desc === "object") {
+                                return desc.plainText || (desc.html ? desc.html.replace(/<[^>]*>/g, "") : "");
+                            }
+                            const stripped = String(desc).replace(/<[^>]*>/g, "").trim();
+                            return stripped || "Complete this lesson segment.";
+                          })()}
+                        </p>
+
+                        {/* Block Summary Statistics */}
+                        <div className="bg-slate-50/50 border border-slate-200/60 rounded-md p-3.5 space-y-2">
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Lesson Plan Components</div>
+                          <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-[11px] text-slate-600 font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <span>Videos: <strong>{videoCount}</strong> watch block(s)</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span>Passages: <strong>{readingCount}</strong> read-block(s)</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span>Practice Qs: <strong>{practiceCount}</strong> (unscored)</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <span>Graded Qs: <strong className="text-[#0a192f]">{gradedCount} checkpoint(s)</strong></span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Security / Focus Settings Summary */}
+                        <div className="border-t border-slate-100 pt-3.5 space-y-2">
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Interactive Monitoring Rules</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-sm border ${
+                              lesson.settings?.restrictSeeking 
+                                ? "bg-red-50 text-red-700 border-red-100" 
+                                : "bg-slate-50 text-slate-500 border-slate-100"
+                            }`}>
+                              {lesson.settings?.restrictSeeking ? "Seeker Locked" : "Open Seeking"}
+                            </span>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-sm border ${
+                              lesson.settings?.requireFullscreen 
+                                ? "bg-amber-50 text-amber-700 border-amber-100 animate-pulse" 
+                                : "bg-slate-50 text-slate-500 border-slate-100"
+                            }`}>
+                              {lesson.settings?.requireFullscreen ? "Tab Blur Protected" : "No Monitor"}
+                            </span>
+                            <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-sm bg-slate-100 text-slate-600 border border-slate-200">
+                              {lesson.estimatedMinutes || 30} mins
+                            </span>
+                            <span className={`text-[9px] font-bold px-2 py-0.5 rounded-sm border ${
+                              lesson.settings?.allowRetakes 
+                                ? "bg-blue-50 text-blue-700 border-blue-100" 
+                                : "bg-slate-50 text-slate-500 border-slate-100"
+                            }`}>
+                              {lesson.settings?.allowRetakes ? "Retakes Enabled" : "Single Attempt"}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Student Delivery Status */}
+                        <div className="border-t border-slate-100 pt-3.5 space-y-2 text-left">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Student Access &amp; Launch Status</span>
+                          
+                          {!lesson.isPublished ? (
+                            <div className="bg-amber-50 border border-amber-200/70 p-2.5 rounded text-slate-700 space-y-0.5">
+                              <div className="flex items-center gap-1.5 text-amber-800 font-bold uppercase tracking-wider text-[10px]">
+                                <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping"></span>
+                                <span>Unpublished Draft</span>
+                              </div>
+                              <p className="text-[11px] text-slate-600">
+                                Outstanding draft. Student access is blocked in this state. <strong>Publish Lesson</strong> in the designer to unlock launch and assignment scheduling.
+                              </p>
+                            </div>
+                          ) : lessonAsgs.length === 0 ? (
+                            <div className="bg-slate-100/80 border border-slate-200 p-2.5 rounded text-slate-600">
+                              <div className="font-bold text-slate-700 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                                <span>Published Lesson &bull; Not Assigned</span>
+                              </div>
+                              <p className="text-[11px] text-slate-500 mt-1">
+                                Lesson is ready but not assigned. Click <strong>Assign Lesson</strong> to schedule student access.
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {lessonAsgs.map((asg) => {
+                                const opens = asg.opensAt || "";
+                                const closes = asg.closesAt || "";
+                                let statusBadge = null;
+                                let statusDesc = "";
+                                
+                                if (now < opens) {
+                                  statusBadge = (
+                                    <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider">
+                                      Scheduled
+                                    </span>
+                                  );
+                                  statusDesc = `Releases on ${new Date(opens).toLocaleDateString()}`;
+                                } else if (now >= opens && now <= closes) {
+                                  statusBadge = (
+                                    <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider animate-pulse">
+                                      ● Available to Students
+                                    </span>
+                                  );
+                                  statusDesc = `Active now (Due ${new Date(asg.dueAt).toLocaleDateString()})`;
+                                } else {
+                                  statusBadge = (
+                                    <span className="bg-red-50 text-red-600 border border-red-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase tracking-wider">
+                                      Closed
+                                    </span>
+                                  );
+                                  statusDesc = "Access window expired";
+                                }
+
+                                return (
+                                  <div key={asg.id} className="bg-slate-50 border border-slate-200 p-2 rounded flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                                    <div className="text-[11px]">
+                                      <div className="font-semibold text-slate-800">
+                                        Course: <span className="font-bold">{asg.courseId}</span>
+                                        {asg.section && <span className="text-slate-400 font-normal"> / Section {asg.section}</span>}
+                                      </div>
+                                      <div className="text-[10px] text-slate-400 mt-0.5">
+                                        <span>DUE: {new Date(asg.dueAt).toLocaleString()}</span>
+                                      </div>
+                                    </div>
+                                    <div className="flex flex-col items-end shrink-0 text-right">
+                                      {statusBadge}
+                                      <span className="text-[9px] text-slate-400 font-bold mt-0.5">{statusDesc}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => startEditing(lesson)}
-                          className="text-slate-700 hover:text-[#0A192F] font-bold uppercase text-[9px] tracking-widest border border-slate-200 px-2.5 py-1 rounded hover:bg-slate-50 transition cursor-pointer shadow-sm"
-                        >
-                          Configure / Design
-                        </button>
-                        <button
-                          onClick={() => onArchived(lesson.id)}
-                          className="text-red-700 hover:text-red-800 font-bold uppercase text-[9px] tracking-widest border border-transparent px-2.5 py-1 rounded hover:bg-red-50 transition cursor-pointer"
-                        >
-                          Delete
-                        </button>
+
+                      {/* Control Panel Footer */}
+                      <div className="mt-6 border-t border-slate-100 pt-4 flex flex-wrap justify-between items-center gap-3">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onLaunchPreviewAttempt && onLaunchPreviewAttempt(lesson.id)}
+                            className="bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold uppercase text-[9px] tracking-widest border border-amber-200 px-3 py-1.5 rounded transition cursor-pointer shadow-xs"
+                            title="Sandbox test sandbox mode inside focus player"
+                          >
+                            Preview Student
+                          </button>
+                          
+                          <button
+                            onClick={() => {
+                              setBuilderSubTab("assignments");
+                              setAsgLessonId(lesson.id);
+                              setShowAssignmentForm(true);
+                              // Scroll into view
+                              window.scrollTo({ top: 0, behavior: "smooth" });
+                            }}
+                            disabled={!lesson.isPublished}
+                            className={`text-[9px] tracking-widest font-bold uppercase px-3 py-1.5 rounded transition shadow-xs border ${
+                              lesson.isPublished
+                                ? "bg-indigo-600 hover:bg-indigo-700 border-indigo-700 text-white"
+                                : "bg-slate-100 text-slate-350 border-slate-200 cursor-not-allowed"
+                            }`}
+                            title={lesson.isPublished ? "Assign and Release this version to rosters" : "Must publish lesson first"}
+                          >
+                            Assign / Launch
+                          </button>
+                        </div>
+                        
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => startEditing(lesson)}
+                            className="text-slate-700 hover:bg-slate-50 font-bold uppercase text-[9px] tracking-widest border border-slate-200 px-2.5 py-1.5 rounded transition cursor-pointer shadow-xs"
+                          >
+                            Configure
+                          </button>
+                          <button
+                            onClick={() => onArchived(lesson.id)}
+                            className="text-red-700 hover:bg-red-50/50 font-bold uppercase text-[9px] tracking-widest border border-transparent px-2.5 py-1.5 rounded transition cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ) : (
@@ -475,7 +689,7 @@ export default function LessonsBuilder({
                         type="text"
                         value={asgCourseId}
                         onChange={(e) => setAsgCourseId(e.target.value)}
-                        placeholder="e.g. AP US History"
+                        placeholder="e.g. VERITAS 101"
                         className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
                         required
                       />
@@ -541,7 +755,7 @@ export default function LessonsBuilder({
               {/* Assignments list table */}
               <div className="bg-white border border-slate-200 rounded shadow-sm overflow-hidden">
                 <div className="p-4 bg-slate-50 border-b border-slate-200">
-                  <h4 className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Active Deliveries Log ({assignments.length})</h4>
+                  <h4 className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Assignments ({assignments.length})</h4>
                 </div>
 
                 {assignments.length === 0 ? (
@@ -626,26 +840,68 @@ export default function LessonsBuilder({
         // Designer workspace
         <div className="space-y-6">
           {/* Sticky Header Controls for quick curriculum management */}
-          <div className="sticky top-0 z-30 bg-slate-50/95 backdrop-blur-md border-b border-slate-200 pb-4 mb-4 pt-2 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="sticky top-0 z-30 bg-slate-50/95 backdrop-blur-md border-b border-slate-200 pb-4 mb-4 pt-2 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
             <div>
               <h3 className="text-lg font-bold text-slate-800 tracking-tight flex items-center gap-2">
                 <BookOpen className="w-5 h-5 text-[#0A192F]" /> Lesson Design Canvas
               </h3>
-              <p className="text-xs text-slate-500 mt-0.5">Stitch together core blocks and publish assessments for student access.</p>
+              <p className="text-xs text-slate-500 mt-0.5">Combine core blocks and publish assessments for student access.</p>
             </div>
-            <div className="flex gap-2 self-end sm:self-auto">
+            <div className="flex flex-wrap gap-1.5 self-stretch sm:self-auto items-center">
+              {/* Reset/Back button */}
               <button
                 onClick={() => setSelectedLesson(null)}
-                className="border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-semibold px-4 py-2 rounded transition cursor-pointer shadow-sm"
+                className="border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-semibold px-2.5 py-2 rounded transition cursor-pointer shadow-sm"
               >
-                Discard
+                ← Library
               </button>
+
+              {/* Save Draft button */}
               <button
-                onClick={handleSave}
-                className="bg-[#0A192F] hover:bg-[#15294b] text-white text-xs font-bold px-4 py-2 rounded flex items-center gap-2 transition cursor-pointer shadow-sm"
+                onClick={handleSaveAsDraft}
+                className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                title="Saves this lesson draft"
               >
-                <Save className="w-4 h-4" /> Save Curriculum
+                <Save className="w-3.5 h-3.5" /> Save Draft
               </button>
+
+              {/* Publish Live button */}
+              <button
+                onClick={handlePublishLive}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                title="Validates, publishes to students, and saves progress"
+              >
+                Publish Live
+              </button>
+
+              {/* Assign & Launch block */}
+              <button
+                onClick={handleAssignAndLaunch}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                title="Saves lesson progress and opens assignment setup form"
+              >
+                <Calendar className="w-3.5 h-3.5" /> Assign & Launch
+              </button>
+
+              {/* Preview as Student */}
+              {selectedLesson.id !== "new" ? (
+                <button
+                  type="button"
+                  onClick={() => onLaunchPreviewAttempt && onLaunchPreviewAttempt(selectedLesson.id)}
+                  className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+                >
+                  Preview Student
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  className="bg-slate-100 text-slate-400 border border-slate-200 text-xs font-bold px-2.5 py-2 rounded flex items-center gap-1.5 cursor-not-allowed shadow-none"
+                  title="Save lesson first to enable student-mode previewing"
+                >
+                  Preview (Save first)
+                </button>
+              )}
             </div>
           </div>
 
@@ -671,7 +927,7 @@ export default function LessonsBuilder({
 
               <div className="space-y-4 text-xs">
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Assessment Sheet Title</label>
+                  <label className="font-bold text-slate-700 block mb-1">Lesson Title</label>
                   <input 
                     type="text" 
                     value={title} 
@@ -681,7 +937,7 @@ export default function LessonsBuilder({
                 </div>
 
                 <div>
-                  <label className="font-bold text-slate-700 block mb-1">Educational Narrative Description</label>
+                  <label className="font-bold text-slate-700 block mb-1">Lesson Overview</label>
                   <RichContentEditor
                     value={description}
                     onChange={(val) => setDescription(val.html)}
@@ -723,10 +979,145 @@ export default function LessonsBuilder({
                     Scramble Multiple-Choice Options
                   </label>
 
-                  <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
-                    <input type="checkbox" checked={isPublished} onChange={(e) => setIsPublished(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                    Mark Published & Live on student rosters
-                  </label>
+                  <div className="bg-slate-50 border border-slate-205 rounded p-3 mt-1.5 space-y-1.5">
+                    <label className="flex items-start gap-2 font-semibold text-slate-800 cursor-pointer text-[12px] hover:text-slate-900 transition">
+                      <input type="checkbox" checked={isPublished} onChange={(e) => setIsPublished(e.target.checked)} className="focus:ring-0 rounded-sm mt-0.5" />
+                      <div>
+                        <span>Publish Lesson &amp; Make Assignable</span>
+                        <p className="text-[10px] font-normal text-slate-500 mt-0.5 leading-relaxed">
+                          Once published, instructors can map assignments to this lesson under the <strong>Assignments Manager</strong> sub-tab. Drafts are locked/hidden from all student portals.
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Student View Summary Panel */}
+                <div className="pt-4 border-t border-slate-100 space-y-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <ShieldAlert className="w-4 h-4 text-amber-600" />
+                    <span id="student-view-summary-title" className="font-bold text-xs uppercase tracking-wider text-slate-850 font-sans">Active Student Status</span>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-150 rounded-lg p-3 text-[11px] text-slate-600 space-y-2.5 shadow-xs">
+                    {/* Delivery Status */}
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Roster Visibility</span>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className={`inline-block w-2.5 h-2.5 rounded-full ${isPublished ? "bg-green-500 animate-pulse" : "bg-amber-500"}`}></span>
+                        <span className="font-bold text-slate-750">{isPublished ? "Authorized Lesson" : "Draft (Blocked/Hidden)"}</span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                        {isPublished 
+                          ? "This lesson is published. Active assignments scheduled under the Assignments tab will render normally."
+                          : "This lesson is in Draft. Students cannot access or start any assignments derived from this lesson."}
+                      </p>
+                    </div>
+
+                    {/* What Students See First */}
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">First Impression</span>
+                      <p className="mt-0.5 text-slate-705 font-semibold truncate">{title || "Untitled Assessment"}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        Students begin with the title, description, and an estimation of <strong className="text-slate-600">{estimatedMinutes} minutes</strong> of active learning.
+                      </p>
+                    </div>
+
+                    {/* Live Sequence Timeline */}
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Learning Pathway</span>
+                      {currentBlocks.length === 0 ? (
+                        <p className="text-[10px] text-slate-400 italic mt-1 font-sans">No learning blocks designed yet.</p>
+                      ) : (
+                        <div className="mt-1.5 space-y-1.5 border-l-2 border-slate-200 pl-2">
+                           {currentBlocks.map((b, idx) => {
+                            let typeLabel = "Unknown";
+                            let iconText = "";
+                            if (b.type === "video") {
+                              typeLabel = `Video Watch (${b.videoCheckpoints?.length || 0} Checkpoints)`;
+                              iconText = "Video:";
+                            } else if (b.type === "reading") {
+                              typeLabel = "Read Passage & Acknowledge";
+                              iconText = "Passage:";
+                            } else if (b.type === "question") {
+                              typeLabel = `${b.isPractice ? "Practice" : "Graded"} Question (${b.singleQuestion?.points || 5} pts)`;
+                              iconText = b.isPractice ? "Practice:" : "Graded:";
+                            }
+                            return (
+                              <div key={b.id} className="flex items-start gap-1">
+                                <span className="font-mono text-[9px] text-slate-400">#{idx + 1}</span>
+                                <div>
+                                  <span className="font-semibold text-slate-700 block text-[10px]">{b.title || `Untitled ${b.type}`}</span>
+                                  <span className="text-[9px] text-slate-400 flex items-center gap-1">
+                                    <span className="font-mono text-slate-500 uppercase text-[8px] tracking-wider font-bold">{iconText}</span> {typeLabel}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Interactive Security & Integrity Policies */}
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Integrity & Focus Rules</span>
+                      <div className="mt-1 space-y-1">
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Immersive Fullscreen:</span>
+                          <span className={`font-bold ${requireFullscreen ? "text-green-600" : "text-amber-500"}`}>
+                            {requireFullscreen ? "Enforced Focus" : "Off"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Anti-Seeking (Video Skip):</span>
+                          <span className={`font-bold ${restrictSeeking ? "text-green-600" : "text-amber-500"}`}>
+                            {restrictSeeking ? "Seeking Blocked" : "Open Seeking"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Tab Focus Logging:</span>
+                          <span className={`font-bold ${requireFullscreen ? "text-green-600" : "text-slate-400"}`}>
+                            {requireFullscreen ? "Active" : "Inactive"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Copy/Paste Blocks:</span>
+                          <span className={`font-bold ${requireFullscreen ? "text-green-600" : "text-slate-400"}`}>
+                            {requireFullscreen ? "Blocked" : "Unrestricted"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Grading and Scoring Feedback */}
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wide">Assessment Grading Policy</span>
+                      <div className="mt-1 space-y-1">
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Option Scrambling:</span>
+                          <span className="font-semibold text-slate-700">{randomizeChoices ? "Enabled" : "Disabled"}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Practice Feedback:</span>
+                          <span className="font-semibold text-slate-700">Immediate</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Graded Questions:</span>
+                          <span className="font-bold text-amber-600">Hidden answer key (sanitized server-side)</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Short Answers:</span>
+                          <span className="font-semibold text-blue-600">AI-suggested + Teacher manual override</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-500">Assessment Retakes:</span>
+                          <span className="font-semibold text-slate-700">{allowRetakes ? "Allowed" : "One-time submission"}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
                 </div>
               </div>
             </div>
@@ -803,7 +1194,7 @@ export default function LessonsBuilder({
                         {/* block header with expansion trigger and sorting controls */}
                         <div className="bg-slate-50/80 hover:bg-slate-50 border-b border-slate-200 px-4 sm:px-5 py-3 flex justify-between items-center text-xs select-none">
                           
-                          {/* Left clickable element layout */}
+                          {/* Left clickable element structure */}
                           <div 
                             onClick={() => toggleBlockExpanded(block.id)}
                             className="flex items-center gap-2 sm:gap-3 font-semibold text-slate-700 cursor-pointer flex-1 py-1"
@@ -864,6 +1255,38 @@ export default function LessonsBuilder({
                           </div>
                         </div>
 
+                        {/* Student Experience Info Box - always visible for immediate structural insight */}
+                        <div className="bg-slate-50/40 px-4 sm:px-5 py-2.5 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-600">
+                          <div className="flex items-center gap-1.5 min-w-[200px]">
+                            <span className="text-slate-400 font-bold uppercase text-[9px] tracking-wider shrink-0">Student Action:</span>
+                            <span className="font-medium text-slate-700 text-[10.5px]">
+                              {block.type === "video" && "Watch video content with checkpoints."}
+                              {block.type === "reading" && "Read and acknowledge the passage below."}
+                              {block.type === "question" && `Submit ${block.isPractice ? "Practice" : "Graded"} answer (${block.singleQuestion?.points || 5} pts).`}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-400 font-bold uppercase text-[9px] tracking-wider shrink-0">Rule / Gate:</span>
+                            <span className="bg-white px-2 py-0.5 rounded border border-slate-200/85 text-slate-700 font-bold font-mono text-[9px]">
+                              {block.type === "video" && (restrictSeeking ? "Seeking Blocked" : "Open Seeking")}
+                              {block.type === "reading" && "Acknowledgement Required"}
+                              {block.type === "question" && (block.isPractice ? "Immediate Feedback" : "Sanitized / Hidden Keys")}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[9px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200/60 font-medium">
+                              Live Preview Support
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => toggleBlockExpanded(block.id)}
+                              className="text-[10px] text-blue-700 font-bold uppercase tracking-wide hover:underline cursor-pointer"
+                            >
+                              {isExpanded ? "Close Config" : "Edit Config"}
+                            </button>
+                          </div>
+                        </div>
+
                         {/* Collapsible details viewport */}
                         {isExpanded && (
                           <div className="p-4 sm:p-5 space-y-4 text-xs">
@@ -879,7 +1302,7 @@ export default function LessonsBuilder({
 
                             {block.type === "video" && (
                               <div className="space-y-3">
-                                <label className="font-bold text-slate-700 block mb-1">Lecture Video Material</label>
+                                <label className="font-bold text-slate-700 block mb-1">Video Lesson Material</label>
                                 
                                 {/* Drag & Drop with manual selection Click uploader built on top of secure backend uploads directory */}
                                 <VideoUploader 
@@ -912,7 +1335,7 @@ export default function LessonsBuilder({
                                         type="text" 
                                         value={block.videoUrl || ""} 
                                         onChange={(e) => handleBlockChange(index, "videoUrl", e.target.value)}
-                                        placeholder="https://example.com/lecture.mp4"
+                                        placeholder="https://example.com/video.mp4"
                                         className="w-full bg-slate-50/50 border border-slate-200 rounded px-3 py-1.5 font-mono text-[11px] focus:outline-none focus:border-slate-400"
                                       />
                                       <p className="text-[10px] text-slate-400 mt-1">

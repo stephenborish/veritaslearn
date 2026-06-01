@@ -20,7 +20,12 @@ import {
   Award, 
   LogOut, 
   BookOpen, 
-  HelpCircle 
+  HelpCircle,
+  ChevronLeft,
+  ChevronRight,
+  Menu,
+  Activity,
+  CheckSquare
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -43,6 +48,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<"live" | "builder" | "gradebook" | "ai">("live");
   const [activeDossier, setActiveDossier] = useState<{ studentId: string; lessonId: string } | null>(null);
   const [activeStudentAttempt, setActiveStudentAttempt] = useState<string | null>(null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
   // Listen to Firebase Auth state change dynamically (Durable Auth Persistence)
   useEffect(() => {
@@ -344,6 +350,30 @@ export default function App() {
     }
   };
 
+  // Launch Teacher Preview player
+  const handleLaunchPreviewAttempt = async (lessonId: string) => {
+    const token = await getFreshToken();
+    if (!token) return;
+    try {
+      const authHeader = {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      };
+      
+      const res = await fetch(`/api/teacher/lessons/${lessonId}/preview-attempt`, {
+        method: "POST",
+        headers: authHeader
+      });
+      const data = await res.json();
+      
+      if (data.attempt) {
+        setActiveStudentAttempt(data.attempt.id);
+      }
+    } catch (e) {
+      console.error("Failed to launch preview attempt:", e);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#F4F5F7] text-slate-900 flex flex-col items-center justify-center font-sans">
@@ -408,6 +438,20 @@ export default function App() {
     );
   }
 
+  // TEACHER PORTAL PATH (interrupted for active student preview player)
+  if (currentUser.role === "teacher" && activeStudentAttempt) {
+    return (
+      <FocusedPlayer 
+        attemptId={activeStudentAttempt}
+        user={currentUser}
+        onExit={() => {
+          setActiveStudentAttempt(null);
+          fetchLmsPayload(currentUser);
+        }}
+      />
+    );
+  }
+
   // TEACHER PORTAL PATH
   return (
     <div className="flex flex-col h-screen bg-[#F4F5F7] text-[#1A1A1A] font-sans overflow-hidden">
@@ -445,46 +489,75 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         
         {/* Sidebar Navigation */}
-        <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
-          <div className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 pb-2">Classroom Management</div>
+        <aside className={`relative transition-all duration-300 ease-in-out bg-white border-r border-slate-200 flex flex-col shrink-0 ${isSidebarCollapsed ? "w-16" : "w-64"}`}>
+          {/* Floating Collapsible Trigger Button */}
+          <button
+            onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+            className="absolute -right-3 top-5 bg-white border border-slate-200 hover:bg-[#0A192F] hover:text-white text-slate-500 rounded-full w-6 h-6 flex items-center justify-center shadow-xs cursor-pointer focus:outline-none z-20 transition-all duration-150"
+            title={isSidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+          >
+            {isSidebarCollapsed ? (
+              <ChevronRight className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronLeft className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          <div className={`flex-1 py-4 space-y-1 overflow-y-auto ${isSidebarCollapsed ? "px-2" : "px-3"}`}>
+            {isSidebarCollapsed ? (
+              <div className="border-b border-slate-100 my-2 pb-2" />
+            ) : (
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 pb-2">Classroom Management</div>
+            )}
+            
             <button
               onClick={() => setActiveTab("live")}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left font-semibold text-sm cursor-pointer transition ${
+              className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
                 activeTab === "live" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
               }`}
+              title={isSidebarCollapsed ? "Lesson Tracking" : undefined}
             >
-              <span className={`w-3.5 h-3.5 rounded-sm border transition-colors ${activeTab === 'live' ? 'bg-[#0A192F] border-[#0A192F]' : 'border-slate-400 bg-transparent'}`}></span> 
-              Lesson Tracking
-            </button>
-            <button
-              onClick={() => setActiveTab("builder")}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left font-semibold text-sm cursor-pointer transition ${
-                activeTab === "builder" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <span className={`w-3.5 h-3.5 rounded-sm border transition-colors ${activeTab === 'builder' ? 'bg-[#0A192F] border-[#0A192F]' : 'border-slate-400 bg-transparent'}`}></span> 
-              Lesson Library
-            </button>
-            <button
-              onClick={() => setActiveTab("gradebook")}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left font-semibold text-sm cursor-pointer transition ${
-                activeTab === "gradebook" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
-              }`}
-            >
-              <span className={`w-3.5 h-3.5 rounded-sm border transition-colors ${activeTab === 'gradebook' ? 'bg-[#0A192F] border-[#0A192F]' : 'border-slate-400 bg-transparent'}`}></span> 
-              Gradebook
+              <Activity className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'live' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
+              {!isSidebarCollapsed && <span className="truncate">Lesson Tracking</span>}
             </button>
 
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 pt-6 pb-2">Analytics</div>
+            <button
+              onClick={() => setActiveTab("builder")}
+              className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
+                activeTab === "builder" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
+              }`}
+              title={isSidebarCollapsed ? "Lesson Library" : undefined}
+            >
+              <BookOpen className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'builder' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
+              {!isSidebarCollapsed && <span className="truncate">Lesson Library</span>}
+            </button>
+
+            <button
+              onClick={() => setActiveTab("gradebook")}
+              className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
+                activeTab === "gradebook" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
+              }`}
+              title={isSidebarCollapsed ? "Gradebook" : undefined}
+            >
+              <GraduationCap className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'gradebook' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
+              {!isSidebarCollapsed && <span className="truncate">Gradebook</span>}
+            </button>
+
+            {isSidebarCollapsed ? (
+              <div className="border-b border-slate-100 my-4" />
+            ) : (
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 pt-6 pb-2">Analytics</div>
+            )}
+
             <button
               onClick={() => setActiveTab("ai")}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded text-left font-semibold text-sm cursor-pointer transition ${
+              className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
                 activeTab === "ai" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
               }`}
+              title={isSidebarCollapsed ? "Review Queue" : undefined}
             >
-              <span className={`w-3.5 h-3.5 rounded-sm border transition-colors ${activeTab === 'ai' ? 'bg-[#0A192F] border-[#0A192F]' : 'border-slate-400 bg-transparent'}`}></span> 
-              Review Queue
+              <CheckSquare className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'ai' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
+              {!isSidebarCollapsed && <span className="truncate">Review Queue</span>}
             </button>
           </div>
         </aside>
@@ -555,6 +628,7 @@ export default function App() {
                     assignments={assignments}
                     onSaveAssignment={handleSaveAssignment}
                     onDeleteAssignment={handleDeleteAssignment}
+                    onLaunchPreviewAttempt={handleLaunchPreviewAttempt}
                   />
                 )
               )}
@@ -608,6 +682,7 @@ export default function App() {
           lessons={lessons}
           blocks={blocks}
           onOverrideSave={handleOverrideScore}
+          onUnlockStudent={handleUnlockStudent}
           onClose={() => setActiveDossier(null)}
         />
       )}

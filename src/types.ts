@@ -126,6 +126,10 @@ export interface LessonAttempt {
   lockedAt?: string | null; // ISO timestamp when lock was set
   lastActiveAt?: string; // ISO timestamp of last heartbeat
   blockTimeSpent?: { [blockId: string]: number }; // blockId -> cumulative active seconds
+  attemptMode?: "real" | "preview" | "test";
+  isPreviewAttempt?: boolean;
+  previewOwnerTeacherId?: string;
+  excludeFromAnalytics?: boolean;
 }
 
 export interface QuestionAssignment {
