@@ -225,44 +225,101 @@ export interface SecuritySignal {
 
 export interface Course {
   id: string;
+  /** Display name of the course, e.g. "AP Biology" */
   name: string;
   teacherId: string;
-  code: string;
+  /** Legacy freeform code field. New records use joinCode instead. */
+  code?: string;
+  /** Optional section/period label, e.g. "Period 3" */
+  sectionName?: string;
+  /** e.g. "2025-2026" */
+  schoolYear?: string;
+  status: 'active' | 'archived';
+  /** Short join code students type to enroll, e.g. "APBIO-4M8X" */
+  joinCode: string;
+  joinCodeEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Enrollment {
+  id: string;
+  courseId: string;
+  studentId: string;
+  studentEmail: string;
+  studentName: string;
+  status: 'active' | 'removed';
+  enrolledAt: string;
+  removedAt?: string;
+  removedBy?: string;
+}
+
+/** Learning Conditions policy — controls structure, monitoring, and review sensitivity for an assignment. */
+export interface IntegrityPolicy {
+  /** Teacher-visible preset label */
+  preset: 'open' | 'guided' | 'focused' | 'verified' | 'custom';
+  studentFlexibility: 'open' | 'guided' | 'structured' | 'locked_sequence';
+  focusSupport: 'off' | 'quiet' | 'guided' | 'focused' | 'locked';
+  responseControls: 'open' | 'recorded' | 'guarded' | 'restricted' | 'strict';
+  videoControls: 'open' | 'progress_aware' | 'checkpointed' | 'restricted' | 'verified';
+  reviewSensitivity: 'low' | 'balanced' | 'elevated' | 'high';
+  // Compiled enforcement booleans (derived from dials above)
+  allowResume: boolean;
+  allowBackNavigation: boolean;
+  requireFullscreen: boolean;
+  restrictSeeking: boolean;
+  blockPaste: boolean;
+  logPaste: boolean;
+  blockCopy: boolean;
+  blockContextMenu: boolean;
+  watermarkVideo: boolean;
+  requireCheckpoints: boolean;
+  // Numeric thresholds
+  focusGraceSeconds: number;
+  reviewThreshold: number;
+  lockThreshold: number;
 }
 
 export interface Assignment {
   id: string;
   lessonId: string;
   courseId: string;
-  section: string;
+  /** Deprecated freeform section label; new records should use the course's sectionName */
+  section?: string;
   opensAt: string;
   dueAt: string;
   closesAt: string;
   createdAt: string;
+  updatedAt?: string;
+  /** Learning Conditions policy for this assignment */
+  integrityPolicy?: IntegrityPolicy;
   // Dynamic joins loaded for frontend display convenience
   lessonTitle?: string;
   lessonDescription?: string | any;
   lessonEstimatedMinutes?: number;
   lessonSettings?: any;
   lessonIsPublished?: boolean;
+  courseTitle?: string;
+  sectionName?: string;
   // Student-facing access metadata (server-computed for student role)
-  accessState?: 'upcoming' | 'open' | 'past_due' | 'closed';
+  accessState?: 'upcoming' | 'open' | 'past_due' | 'closed' | 'in_progress' | 'completed' | 'needs_review' | 'locked';
   canBegin?: boolean;
   canResume?: boolean;
   canReview?: boolean;
   primaryAction?: 'begin' | 'resume' | 'review' | 'none';
   reason?: string;
-}
-
-export interface RosterStudent {
-  id: string;
-  courseId: string;
-  userId: string;
+  attemptId?: string;
+  attemptStatus?: string;
+  progress?: number;
+  lastActiveAt?: string;
+  completedAt?: string;
+  securityReviewRequired?: boolean;
 }
 
 export interface DatabaseSchema {
   users: User[];
   courses: Course[];
+  enrollments: Enrollment[];
   lessons: Lesson[];
   blocks: LessonBlock[];
   attempts: LessonAttempt[];

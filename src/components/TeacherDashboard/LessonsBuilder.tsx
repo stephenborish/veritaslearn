@@ -4,6 +4,7 @@ import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
 import QuestionEditor, { validateQuestionClient } from "./QuestionEditor";
+import LearningConditionsEditor, { buildDefaultPolicy, type IntegrityPolicy } from "./LearningConditionsEditor";
 
 function uid(prefix: string): string {
   return prefix + "_" + Math.random().toString(36).slice(2, 9);
@@ -31,17 +32,19 @@ interface LessonsBuilderProps {
   onSaveAssignment?: (payload: any) => Promise<void>;
   onDeleteAssignment?: (id: string) => Promise<void>;
   onLaunchPreviewAttempt?: (lessonId: string) => Promise<void>;
+  courses?: any[];
 }
 
-export default function LessonsBuilder({ 
-  lessons, 
-  blocks, 
-  onSaveLesson, 
+export default function LessonsBuilder({
+  lessons,
+  blocks,
+  onSaveLesson,
   onArchived,
   assignments = [],
   onSaveAssignment,
   onDeleteAssignment,
-  onLaunchPreviewAttempt
+  onLaunchPreviewAttempt,
+  courses = [],
 }: LessonsBuilderProps) {
   const [selectedLesson, setSelectedLesson] = useState<any>(null);
   const [title, setTitle] = useState("");
@@ -60,8 +63,9 @@ export default function LessonsBuilder({
   // Assignment Creator Form state
   const [showAssignmentForm, setShowAssignmentForm] = useState(false);
   const [asgLessonId, setAsgLessonId] = useState("");
-  const [asgCourseId, setAsgCourseId] = useState("VERITAS 101");
-  const [asgSection, setAsgSection] = useState("Section A");
+  const [asgCourseId, setAsgCourseId] = useState("");
+  const [asgSection, setAsgSection] = useState("");
+  const [asgIntegrityPolicy, setAsgIntegrityPolicy] = useState<IntegrityPolicy>(buildDefaultPolicy("open"));
 
   // Time generators for date inputs
   const getDefaultOpenDate = () => {
@@ -93,7 +97,7 @@ export default function LessonsBuilder({
       return;
     }
     if (!asgCourseId.trim()) {
-      setAsgError("Please enter a course code / title.");
+      setAsgError("Please select a course.");
       return;
     }
     if (new Date(asgOpensAt) >= new Date(asgDueAt)) {
@@ -112,12 +116,15 @@ export default function LessonsBuilder({
         section: asgSection.trim(),
         opensAt: new Date(asgOpensAt).toISOString(),
         dueAt: new Date(asgDueAt).toISOString(),
-        closesAt: new Date(asgClosesAt).toISOString()
+        closesAt: new Date(asgClosesAt).toISOString(),
+        integrityPolicy: asgIntegrityPolicy,
       };
       await onSaveAssignment(payload);
       setShowAssignmentForm(false);
-      // Reset form options
       setAsgLessonId("");
+      setAsgCourseId("");
+      setAsgSection("");
+      setAsgIntegrityPolicy(buildDefaultPolicy("open"));
     }
   };
 
@@ -684,26 +691,42 @@ export default function LessonsBuilder({
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Course ID / Code *</label>
-                      <input
-                        type="text"
-                        value={asgCourseId}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgCourseId(e.target.value)}
-                        placeholder="e.g. VERITAS 101"
-                        className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
-                        required
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Roster Section</label>
-                      <input
-                        type="text"
-                        value={asgSection}
-                        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgSection(e.target.value)}
-                        placeholder="e.g. Section A"
-                        className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
-                      />
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Course / Section *</label>
+                      {courses.filter((c) => c.status !== "archived").length > 0 ? (
+                        <select
+                          value={asgCourseId}
+                          onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                            setAsgCourseId(e.target.value);
+                            const selected = courses.find((c) => c.id === e.target.value);
+                            setAsgSection(selected?.sectionName || "");
+                          }}
+                          className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
+                          required
+                        >
+                          <option value="">-- Select a course --</option>
+                          {courses
+                            .filter((c) => c.status !== "archived")
+                            .map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}{c.sectionName ? ` — ${c.sectionName}` : ""}
+                              </option>
+                            ))}
+                        </select>
+                      ) : (
+                        <div className="space-y-1">
+                          <input
+                            type="text"
+                            value={asgCourseId}
+                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgCourseId(e.target.value)}
+                            placeholder="e.g. AP Biology"
+                            className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
+                            required
+                          />
+                          <p className="text-[10px] text-slate-400">
+                            Create courses in the Courses tab for student join codes.
+                          </p>
+                        </div>
+                      )}
                     </div>
 
                     <div>
@@ -738,6 +761,13 @@ export default function LessonsBuilder({
                         required
                       />
                     </div>
+                  </div>
+
+                  <div className="border-t border-slate-100 pt-4">
+                    <LearningConditionsEditor
+                      value={asgIntegrityPolicy}
+                      onChange={setAsgIntegrityPolicy}
+                    />
                   </div>
 
                   <div className="flex justify-end pt-2 border-t border-slate-100">
