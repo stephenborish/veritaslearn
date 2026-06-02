@@ -1,7 +1,0 @@
-{
-  "name": "VERITAS 2.0",
-  "description": "A high-integrity assessment platform, featuring secure session management and precision evaluation systems.",
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}
