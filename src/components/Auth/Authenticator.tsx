@@ -47,7 +47,12 @@ export default function Authenticator({ onLoginSuccess }: AuthenticatorProps) {
         id="login-card"
       >
         <div className="flex flex-col items-center mb-6 text-center">
-          <div className="w-10 h-10 bg-[#E5B53B] flex items-center justify-center font-bold text-[#0A192F] rounded-sm text-xl mb-3 shadow-sm">V</div>
+          <img
+            src="/favicon.png"
+            alt="Veritas Learn Logo"
+            referrerPolicy="no-referrer"
+            className="w-10 h-10 object-contain rounded-sm mb-3 shadow-sm"
+          />
           <h1 className="text-2xl font-bold tracking-tight text-[#0A192F] font-sans">
             VERITAS <span className="font-light text-slate-500">Learn</span>
           </h1>

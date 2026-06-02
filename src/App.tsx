@@ -8,6 +8,7 @@ import CourseManager from "./components/TeacherDashboard/CourseManager";
 import StudentDossierModal from "./components/TeacherDashboard/StudentDossierModal";
 import PracticeDashboard from "./components/StudentPortal/PracticeDashboard";
 import FocusedPlayer from "./components/StudentPortal/FocusedPlayer";
+import SuperAdmin from "./components/TeacherDashboard/SuperAdmin";
 import {
   LessonsBuilderSkeleton,
   GradebookSkeleton,
@@ -27,7 +28,8 @@ import {
   Menu,
   Activity,
   CheckSquare,
-  Users
+  Users,
+  Shield
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -521,7 +523,12 @@ export default function App() {
         <nav className="flex items-center justify-between px-6 py-3 bg-[#0A192F] text-white shrink-0 shadow-sm z-10">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-[#E5B53B] flex items-center justify-center font-bold text-[#0A192F] rounded-sm">V</div>
+              <img
+                src="/favicon.png"
+                alt="Veritas Learn Logo"
+                referrerPolicy="no-referrer"
+                className="w-8 h-8 object-contain rounded-sm"
+              />
               <span className="text-xl font-semibold tracking-tight">VERITAS <span className="font-light opacity-80">Learn</span></span>
             </div>
             <div className="h-6 w-px bg-white/20"></div>
@@ -598,7 +605,12 @@ export default function App() {
       <nav className="flex items-center justify-between px-6 py-3 bg-[#0A192F] text-white shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-[#E5B53B] flex items-center justify-center font-bold text-[#0A192F] rounded-sm">V</div>
+            <img
+              src="/favicon.png"
+              alt="Veritas Learn Logo"
+              referrerPolicy="no-referrer"
+              className="w-8 h-8 object-contain rounded-sm"
+            />
             <span className="text-xl font-semibold tracking-tight">VERITAS <span className="font-light opacity-80">Learn</span></span>
           </div>
           <div className="h-6 w-px bg-white/20"></div>
@@ -708,13 +720,33 @@ export default function App() {
               <CheckSquare className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'ai' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
               {!isSidebarCollapsed && <span className="truncate">Review Queue</span>}
             </button>
+
+            {currentUser?.isSuperAdmin && (
+              <>
+                {isSidebarCollapsed ? (
+                  <div className="border-b border-slate-100 my-4" />
+                ) : (
+                  <div className="text-[10px] font-bold text-red-500 uppercase tracking-widest px-2 pt-6 pb-2">Administration</div>
+                )}
+                <button
+                  onClick={() => setActiveTab("admin")}
+                  className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
+                    activeTab === "admin" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
+                  }`}
+                  title={isSidebarCollapsed ? "Roster Control" : undefined}
+                >
+                  <Shield className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'admin' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
+                  {!isSidebarCollapsed && <span className="truncate">Roster Control</span>}
+                </button>
+              </>
+            )}
           </div>
         </aside>
 
         {/* Content Area */}
         <main className="flex-1 flex flex-col overflow-hidden bg-[#F4F5F7]">
           {/* Section Header */}
-          {activeTab !== "gradebook" && activeTab !== "builder" && activeTab !== "ai" && activeTab !== "courses" && (
+          {activeTab !== "gradebook" && activeTab !== "builder" && activeTab !== "ai" && activeTab !== "courses" && activeTab !== "admin" && (
             <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
               <div>
                 <h1 className="text-xl font-bold text-slate-800">
@@ -821,6 +853,10 @@ export default function App() {
                     onOpenDossier={(studentId, lessonId) => setActiveDossier({ studentId, lessonId })}
                   />
                 )
+              )}
+
+              {activeTab === "admin" && (
+                <SuperAdmin idToken={idToken} />
               )}
             </div>
           </div>

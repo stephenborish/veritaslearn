@@ -2194,6 +2194,7 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
 
                   {cp.questions?.[0] ? (
                     <QuestionEditor
+                      key={cp.questions[0].id || cp.id}
                       question={cp.questions[0]}
                       type={(cp.questionType || "mc") as "mc" | "sa"}
                       graded={!cp.isPractice}
@@ -2275,6 +2276,7 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
 
             {block.singleQuestion ? (
               <QuestionEditor
+                key={block.singleQuestion.id || block.id}
                 question={block.singleQuestion}
                 type={(block.questionType || "mc") as "mc" | "sa"}
                 graded={!block.isPractice}

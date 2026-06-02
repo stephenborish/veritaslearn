@@ -155,5 +155,11 @@ service cloud.firestore {
       allow read: if isTeacher();
       allow write: if false;
     }
+
+    // 12. Approved Teachers — teacher/admin read; system writes only via Admin SDK
+    match /approvedTeachers/{teacherId} {
+      allow read: if isTeacher() || isSignedIn();
+      allow write: if false;
+    }
   }
 }

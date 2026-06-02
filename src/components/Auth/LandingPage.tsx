@@ -74,9 +74,12 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
     <div className="min-h-screen bg-[#F4F5F7] text-[#1A1A1A] font-sans flex flex-col">
       {/* Header */}
       <header className="bg-[#0A192F] text-white px-6 py-4 flex items-center gap-3 shrink-0">
-        <div className="w-9 h-9 bg-[#E5B53B] flex items-center justify-center font-bold text-[#0A192F] rounded-sm text-lg shadow-sm">
-          V
-        </div>
+        <img
+          src="/favicon.png"
+          alt="Veritas Learn Logo"
+          referrerPolicy="no-referrer"
+          className="w-9 h-9 object-contain rounded-sm shadow-sm"
+        />
         <div className="flex flex-col">
           <span className="text-xl font-semibold tracking-tight leading-none">
             VERITAS <span className="font-light opacity-80">Learn</span>

@@ -169,6 +169,18 @@
         "status": { "type": "string" }
       },
       "required": ["id", "studentId", "attemptId", "responseId", "score", "maxScore", "status"]
+    },
+    "ApprovedTeacher": {
+      "title": "ApprovedTeacher",
+      "description": "Dynamic roster list of verified teachers approved by the system super admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "addedBy": { "type": "string" },
+        "addedAt": { "type": "string" }
+      },
+      "required": ["id", "email", "addedBy", "addedAt"]
     }
   },
   "firestore": {
@@ -215,6 +227,10 @@
     "gradebookResponseEntries/{entryId}": {
       "schema": "GradebookResponseEntry",
       "description": "Durable answer scores tracking correctness per student response"
+    },
+    "approvedTeachers/{teacherId}": {
+      "schema": "ApprovedTeacher",
+      "description": "Dynamic list of verified teachers approved by system super admin"
     }
   }
 }

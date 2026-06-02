@@ -155,6 +155,7 @@ const DB_COLLECTIONS = [
   "gradebookEntries",
   "gradebookResponseEntries",
   "lessonDrafts",
+  "approvedTeachers",
 ] as const;
 
 function emptyDb(): any {
@@ -232,11 +233,14 @@ function readDb() {
 const JOIN_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I, O, 0, 1 (ambiguous)
 
 function generateJoinCode(prefix?: string): string {
-  const suffix = Array.from({ length: 4 }, () =>
+  const prefixPart = prefix 
+    ? prefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 2)
+    : "";
+  const neededLength = 5 - prefixPart.length;
+  const suffix = Array.from({ length: neededLength }, () =>
     JOIN_CODE_CHARS[Math.floor(Math.random() * JOIN_CODE_CHARS.length)]
   ).join("");
-  const base = suffix.slice(0, 2) + "-" + suffix.slice(2);
-  return prefix ? `${prefix.toUpperCase().slice(0, 6)}-${base.replace("-", "")}` : base;
+  return (prefixPart + suffix).toUpperCase();
 }
 
 // ==========================================
@@ -906,11 +910,39 @@ function simpleHash(s: string): string {
  */
 function parseAiGradingJson(rawText: string): any {
   let text = rawText.trim();
-  const fenceMatch = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-  if (fenceMatch) {
-    text = fenceMatch[1].trim();
+  
+  // Try direct parse first
+  try {
+    return JSON.parse(text);
+  } catch (e) {}
+
+  // try extracting markdown JSON fences anywhere in the string
+  const innerFenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (innerFenceMatch) {
+    try {
+      return JSON.parse(innerFenceMatch[1].trim());
+    } catch (e) {}
   }
-  return JSON.parse(text);
+
+  // Fallback: extract the outermost balanced braces { ... }
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      return JSON.parse(text.substring(firstBrace, lastBrace + 1));
+    } catch (e) {}
+  }
+
+  // Fallback: extract the outermost balanced brackets [ ... ]
+  const firstBracket = text.indexOf('[');
+  const lastBracket = text.lastIndexOf(']');
+  if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+    try {
+      return JSON.parse(text.substring(firstBracket, lastBracket + 1));
+    } catch (e) {}
+  }
+
+  return JSON.parse(rawText);
 }
 
 // Build the short-answer grading prompt from the teacher-authored rubric + guidance.
@@ -1006,6 +1038,20 @@ function checkLowEffortRules(responseValue: any): { lowEffort: boolean; reason: 
   return { lowEffort: false, reason: null };
 }
 
+function isUserTeacher(email: string, db: any): boolean {
+  const emailLower = email.trim().toLowerCase();
+  if (emailLower === "stephenborish@gmail.com") {
+    return true;
+  }
+  if (TEACHER_EMAILS.has(emailLower)) {
+    return true;
+  }
+  if (db && Array.isArray(db.approvedTeachers)) {
+    return db.approvedTeachers.some((t: any) => t.email.toLowerCase() === emailLower);
+  }
+  return false;
+}
+
 // Core authentication helper — verifies Firebase ID token only. No fallbacks.
 async function getSessionUser(req: express.Request) {
   const authHeader = req.headers.authorization;
@@ -1020,20 +1066,22 @@ async function getSessionUser(req: express.Request) {
     const email = decodedToken.email?.toLowerCase();
     if (!email) return null;
 
+    const db = readDb();
+
     // Domain and allowlist check (school domain, exact teachers, or allowed external student tester list) — no role based on email text patterns
     const isAuthorized = email.endsWith(`@${ALLOWED_DOMAIN}`) || 
                          TEACHER_EMAILS.has(email) || 
-                         AUTHORIZED_STUDENT_EMAILS.has(email);
+                         AUTHORIZED_STUDENT_EMAILS.has(email) ||
+                         isUserTeacher(email, db);
     if (!isAuthorized) {
       return null;
     }
 
-    const db = readDb();
     let user = db.users.find((u: any) => u.id === decodedToken.uid || u.email.toLowerCase() === email);
 
     if (!user) {
-      // New users default to student. Teacher role only from TEACHER_EMAILS env or existing user document.
-      const isTeacher = TEACHER_EMAILS.has(email);
+      // New users default to student. Teacher role dynamically checked.
+      const isTeacher = isUserTeacher(email, db);
       user = {
         id: decodedToken.uid,
         name: decodedToken.name || email.split("@")[0].replace(/[._]/g, " "),
@@ -1041,11 +1089,33 @@ async function getSessionUser(req: express.Request) {
         role: isTeacher ? "teacher" : "student",
         createdAt: new Date().toISOString()
       };
+      if (email === "stephenborish@gmail.com") {
+        user.isSuperAdmin = true;
+      }
       db.users.push(user);
       writeDb(db);
-    } else if (user.id !== decodedToken.uid) {
-      user.id = decodedToken.uid;
-      writeDb(db);
+    } else {
+      let changed = false;
+      if (user.id !== decodedToken.uid) {
+        user.id = decodedToken.uid;
+        changed = true;
+      }
+      const isTeacher = isUserTeacher(email, db);
+      if (isTeacher && user.role !== "teacher") {
+        user.role = "teacher";
+        changed = true;
+      }
+      if (email === "stephenborish@gmail.com" && !user.isSuperAdmin) {
+        user.isSuperAdmin = true;
+        changed = true;
+      }
+      if (changed) {
+        writeDb(db);
+      }
+    }
+
+    if (email === "stephenborish@gmail.com") {
+      user.isSuperAdmin = true;
     }
 
     return user;
@@ -1169,20 +1239,22 @@ app.post("/api/auth/login", async (req, res) => {
       return;
     }
 
+    const db = readDb();
+
     const isAuthorized = email.endsWith(`@${ALLOWED_DOMAIN}`) || 
                          TEACHER_EMAILS.has(email) || 
-                         AUTHORIZED_STUDENT_EMAILS.has(email);
+                         AUTHORIZED_STUDENT_EMAILS.has(email) ||
+                         isUserTeacher(email, db);
     if (!isAuthorized) {
       res.status(403).json({ error: "Access restricted to authorized Malvern Prep accounts. Contact your administrator if you believe this is an error." });
       return;
     }
 
-    const db = readDb();
     let user = db.users.find((u: any) => u.id === decodedToken.uid || u.email.toLowerCase() === email);
 
     if (!user) {
-      // New users default to student. Teacher role only from TEACHER_EMAILS env or existing user document.
-      const isTeacher = TEACHER_EMAILS.has(email);
+      // New users default to student. Teacher role dynamically checked.
+      const isTeacher = isUserTeacher(email, db);
       user = {
         id: decodedToken.uid,
         name: decodedToken.name || email.split("@")[0].replace(/[._]/g, " "),
@@ -1190,11 +1262,33 @@ app.post("/api/auth/login", async (req, res) => {
         role: isTeacher ? "teacher" : "student",
         createdAt: new Date().toISOString()
       };
+      if (email === "stephenborish@gmail.com") {
+        user.isSuperAdmin = true;
+      }
       db.users.push(user);
       writeDb(db);
-    } else if (user.id !== decodedToken.uid) {
-      user.id = decodedToken.uid;
-      writeDb(db);
+    } else {
+      let changed = false;
+      if (user.id !== decodedToken.uid) {
+        user.id = decodedToken.uid;
+        changed = true;
+      }
+      const isTeacher = isUserTeacher(email, db);
+      if (isTeacher && user.role !== "teacher") {
+        user.role = "teacher";
+        changed = true;
+      }
+      if (email === "stephenborish@gmail.com" && !user.isSuperAdmin) {
+        user.isSuperAdmin = true;
+        changed = true;
+      }
+      if (changed) {
+        writeDb(db);
+      }
+    }
+
+    if (email === "stephenborish@gmail.com") {
+      user.isSuperAdmin = true;
     }
 
     res.json({ user });
@@ -1211,6 +1305,109 @@ app.get("/api/auth/me", async (req, res) => {
     return;
   }
   res.json({ loggedIn: true, user });
+});
+
+// ==========================================
+// Super Admin Endpoints
+// ==========================================
+const requireSuperAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const user = await getSessionUser(req);
+  if (!user || user.email?.toLowerCase() !== "stephenborish@gmail.com") {
+    res.status(403).json({ error: "Access denied. Super Admin privileges required." });
+    return;
+  }
+  (req as any).user = user;
+  next();
+};
+
+// Get approved dynamic teacher roster
+app.get("/api/admin/teachers", requireSuperAdmin, (req, res) => {
+  try {
+    const db = readDb();
+    res.json({ approvedTeachers: db.approvedTeachers || [] });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to retrieve approved teachers roster." });
+  }
+});
+
+// Add dynamic approved teacher
+app.post("/api/admin/teachers", requireSuperAdmin, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || typeof email !== "string") {
+      res.status(400).json({ error: "Email address is required." });
+      return;
+    }
+
+    const emailLower = email.trim().toLowerCase();
+    if (!emailLower || !emailLower.includes("@")) {
+      res.status(400).json({ error: "Invalid email address format." });
+      return;
+    }
+
+    const db = readDb();
+    if (!db.approvedTeachers) db.approvedTeachers = [];
+
+    const exists = db.approvedTeachers.some((t: any) => t.email.toLowerCase() === emailLower);
+    if (exists) {
+      res.status(400).json({ error: "Teacher with this email is already registered." });
+      return;
+    }
+
+    const newTeacher = {
+      id: "teacher_" + Math.random().toString(36).substring(2, 9),
+      email: emailLower,
+      addedBy: "stephenborish@gmail.com",
+      addedAt: new Date().toISOString()
+    };
+
+    db.approvedTeachers.push(newTeacher);
+
+    // Promote existing user doc in users collection to teacher
+    const userDoc = db.users.find((u: any) => u.email.toLowerCase() === emailLower);
+    if (userDoc && userDoc.role !== "teacher") {
+      userDoc.role = "teacher";
+    }
+
+    await commitDb(db);
+    res.json({ success: true, teacher: newTeacher });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to add approved teacher." });
+  }
+});
+
+// Delete approved teacher dynamic roster
+app.delete("/api/admin/teachers", requireSuperAdmin, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || typeof email !== "string") {
+      res.status(400).json({ error: "Email address is required." });
+      return;
+    }
+
+    const emailLower = email.trim().toLowerCase();
+    const db = readDb();
+    if (!db.approvedTeachers) db.approvedTeachers = [];
+
+    const initialLength = db.approvedTeachers.length;
+    db.approvedTeachers = db.approvedTeachers.filter((t: any) => t.email.toLowerCase() !== emailLower);
+
+    if (db.approvedTeachers.length === initialLength) {
+      res.status(404).json({ error: "Email was not found in the approved teachers list." });
+      return;
+    }
+
+    // Downgrade user's role to student if they are no longer in static TEACHER_EMAILS either
+    const userDoc = db.users.find((u: any) => u.email.toLowerCase() === emailLower);
+    if (userDoc && !TEACHER_EMAILS.has(emailLower) && emailLower !== "stephenborish@gmail.com") {
+      userDoc.role = "student";
+    }
+
+    await commitDb(db);
+    res.json({ success: true, email: emailLower });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to remove approved teacher." });
+  }
 });
 
 // ==========================================
@@ -1837,8 +2034,9 @@ app.post("/api/enrollments/join", requireAuth, async (req, res) => {
     // Domain verification: require school email, allowed external student tester email, or allowlisted teacher email
     const emailLower = user.email.toLowerCase();
     const emailDomain = emailLower.split("@")[1] || "";
+    const db = readDb();
     const isAllowedToEnroll = emailDomain === ALLOWED_DOMAIN || 
-                              TEACHER_EMAILS.has(emailLower) || 
+                              isUserTeacher(emailLower, db) || 
                               AUTHORIZED_STUDENT_EMAILS.has(emailLower);
     if (!isAllowedToEnroll) {
       res.status(403).json({
@@ -1848,7 +2046,6 @@ app.post("/api/enrollments/join", requireAuth, async (req, res) => {
       return;
     }
 
-    const db = readDb();
     const normalizedCode = joinCode.trim().toUpperCase();
 
     // Find the course with this join code
@@ -3075,7 +3272,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       id: "aigr_" + Math.random().toString(36).substring(2, 9),
       responseId: newResponse.id,
       provider: "google",
-      model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
+      model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
       promptVersion: "2.0",
       rubricSnapshot: originalQuestion.rubricCategories || [],
       guidanceSnapshot,
@@ -3102,7 +3299,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       try {
         const ai = getAI();
         const response = await ai.models.generateContent({
-          model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
+          model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
           contents: promptContent,
           config: {
             systemInstruction:
@@ -3947,7 +4144,7 @@ app.post("/api/ai/generate-short-answer-rubric", requireTeacher, async (req, res
 
     const ai = getAI();
     const aiResponse = await ai.models.generateContent({
-      model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
+      model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
       contents: prompt,
       config: {
         systemInstruction:
@@ -4021,7 +4218,7 @@ app.post("/api/ai/revise-rubric", requireTeacher, async (req, res) => {
 
     const ai = getAI();
     const aiResponse = await ai.models.generateContent({
-      model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
+      model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
       contents: prompt,
       config: {
         systemInstruction:
@@ -4076,7 +4273,7 @@ async function startServer() {
           id: "aigr_" + Math.random().toString(36).substring(2, 9),
           responseId: r.id,
           provider: "google",
-          model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
+          model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
           promptVersion: "1.0",
           rubricSnapshot: [],
           inputHash: "",

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash, ArrowUp, ArrowDown, Eye, EyeOff, AlertCircle, CheckCircle2, Lock, Wand2, RotateCcw, X } from "lucide-react";
+import { Plus, Trash, ArrowUp, ArrowDown, Eye, EyeOff, AlertCircle, CheckCircle2, Lock, Wand2, RotateCcw, X, Sigma } from "lucide-react";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 import { auth } from "../../lib/firebase";
@@ -8,6 +8,16 @@ type AnyQuestion = any;
 
 function uid(prefix: string): string {
   return prefix + "_" + Math.random().toString(36).slice(2, 9);
+}
+
+/** Check if value has rich content format */
+function isRichContent(v: any): boolean {
+  if (!v) return false;
+  if (typeof v === "object") return true; 
+  if (typeof v === "string") {
+    return /<[a-z][\s\S]*>/i.test(v);
+  }
+  return false;
 }
 
 /** Extract a plain string from string | RichContent | undefined for blank detection. */
@@ -109,6 +119,7 @@ export interface LessonContext {
 }
 
 interface QuestionEditorProps {
+  key?: string;
   question: AnyQuestion;
   type: "mc" | "sa";
   graded: boolean;
@@ -443,7 +454,23 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
                     </span>
                     {isCorrect && <span className="text-[9px] font-bold text-emerald-700 uppercase tracking-wide">✓ Correct</span>}
                     {isBlank && <span className="text-[9px] font-bold text-rose-600 uppercase tracking-wide">Blank</span>}
-                    <div className="ml-auto flex items-center gap-0.5">
+                    <div className="ml-auto flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const currentlyRich = isRichContent(c.text);
+                          if (currentlyRich) {
+                            updateChoiceContent(c.id, textContent(c.text));
+                          } else {
+                            updateChoiceContent(c.id, `<p>${c.text || ""}</p>`);
+                          }
+                        }}
+                        title={isRichContent(c.text) ? "Convert to plain text" : "Format with rich text or math"}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 hover:brightness-95 transition cursor-pointer ${isRichContent(c.text) ? "bg-purple-100 text-purple-700" : "bg-slate-100 text-slate-600"}`}
+                      >
+                        <Sigma className="w-2.5 h-2.5" />
+                        {isRichContent(c.text) ? "Rich Enabled" : "Go Rich/Math"}
+                      </button>
                       <button type="button" onClick={() => moveChoice(idx, -1)} disabled={idx === 0} className="p-1 text-slate-400 hover:text-slate-700 disabled:opacity-30">
                         <ArrowUp className="w-3.5 h-3.5" />
                       </button>
@@ -455,17 +482,27 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
                       </button>
                     </div>
                   </div>
-                  {/* Rich choice editor */}
-                  <div className="px-3 py-2">
-                    <RichContentEditor
-                      value={c.text ?? ""}
-                      onChange={(val) => updateChoiceContent(c.id, val)}
-                      mode="compact"
-                      allowMath={true}
-                      allowChemistry={true}
-                      placeholder={`Choice ${CHOICE_LETTERS[idx] ?? idx + 1} — supports bold, subscript, images, math…`}
-                      documentKey={`choice-${c.id}`}
-                    />
+                  {/* Choice editor (snappy native plain input by default, rich editor only on-demand) */}
+                  <div className="px-3 py-2 bg-slate-50/20">
+                    {isRichContent(c.text) ? (
+                      <RichContentEditor
+                        value={c.text ?? ""}
+                        onChange={(val) => updateChoiceContent(c.id, val)}
+                        mode="compact"
+                        allowMath={true}
+                        allowChemistry={true}
+                        placeholder={`Choice ${CHOICE_LETTERS[idx] ?? idx + 1} — supports bold, subscript, images, math…`}
+                        documentKey={`choice-${c.id}`}
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        value={typeof c.text === "string" ? c.text : textContent(c.text)}
+                        onChange={(e) => updateChoiceContent(c.id, e.target.value)}
+                        placeholder={`Choice ${CHOICE_LETTERS[idx] ?? idx + 1} (Enter plain text option...)`}
+                        className="w-full bg-slate-50/50 border border-slate-200 rounded px-2.5 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800 text-xs font-medium"
+                      />
+                    )}
                   </div>
                 </div>
               );
