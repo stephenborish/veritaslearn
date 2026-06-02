@@ -1291,18 +1291,16 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
               }}
             />
 
-            {!block.videoUrl && (
-              <div className="pt-2 border-t border-slate-100">
-                <label className="font-semibold text-slate-600 block mb-1">Direct Video URL (Backup/Manual)</label>
-                <input
-                  type="text"
-                  value={block.videoUrl || ""}
-                  onChange={(e) => onBlockChange(index, "videoUrl", e.target.value)}
-                  placeholder="https://example.com/video.mp4"
-                  className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 font-mono text-[11px] focus:outline-none focus:border-slate-400"
-                />
-              </div>
-            )}
+            <div className="pt-2 border-t border-slate-100">
+              <label className="font-semibold text-slate-600 block mb-1">Direct Video URL (Backup/Manual Override)</label>
+              <input
+                type="text"
+                value={block.videoUrl || ""}
+                onChange={(e) => onBlockChange(index, "videoUrl", e.target.value)}
+                placeholder="https://example.com/video.mp4"
+                className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 font-mono text-[11px] focus:outline-none focus:border-slate-400"
+              />
+            </div>
 
             {/* Video checkpoints */}
             <div className="pt-3 border-t border-slate-100 space-y-3">

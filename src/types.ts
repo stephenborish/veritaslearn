@@ -122,6 +122,7 @@ export interface LessonAttempt {
   status: 'started' | 'completed';
   currentBlockIndex: number;
   furthestVideoTimestamps: { [blockId: string]: number }; // blockId -> furthest validated watch timestamp
+  videoPlaybackRates?: { [blockId: string]: number }; // blockId -> current/latest video playback rate
   activeTimeSpent: number; // in seconds
   inactiveTimeSpent: number; // in seconds
   lockState?: 'locked_awaiting_teacher' | null; // teacher-approval gate state
@@ -163,6 +164,15 @@ export interface StudentResponse {
   isCorrect?: boolean; // MC auto-graded
   score: number; // Final registered score for this response
   activeTimeSpent: number; // seconds spent focusing on this question
+  gradingMode?: 'practice' | 'assessment';
+  feedbackVisibility?: 'immediate' | 'after_submit' | 'hidden' | 'student_visible' | 'teacher_only';
+  gradebookCategory?: 'practice' | 'assessment';
+  maxPoints?: number;
+  pointsEarned?: number;
+  aiFeedbackReleasedAt?: string | null;
+  teacherReviewedAt?: string | null;
+  teacherOverrideScore?: number | null;
+  teacherOverrideFeedback?: string | null;
   aiGrading?: {
     score: number;
     rationale: string;
@@ -316,6 +326,48 @@ export interface Assignment {
   securityReviewRequired?: boolean;
 }
 
+export interface GradebookEntry {
+  id: string;
+  studentId: string;
+  assignmentId?: string;
+  courseId?: string;
+  lessonId?: string;
+  attemptId?: string;
+  responseId?: string;
+  category?: 'practice' | 'assessment';
+  score?: number;
+  maxScore?: number;
+  feedback?: string;
+  feedbackVisibleToStudent?: boolean;
+  source?: 'multiple_choice' | 'ai_short_answer' | 'teacher_override' | 'manual';
+  createdAt?: string;
+  updatedAt?: string;
+
+  // Attempt-level summary fields (for backward compatibility)
+  rawScore?: number;
+  finalScore?: number;
+  maxPoints?: number;
+  percent?: number;
+  status:
+    | 'not_started'
+    | 'in_progress'
+    | 'submitted'
+    | 'needs_grading'
+    | 'graded'
+    | 'missing'
+    | 'excused'
+    | 'pending_ai'
+    | 'auto_scored'
+    | 'ai_scored'
+    | 'needs_teacher_review'
+    | 'teacher_reviewed'
+    | 'teacher_overridden'
+    | 'error';
+  aiPendingCount?: number;
+  teacherReviewRequired?: boolean;
+  lastCalculatedAt?: string;
+}
+
 export interface DatabaseSchema {
   users: User[];
   courses: Course[];
@@ -329,4 +381,5 @@ export interface DatabaseSchema {
   securitySignals: SecuritySignal[];
   aiGradingRecords: AIGradingRecord[];
   lessonAssignments: Assignment[];
+  gradebookEntries?: GradebookEntry[];
 }

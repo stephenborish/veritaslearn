@@ -15,6 +15,8 @@ import {
   migrateQuestionDefinition,
   sanitizeLessonBlocksForStudent,
   sanitizeQuestionForStudent,
+  sanitizeResponseForStudent,
+  sanitizeGradebookEntryForStudent,
   gradeMc,
   choiceTextById,
   findLeakedSecretFields,
@@ -132,6 +134,7 @@ const DB_COLLECTIONS = [
   "securitySignals",
   "aiGradingRecords",
   "lessonAssignments",
+  "gradebookEntries",
 ] as const;
 
 function emptyDb(): any {
@@ -339,6 +342,263 @@ function mergeResponsesWithAiGrading(responses: any[], db: any) {
       };
     }
     return r;
+  });
+}
+
+// Recalculate max points of assessment questions assigned to this attempt
+function calcMaxPointsForAttempt(attempt: any, db: any): number {
+  const attemptId = attempt.id;
+  const qAsgs = (db.questionAssignments || []).filter((qa: any) => qa.attemptId === attemptId);
+  let total = 0;
+  qAsgs.forEach((qa: any) => {
+    const block = (db.blocks || []).find((b: any) => b.id === qa.blockId);
+    if (!block) return;
+    
+    let isPractice = false;
+    if (qa.checkpointId && Array.isArray(block.videoCheckpoints)) {
+      const cp = block.videoCheckpoints.find((c: any) => c.id === qa.checkpointId);
+      isPractice = cp ? !!cp.isPractice : !!block.isPractice;
+    } else {
+      isPractice = !!block.isPractice;
+    }
+    
+    if (!isPractice) {
+      const points = qa.selectedQuestion?.points ?? 0;
+      total += Number(points);
+    }
+  });
+
+  if (total === 0) {
+    const lessonBlocks = (db.blocks || []).filter((b: any) => b.lessonId === attempt.lessonId);
+    total = lessonBlocks.reduce((sum: number, b: any) => {
+      if (b.type !== "question" || b.isPractice) return sum;
+      if (b.singleQuestion) return sum + (b.singleQuestion.points || 0);
+      if (b.questionPool) {
+        const perQ = b.questionPool.questions?.[0]?.points || 0;
+        return sum + perQ * (b.questionPool.numToSelect || 1);
+      }
+      return sum;
+    }, 0);
+  }
+  return total;
+}
+
+// Calculate and write a durable GradebookEntry for a single student response
+function upsertResponseGradebookEntry(
+  response: any,
+  attempt: any,
+  status: "pending_ai" | "auto_scored" | "ai_scored" | "needs_teacher_review" | "teacher_reviewed" | "teacher_overridden" | "missing" | "excused" | "error",
+  source: "multiple_choice" | "ai_short_answer" | "teacher_override" | "manual",
+  feedback: string | undefined,
+  db: any
+): void {
+  if (!db.gradebookEntries) {
+    db.gradebookEntries = [];
+  }
+
+  const lessonId = attempt.lessonId;
+  const assignmentId = attempt.assignmentId || 
+    (db.lessonAssignments || []).find((la: any) => la.lessonId === lessonId)?.id || 
+    `legacy_${lessonId}`;
+  
+  const lesson = (db.lessons || []).find((l: any) => l.id === lessonId);
+  const assignment = (db.lessonAssignments || []).find((a: any) => a.id === assignmentId);
+  const courseId = assignment ? assignment.courseId : (lesson ? lesson.courseId : "");
+
+  const entryId = `ge_resp_${response.id}`;
+  const entryIdx = db.gradebookEntries.findIndex((e: any) => e.id === entryId);
+
+  const isPractice = response.gradebookCategory === "practice" || response.gradingMode === "practice";
+
+  const entryData: any = {
+    id: entryId,
+    studentId: response.studentId,
+    courseId,
+    lessonId,
+    assignmentId,
+    attemptId: response.attemptId,
+    responseId: response.id,
+    category: isPractice ? "practice" : "assessment",
+    score: Number(response.score) || 0,
+    maxScore: Number(response.maxPoints) || 0,
+    feedback: feedback || "",
+    feedbackVisibleToStudent: isPractice,
+    status,
+    source,
+    createdAt: response.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  if (entryIdx !== -1) {
+    entryData.createdAt = db.gradebookEntries[entryIdx].createdAt || entryData.createdAt;
+    db.gradebookEntries[entryIdx] = entryData;
+  } else {
+    db.gradebookEntries.push(entryData);
+  }
+}
+
+// Calculate and write a durable GradebookEntry for a finished/updated attempt
+function upsertGradebookEntryForAttempt(attemptId: string, db: any): void {
+  if (!db.gradebookEntries) {
+    db.gradebookEntries = [];
+  }
+  const attempt = db.attempts.find((a: any) => a.id === attemptId);
+  if (!attempt) return;
+
+  const studentId = attempt.studentId;
+  const assignmentId = attempt.assignmentId || 
+    (db.lessonAssignments || []).find((la: any) => la.lessonId === attempt.lessonId)?.id || 
+    `legacy_${attempt.lessonId}`;
+
+  // Find all assessment responses for this attempt
+  const attemptResponses = (db.responses || []).filter((r: any) => r.attemptId === attemptId);
+  const assessmentResponses = attemptResponses.filter((r: any) => {
+    const cat = r.gradebookCategory ?? r.gradingMode;
+    if (cat === undefined) return true;
+    return cat === "assessment";
+  });
+
+  const rawScore = assessmentResponses.reduce((sum: number, r: any) => sum + (r.score || 0), 0);
+  const finalScore = rawScore;
+  const maxPoints = calcMaxPointsForAttempt(attempt, db);
+
+  let status: "not_started" | "in_progress" | "submitted" | "needs_grading" | "graded" | "missing" | "excused" = "in_progress";
+  if (attempt.status !== 'completed') {
+    status = 'in_progress';
+  } else {
+    const qAsgs = (db.questionAssignments || []).filter((qa: any) => qa.attemptId === attemptId);
+    const saAssessmentAsgs = qAsgs.filter((qa: any) => {
+      const block = (db.blocks || []).find((b: any) => b.id === qa.blockId);
+      if (!block) return false;
+      let isPractice = false;
+      if (qa.checkpointId && Array.isArray(block.videoCheckpoints)) {
+        const cp = block.videoCheckpoints.find((c: any) => c.id === qa.checkpointId);
+        isPractice = cp ? !!cp.isPractice : !!block.isPractice;
+      } else {
+        isPractice = !!block.isPractice;
+      }
+      if (isPractice) return false;
+      const type = qa.selectedQuestion?.type || (qa.checkpointId ? block.videoCheckpoints?.find((c: any) => c.id === qa.checkpointId)?.questionType : block.questionType);
+      return type === "sa";
+    });
+
+    let aiPendingCount = 0;
+    let needsTeacherGrading = false;
+
+    saAssessmentAsgs.forEach((saQa: any) => {
+      const resp = assessmentResponses.find((r: any) => r.questionId === saQa.questionId);
+      if (!resp) {
+        needsTeacherGrading = true;
+        return;
+      }
+      const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === resp.id);
+      if (!aiRecord || aiRecord.status === 'pending') {
+        aiPendingCount++;
+      } else if (aiRecord.status === 'needs_review' || resp.isLowEffort) {
+        needsTeacherGrading = true;
+      }
+    });
+
+    if (aiPendingCount > 0) {
+      status = 'submitted';
+    } else if (needsTeacherGrading) {
+      status = 'needs_grading';
+    } else {
+      status = 'graded';
+    }
+  }
+
+  const override = attempt.gradebookStatusOverride;
+  if (override === "excused") {
+    status = "excused";
+  } else if (override === "missing") {
+    status = "missing";
+  } else if (override === "pending") {
+    status = "needs_grading";
+  }
+
+  let aiPendingCount = 0;
+  assessmentResponses.forEach((r: any) => {
+    if (r.type === "sa") {
+      const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === r.id);
+      if (!aiRecord || aiRecord.status === 'pending') {
+        aiPendingCount++;
+      }
+    }
+  });
+
+  let teacherReviewRequired = false;
+  assessmentResponses.forEach((r: any) => {
+    if (r.type === "sa") {
+      const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === r.id);
+      if (aiRecord && aiRecord.status === 'needs_review') {
+        teacherReviewRequired = true;
+      }
+      if (r.isLowEffort) {
+        teacherReviewRequired = true;
+      }
+    }
+  });
+
+  const entryIdx = db.gradebookEntries.findIndex(
+    (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+  );
+
+  const percent = maxPoints > 0 ? Math.round((finalScore / maxPoints) * 100) : 100;
+
+  const entryData: any = {
+    id: entryIdx !== -1 ? db.gradebookEntries[entryIdx].id : "ge_" + Math.random().toString(36).substring(2, 9),
+    assignmentId,
+    studentId,
+    rawScore,
+    finalScore,
+    maxPoints,
+    percent,
+    status,
+    aiPendingCount,
+    teacherReviewRequired,
+    lastCalculatedAt: new Date().toISOString()
+  };
+
+  if (entryIdx !== -1) {
+    db.gradebookEntries[entryIdx] = entryData;
+  } else {
+    db.gradebookEntries.push(entryData);
+  }
+}
+
+// Recalculate and persist the score of a specific attempt by summing its student responses (excluding practice)
+function recalculateAttemptScore(attemptId: string, db: any): number {
+  if (!db.attempts) return 0;
+  const attemptIdx = db.attempts.findIndex((a: any) => a.id === attemptId);
+  if (attemptIdx === -1) return 0;
+  
+  const attemptResponses = (db.responses || []).filter((r: any) => r.attemptId === attemptId);
+  const assessmentResponses = attemptResponses.filter((r: any) => {
+    const cat = r.gradebookCategory ?? r.gradingMode;
+    if (cat === undefined) return true;
+    return cat === "assessment";
+  });
+  
+  const score = assessmentResponses.reduce((sum: number, r: any) => sum + (r.score || 0), 0);
+  
+  db.attempts[attemptIdx].score = score;
+
+  // Immediately compute and write/update durable GradebookEntry
+  try {
+    upsertGradebookEntryForAttempt(attemptId, db);
+  } catch (err) {
+    console.error("Failed to upsert GradebookEntry in recalculateAttemptScore:", err);
+  }
+
+  return score;
+}
+
+// Recalculates and persists scores for all attempts associated with a given assignment
+function recalculateAssignmentScores(assignmentId: string, db: any): void {
+  const attempts = (db.attempts || []).filter((a: any) => a.assignmentId === assignmentId);
+  attempts.forEach((a: any) => {
+    recalculateAttemptScore(a.id, db);
   });
 }
 
@@ -646,6 +906,53 @@ function buildShortAnswerPrompt(lesson: any, q: any, responseValue: any, maxPoin
   ].join("\n");
 }
 
+// Deterministically detect extremely short replies or structureless patterns
+function checkLowEffortRules(responseValue: any): { lowEffort: boolean; reason: string | null } {
+  if (typeof responseValue !== "string") {
+    return { lowEffort: true, reason: "Response must be a written text answer." };
+  }
+  const text = responseValue.trim();
+  
+  // 1. Check extremely short (< 15 characters)
+  if (text.length < 15) {
+    return { lowEffort: true, reason: `Response is extremely short (${text.length} chars, expected >= 15).` };
+  }
+
+  // 2. Check lack of words / structure (word count < 3)
+  const words = text.split(/\s+/).filter(w => w.length > 0);
+  if (words.length < 3) {
+    return { lowEffort: true, reason: `Response has too few words (${words.length} words, expected >= 3).` };
+  }
+
+  // 3. Repeated character gibberish check (e.g. 'aaaaaaa', '......')
+  const charCounts: Record<string, number> = {};
+  let nonWsLen = 0;
+  for (const char of text.toLowerCase()) {
+    if (/\s/.test(char)) continue;
+    nonWsLen++;
+    charCounts[char] = (charCounts[char] || 0) + 1;
+  }
+  if (nonWsLen > 0) {
+    const maxFreq = Math.max(...Object.values(charCounts));
+    const maxFreqChar = Object.keys(charCounts).find(k => charCounts[k] === maxFreq);
+    if (nonWsLen >= 5 && maxFreq / nonWsLen > 0.5) {
+      return { lowEffort: true, reason: `Lacks meaningful structure: repeated character '${maxFreqChar}'.` };
+    }
+  }
+
+  // 4. Keyboard smash pattern with exceptionally low vowel count (alphabetic gibberish)
+  const lettersOnly = text.replace(/[^a-zA-Z]/g, '');
+  if (lettersOnly.length >= 8) {
+    const vowels = lettersOnly.match(/[aeiouAEIOU]/g);
+    const vowelRatio = vowels ? vowels.length / lettersOnly.length : 0;
+    if (vowelRatio < 0.1) {
+      return { lowEffort: true, reason: "Gibberish pattern (extremely low vowel counts, suspicious of keyboard smash)." };
+    }
+  }
+
+  return { lowEffort: false, reason: null };
+}
+
 // Core authentication helper — verifies Firebase ID token only. No fallbacks.
 async function getSessionUser(req: express.Request) {
   const authHeader = req.headers.authorization;
@@ -737,38 +1044,54 @@ app.post("/api/video/upload", requireTeacher, uploadVideo.single("video"), async
   }
   
   try {
-    if (!firebaseBucket) {
-      res.status(500).json({ error: "Firebase Storage is not initialized." });
-      return;
-    }
-
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
     const ext = path.extname(req.file.originalname);
     const base = path.basename(req.file.originalname, ext).replace(/[^a-zA-Z0-9]/g, "_");
     const filename = `${base}-${uniqueSuffix}${ext}`;
-    
-    const fileRef = firebaseBucket.file(`videos/${filename}`);
-    
-    await fileRef.save(req.file.buffer, {
-      metadata: {
-        contentType: req.file.mimetype,
-      },
-      resumable: false,
-    });
-    
-    const videoUrl = await getDownloadURL(fileRef);
+
+    let videoUrl = "";
+    let storagePath = "";
+    let uploadedToCloud = false;
+
+    if (firebaseBucket) {
+      try {
+        const fileRef = firebaseBucket.file(`videos/${filename}`);
+        await fileRef.save(req.file.buffer, {
+          metadata: {
+            contentType: req.file.mimetype,
+          },
+          resumable: false,
+        });
+        videoUrl = await getDownloadURL(fileRef);
+        storagePath = `videos/${filename}`;
+        uploadedToCloud = true;
+      } catch (gcsErr: any) {
+        console.warn("Firebase Storage upload failed (permission, bucket issue, or bucket not set up), falling back to local file path. Error:", gcsErr.message || gcsErr);
+      }
+    } else {
+      console.log("Firebase Storage is not initialized, falling back directly to local upload.");
+    }
+
+    if (!uploadedToCloud) {
+      // Fallback: save to UPLOADS_DIR and return local /uploads URL
+      const localPath = path.join(UPLOADS_DIR, filename);
+      await fs.promises.writeFile(localPath, req.file.buffer);
+      videoUrl = `/uploads/${filename}`;
+      storagePath = `uploads/${filename}`;
+    }
 
     res.json({
       success: true,
       videoUrl,
-      storagePath: `videos/${filename}`,
+      storagePath,
       filename,
       originalName: req.file.originalname,
-      size: req.file.size
+      size: req.file.size,
+      localFallback: !uploadedToCloud
     });
   } catch (err: any) {
-    console.error("Firebase Storage Upload Route Error:", err);
-    res.status(500).json({ error: err.message || "Failed to upload file to Firebase Storage." });
+    console.error("Local/Firebase fallback upload error:", err);
+    res.status(500).json({ error: err.message || "Failed to process the uploaded video file." });
   }
 });
 
@@ -1667,6 +1990,96 @@ function buildQuestionAssignment(
 }
 
 // List all attempts for the logged-in student (or all attempts for teachers) (excludes preview attempts by default)
+app.get("/api/student/performance", requireAuth, (req, res) => {
+  try {
+    const user = (req as any).user;
+    const db = readDb();
+
+    // 1. Get all attempts for this student (excluding previews)
+    const studentAttempts = (db.attempts || []).filter(
+      (a: any) => a.studentId === user.id && !a.isPreviewAttempt
+    );
+
+    const completedAttempts = studentAttempts.filter((a: any) => a.status === "completed" || a.completedAt);
+    const completedCount = completedAttempts.length;
+
+    // 2. Average accuracy across all completed efforts
+    let totalScore = 0;
+    let totalMaxScore = 0;
+
+    completedAttempts.forEach((attempt: any) => {
+      const attemptResponses = (db.responses || []).filter((r: any) => {
+        if (r.attemptId !== attempt.id) return false;
+        const cat = r.gradebookCategory ?? r.gradingMode;
+        if (cat === undefined) return true;
+        return cat === "assessment";
+      });
+      const score = attemptResponses.reduce((sum: number, r: any) => sum + (r.score || 0), 0);
+
+      // Calculate max points for this lesson
+      const lessonBlocks = (db.blocks || []).filter((b: any) => b.lessonId === attempt.lessonId);
+      const maxScore = lessonBlocks.reduce((sum: number, b: any) => {
+        if (b.type !== "question" || b.isPractice) return sum;
+        if (b.singleQuestion) return sum + (b.singleQuestion.points || 0);
+        if (b.questionPool) {
+          const perQ = b.questionPool.questions?.[0]?.points || 0;
+          return sum + perQ * (b.questionPool.numToSelect || 1);
+        }
+        return sum;
+      }, 0);
+
+      totalScore += score;
+      totalMaxScore += maxScore;
+    });
+
+    const averageAccuracy = totalMaxScore > 0 ? Math.round((totalScore / totalMaxScore) * 100) : null;
+
+    // 3. Upcoming deadlines
+    let list = db.lessonAssignments || [];
+    const activeEnrollments = (db.enrollments || []).filter(
+      (e: any) => e.studentId === user.id && e.status === "active"
+    );
+    const enrolledCourseIds = new Set(activeEnrollments.map((e: any) => e.courseId));
+    const knownCourseIds = new Set((db.courses || []).map((c: any) => c.id));
+
+    list = list.filter((asg: any) => {
+      if (!knownCourseIds.has(asg.courseId)) return true;
+      return enrolledCourseIds.has(asg.courseId);
+    });
+
+    const now = new Date();
+    const upcomingDeadlines = list
+      .filter((asg: any) => {
+        if (!asg.dueAt) return false;
+        const due = new Date(asg.dueAt);
+        if (due < now) return false;
+        
+        // Filter elements already completed
+        const alreadyCompleted = completedAttempts.some(
+          (a: any) => asg.id && a.assignmentId ? a.assignmentId === asg.id : a.lessonId === asg.lessonId
+        );
+        return !alreadyCompleted;
+      })
+      .map((asg: any) => {
+        const lesson = (db.lessons || []).find((l: any) => l.id === asg.lessonId);
+        return {
+          id: asg.id,
+          lessonTitle: lesson ? lesson.title : "Unknown Lesson",
+          dueAt: asg.dueAt
+        };
+      })
+      .sort((a: any, b: any) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+
+    res.json({
+      completedCount,
+      averageAccuracy,
+      upcomingDeadlines
+    });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
 app.get("/api/attempts", requireAuth, (req, res) => {
   const user = (req as any).user;
   const db = readDb();
@@ -1957,10 +2370,26 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
   }
 
   const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
-  const questionAssignments = db.questionAssignments.filter((asg: any) => asg.attemptId === id);
+  let questionAssignments = db.questionAssignments.filter((asg: any) => asg.attemptId === id);
   const rawResponses = db.responses.filter((r: any) => r.attemptId === id);
-  const responses = mergeResponsesWithAiGrading(rawResponses, db);
+  let responses = mergeResponsesWithAiGrading(rawResponses, db);
   const signals = db.securitySignals.filter((s: any) => s.attemptId === id);
+
+  if (user.role === "student") {
+    // Sanitize question assignments: strip correct answer, rubrics, model answer etc.
+    questionAssignments = questionAssignments.map((qa: any) => {
+      if (qa.selectedQuestion) {
+        return {
+          ...qa,
+          selectedQuestion: sanitizeQuestionForStudent(qa.selectedQuestion)
+        };
+      }
+      return qa;
+    });
+
+    // Sanitize responses to prevent answer key and premature feedback leaks
+    responses = responses.map(sanitizeResponseForStudent);
+  }
 
   res.json({
     attempt,
@@ -1977,7 +2406,7 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
 // Watch video progress validations
 app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
   const { id } = req.params;
-  const { blockId, timestamp, activeTime, inactiveTime } = req.body;
+  const { blockId, timestamp, activeTime, inactiveTime, playbackRate } = req.body;
   const db = readDb();
 
   const attemptIdx = db.attempts.findIndex((a: any) => a.id === id);
@@ -2080,6 +2509,13 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
 
   if (activeTime) attempt.activeTimeSpent += Number(activeTime);
   if (inactiveTime) attempt.inactiveTimeSpent += Number(inactiveTime);
+
+  if (playbackRate && blockId) {
+    if (!attempt.videoPlaybackRates) {
+      attempt.videoPlaybackRates = {};
+    }
+    attempt.videoPlaybackRates[blockId] = Number(playbackRate);
+  }
 
   // Track per-block active time for teacher dossier visibility
   if (blockId && Number(activeTime) > 0) {
@@ -2207,6 +2643,41 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
           }
         }
       }
+
+      if (blockToCheck.type === "question") {
+        const asgs = db.questionAssignments.filter((a: any) => a.attemptId === attempt.id && a.blockId === blockToCheck.id);
+        const allAnswered = asgs.every((a: any) => {
+          return db.responses.some((r: any) => 
+            r.attemptId === attempt.id && 
+            r.blockId === blockToCheck.id && 
+            r.questionId === a.questionId
+          );
+        });
+
+        if (!allAnswered) {
+          const blockNavSignal = {
+            id: "sig_" + Math.random().toString(36).substring(2, 9),
+            attemptId: attempt.id,
+            studentId: attempt.studentId,
+            timestamp: new Date().toISOString(),
+            eventType: "rapid_navigation",
+            severity: "high",
+            blockId: blockToCheck.id,
+            metadata: {
+              message: `Bypass attempted. Required question block answers not submitted: ${blockToCheck.title}`,
+              blockIndexAttempt: blockIndex,
+              currentBlockIndex: attempt.currentBlockIndex
+            }
+          };
+          db.securitySignals.push(blockNavSignal);
+          writeDb(db);
+          
+          res.status(400).json({ 
+            error: `Navigation blocked. You must answer the questions in '${blockToCheck.title}' before moving forward.` 
+          });
+          return;
+        }
+      }
     }
   }
 
@@ -2283,11 +2754,16 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       declaredType === "mc" ? true : declaredType === "sa" ? false : originalQuestion.type === "mc";
     const isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
 
-    // Idempotent: replace any prior response for this exact question (never double-count score).
+        // Idempotent: replace any prior response for this exact question (never double-count score).
     db.responses = db.responses.filter(
       (r: any) =>
         !(r.attemptId === id && r.blockId === blockId && r.questionId === questionId && (checkpointId ? r.checkpointId === checkpointId : true))
     );
+
+    const gradingMode = isPracticeQuestion ? "practice" : "assessment";
+    const feedbackVisibility = isPracticeQuestion ? "student_visible" : "teacher_only";
+    const gradebookCategory = isPracticeQuestion ? "practice" : "assessment";
+    const maxPointsValue = Number(originalQuestion.points) || 0;
 
     const newResponse: any = {
       id: "resp_" + Math.random().toString(36).substring(2, 9),
@@ -2299,32 +2775,43 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       type: isMC ? "mc" : "sa",
       responseValue,
       score: 0,
-      activeTimeSpent: Number(activeTimeSpent) || 0
+      activeTimeSpent: Number(activeTimeSpent) || 0,
+      gradingMode,
+      gradebookCategory,
+      maxPoints: maxPointsValue,
+      pointsEarned: 0,
+      feedbackVisibility
     };
 
     if (isMC) {
       // MC AUTO-GRADING by stable choice id (scramble-proof; client score is never trusted).
       const { isCorrect } = gradeMc(originalQuestion, responseValue);
       newResponse.isCorrect = isCorrect;
-      newResponse.score = isCorrect ? Number(originalQuestion.points) || 0 : 0;
+      const calculatedScore = isCorrect ? maxPointsValue : 0;
+      newResponse.score = calculatedScore;
+      newResponse.pointsEarned = calculatedScore;
       newResponse.responseText = choiceTextById(originalQuestion, responseValue);
 
       db.responses.push(newResponse);
+      
+      // Write the response-level GradebookEntry
+      upsertResponseGradebookEntry(newResponse, attempt, "auto_scored", "multiple_choice", undefined, db);
+
+      recalculateAttemptScore(id, db);
       await commitDb(db);
 
-      const feedbackAllowed = !!lesson.settings.immediateFeedback || isPracticeQuestion;
       res.json({
         success: true,
         gradedImmediate: true,
         isCorrect,
         score: newResponse.score,
-        explanation: feedbackAllowed ? originalQuestion.explanation : undefined
+        explanation: feedbackVisibility === "student_visible" ? originalQuestion.explanation : undefined
       });
       return;
     }
 
     // ---- SHORT ANSWER: AI grading using teacher-authored rubric + guidance ----
-    const maxPoints = Number(originalQuestion.points) || 0;
+    const maxPoints = maxPointsValue;
     const guidanceSnapshot = {
       modelAnswer: originalQuestion.modelAnswer,
       answerKey: originalQuestion.answerKey,
@@ -2351,6 +2838,11 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
 
     db.aiGradingRecords.push(newGradingRecord);
     db.responses.push(newResponse);
+
+    // Initial response-level GradebookEntry for Short Answer: pending AI
+    upsertResponseGradebookEntry(newResponse, attempt, "pending_ai", "ai_short_answer", undefined, db);
+
+    recalculateAttemptScore(id, db);
     await commitDb(db);
 
     // Grade asynchronously so the student isn't blocked on the model round-trip.
@@ -2362,7 +2854,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           contents: promptContent,
           config: {
             systemInstruction:
-              "You are Veritas AI, an assistive rubric grader. Your score is a suggestion for a teacher to review, not a final grade. Output strictly the requested JSON.",
+              "You are Veritas AI, an assistive rubric grader. Your score is a suggestion for a teacher to review, not a final grade. Assess if the student's response is extremely low-effort, gibberish, a keyboard smash, or lacks structure, and output strictly the requested JSON.",
             responseMimeType: "application/json",
             responseSchema: {
               type: Type.OBJECT,
@@ -2370,6 +2862,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
                 score: { type: Type.NUMBER, description: "Total points earned; must not exceed the maximum." },
                 confidence: { type: Type.NUMBER, description: "0..1 confidence in this assessment." },
                 rationale: { type: Type.STRING, description: "Brief justification grounded in the rubric and guidance." },
+                lowEffort: { type: Type.BOOLEAN, description: "True if safety/relevance check fails; the response is extremely low-effort, is a keyboard smash, consists of repeated characters, is irrelevant nonsense, or has no coherent semantic structure indicating a genuine academic attempt." },
                 rubricBreakdown: {
                   type: Type.ARRAY,
                   items: {
@@ -2383,7 +2876,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
                   }
                 }
               },
-              required: ["score", "confidence", "rationale", "rubricBreakdown"]
+              required: ["score", "confidence", "rationale", "lowEffort", "rubricBreakdown"]
             }
           }
         });
@@ -2398,11 +2891,17 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           });
         }
 
-        // Clamp the suggested score into the valid range.
-        const clampedScore = Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
-        const confidence = Number(geminiResult.confidence) || 0;
-        const tooShort = typeof responseValue === "string" ? responseValue.trim().length <= 5 : false;
-        const finalStatus = confidence < 0.75 || tooShort ? "needs_review" : "success";
+        // Rules-based detection combined with Gemini AI-based detection
+        const rulesCheck = checkLowEffortRules(responseValue);
+        const isLowEffort = rulesCheck.lowEffort || !!geminiResult.lowEffort;
+        const lowEffortReason = rulesCheck.lowEffort 
+          ? rulesCheck.reason 
+          : (geminiResult.lowEffort ? "AI assessed submission as extremely low-effort or lacking meaningful structure." : null);
+
+        // Clamp the suggested score into the valid range. Forces score to 0 if low effort is flagged.
+        const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
+        const confidence = isLowEffort ? 0 : (Number(geminiResult.confidence) || 0);
+        const finalStatus = isLowEffort || confidence < 0.75 ? "needs_review" : "success";
 
         const freshDb = readDb();
         const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
@@ -2411,36 +2910,89 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         if (freshRespIdx !== -1) {
           // The AI suggested score becomes the working score, but the raw response is never overwritten.
           freshDb.responses[freshRespIdx].score = clampedScore;
+          freshDb.responses[freshRespIdx].pointsEarned = clampedScore;
+          freshDb.responses[freshRespIdx].isLowEffort = isLowEffort;
+          if (lowEffortReason) {
+            freshDb.responses[freshRespIdx].lowEffortReason = lowEffortReason;
+          }
+          
           if (freshGradIdx !== -1) {
             freshDb.aiGradingRecords[freshGradIdx] = {
               ...freshDb.aiGradingRecords[freshGradIdx],
               rawOutput: rawJsonText,
               parsedScore: clampedScore,
-              rationale: geminiResult.rationale,
+              rationale: isLowEffort ? `[VERITAS INTEGRITY REVIEW - low-effort or lacking structure]: ${lowEffortReason}. ${geminiResult.rationale}` : geminiResult.rationale,
               confidence,
               status: finalStatus,
               rubricBreakdown: rubricObject,
               gradedAt: new Date().toISOString()
             };
           }
+
+          // Write/update the response-level GradebookEntry!
+          const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
+          if (freshAttempt) {
+            upsertResponseGradebookEntry(
+              freshDb.responses[freshRespIdx],
+              freshAttempt,
+              finalStatus === "needs_review" ? "needs_teacher_review" : "ai_scored",
+              "ai_short_answer",
+              isLowEffort ? `[VERITAS INTEGRITY REVIEW - low-effort or lacking structure]: ${lowEffortReason}. ${geminiResult.rationale}` : geminiResult.rationale,
+              freshDb
+            );
+          }
+
+          recalculateAttemptScore(id, freshDb);
           await commitDb(freshDb);
-          console.log(`VERITAS Learn - AI grade stored (status=${finalStatus}, score=${clampedScore}/${maxPoints}).`);
+          console.log(`VERITAS Learn - AI grade stored (status=${finalStatus}, score=${clampedScore}/${maxPoints}, lowEffort=${isLowEffort}).`);
         }
       } catch (error: any) {
         console.error("VERITAS Learn - AI Grading failed:", error);
         const freshDb = readDb();
+        const rulesCheck = checkLowEffortRules(responseValue);
+        const isLowEffort = rulesCheck.lowEffort;
+        
         const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === newResponse.id);
         if (freshGradIdx !== -1) {
           freshDb.aiGradingRecords[freshGradIdx] = {
             ...freshDb.aiGradingRecords[freshGradIdx],
             parsedScore: 0,
-            rationale: "AI grading could not complete. Sent to the review queue for manual grading.",
+            rationale: isLowEffort 
+            ? `AI grading failed, but response was flagged as low-effort: ${rulesCheck.reason}`
+            : "AI grading could not complete. Sent to the review queue for manual grading.",
             confidence: 0,
             status: "needs_review",
             errorMessage: error instanceof Error ? error.message : String(error),
             rubricBreakdown: {},
             gradedAt: new Date().toISOString()
           };
+          if (isLowEffort) {
+            const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
+            if (freshRespIdx !== -1) {
+              freshDb.responses[freshRespIdx].score = 0;
+              freshDb.responses[freshRespIdx].pointsEarned = 0;
+              freshDb.responses[freshRespIdx].isLowEffort = true;
+              freshDb.responses[freshRespIdx].lowEffortReason = rulesCheck.reason;
+            }
+          }
+
+          // Write/update failed response-level GradebookEntry!
+          const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
+          const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
+          if (freshRespIdx !== -1 && freshAttempt) {
+            upsertResponseGradebookEntry(
+              freshDb.responses[freshRespIdx],
+              freshAttempt,
+              "error",
+              "ai_short_answer",
+              isLowEffort 
+                ? `AI grading failed, but response was flagged as low-effort: ${rulesCheck.reason}`
+                : "AI grading failed to complete. Sent to the review queue for manual grading.",
+              freshDb
+            );
+          }
+
+          recalculateAttemptScore(id, freshDb);
           await commitDb(freshDb).catch((e) => console.error("VERITAS Learn - failed to persist AI failure record:", e));
         }
       }
@@ -2472,6 +3024,7 @@ app.post("/api/attempts/:id/complete", requireAuth, async (req, res) => {
 
   db.attempts[attemptIdx].completedAt = new Date().toISOString();
   db.attempts[attemptIdx].status = "completed";
+  recalculateAttemptScore(id, db);
   try {
     await commitDb(db);
   } catch (err) {
@@ -2648,6 +3201,11 @@ app.post("/api/attempts/:id/unlock", requireTeacher, (req, res) => {
 app.get("/api/analytics", requireTeacher, (req, res) => {
   const db = readDb();
   
+  // Recalculate historical scores as a fail-safe to guarantee 100% correct/fresh data.
+  (db.attempts || []).forEach((a: any) => {
+    recalculateAttemptScore(a.id, db);
+  });
+  
   // Roster lists
   const students = db.users.filter((u: any) => u.role === "student");
   const lessons = db.lessons;
@@ -2659,14 +3217,39 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
   const attempts = db.attempts;
   const responses = mergeResponsesWithAiGrading(db.responses, db);
   const signals = db.securitySignals;
+  const gradebookEntries = db.gradebookEntries || [];
 
   res.json({
     students,
     lessons,
     attempts,
     responses,
-    signals
+    signals,
+    gradebookEntries
   });
+});
+
+// Teacher: Recalculate scores from student responses for a given assignment
+app.post("/api/assignments/:id/recalculate", requireTeacher, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = readDb();
+    
+    // Find assignment to verify it exists
+    const assignment = (db.lessonAssignments || []).find((asg: any) => asg.id === id);
+    if (!assignment) {
+      fail(res, "NOT_FOUND", "Assignment configuration not found.");
+      return;
+    }
+    
+    // Sum scores for all attempts associated with this assignment or lesson
+    recalculateAssignmentScores(id, db);
+    await commitDb(db);
+    
+    res.json({ success: true, message: `Re-calculated scores from student responses for assignment '${id}' successfully.` });
+  } catch (err) {
+    sendAppError(res, err);
+  }
 });
 
 // Teacher: Gradebook Score Overrides (teacher override is the final authority).
@@ -2682,16 +3265,72 @@ app.post("/api/responses/:id/override", requireTeacher, async (req, res) => {
       return;
     }
 
-    db.responses[responseIdx].score = Number(score);
-    db.responses[responseIdx].teacherOverride = {
+    const response = db.responses[responseIdx];
+    response.score = Number(score);
+    response.pointsEarned = Number(score);
+    response.teacherReviewedAt = new Date().toISOString();
+    response.teacherOverrideScore = Number(score);
+    response.teacherOverrideFeedback = notes || "Manual grade modification applied.";
+    response.teacherOverride = {
       score: Number(score),
       notes: notes || "Manual grade modification applied.",
       gradedAt: new Date().toISOString()
     };
 
+    const attemptId = response.attemptId;
+    if (attemptId) {
+      const attempt = db.attempts.find((a: any) => a.id === attemptId);
+      if (attempt) {
+        upsertResponseGradebookEntry(
+          response,
+          attempt,
+          "teacher_overridden",
+          "teacher_override",
+          notes || "Manual grade modification applied.",
+          db
+        );
+      }
+      recalculateAttemptScore(attemptId, db);
+    }
+
     await commitDb(db);
     const mergedResp = mergeResponsesWithAiGrading([db.responses[responseIdx]], db)[0];
     res.json({ success: true, response: mergedResp });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Teacher: Gradebook Status Overrides (mark cell as 'excused' | 'missing' | 'pending' | null)
+app.post("/api/lessons/:lessonId/students/:studentId/gradebook-status", requireTeacher, async (req, res) => {
+  try {
+    const { lessonId, studentId } = req.params;
+    const { statusOverride } = req.body; // 'excused' | 'missing' | 'pending' | null
+    const db = readDb();
+    
+    let attempt = db.attempts.find((a: any) => a.studentId === studentId && a.lessonId === lessonId);
+    if (!attempt) {
+      attempt = {
+        id: "attempt_" + Math.random().toString(36).substring(2, 9),
+        lessonId,
+        studentId,
+        seed: 123456,
+        startedAt: new Date().toISOString(),
+        status: "started",
+        currentBlockIndex: 0,
+        furthestVideoTimestamps: {},
+        activeTimeSpent: 0,
+        inactiveTimeSpent: 0,
+        gradebookStatusOverride: statusOverride
+      };
+      db.attempts.push(attempt);
+    } else {
+      attempt.gradebookStatusOverride = statusOverride;
+    }
+    
+    recalculateAttemptScore(attempt.id, db);
+    await commitDb(db);
+    res.json({ success: true, attempt });
   } catch (err) {
     sendAppError(res, err);
   }

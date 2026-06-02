@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   ShieldAlert, Play, Check, X, Expand, RefreshCw, AlertCircle, ArrowLeft,
-  ChevronRight, ChevronLeft, Lock, Info, AlertTriangle, BookOpen, Video, FileQuestion, Flag
+  ChevronRight, ChevronLeft, Lock, Info, AlertTriangle, BookOpen, Video, FileQuestion, Flag,
+  Menu, List
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { auth, storage } from "../../lib/firebase";
@@ -31,6 +32,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [assignments, setAssignments] = useState<any[]>([]);
   const [responses, setResponses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
 
   // Focus / integrity
   const [isFullscreenLocked, setIsFullscreenLocked] = useState(false);
@@ -62,7 +64,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // Video
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const wasPlayingRef = useRef(false);
   const [furthestMaxTimestamp, setFurthestMaxTimestamp] = useState(0);
+  const [currentSpeed, setCurrentSpeed] = useState<number>(1);
   const [activeCheckpoint, setActiveCheckpoint] = useState<any>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const [isNavigating, setIsNavigating] = useState(false);
@@ -192,8 +196,34 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
     const requireFullscreenOpt = attemptData.lesson?.settings?.requireFullscreen ?? true;
 
+    const attemptResumePlayback = () => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      const isFull = !!document.fullscreenElement;
+      const isTabActive = document.hasFocus() && !document.hidden;
+      const isCompliant = (!requireFullscreenOpt || isFull) && isTabActive && !isFullscreenLocked;
+
+      if (isCompliant && wasPlayingRef.current) {
+        video.play().catch((err) => {
+          console.warn("Playback autoplay blocked or failed to resume:", err);
+        });
+        wasPlayingRef.current = false;
+      }
+    };
+
     const handleFullscreenChange = async () => {
       const isFull = !!document.fullscreenElement;
+      if (!isFull) {
+        if (videoRef.current) {
+          if (!videoRef.current.paused) {
+            wasPlayingRef.current = true;
+          } else {
+            wasPlayingRef.current = false;
+          }
+          videoRef.current.pause();
+        }
+      }
       if (!isFull && requireFullscreenOpt) {
         const result = await logIntegritySignal("fullscreen_exited", "high", { detail: "User exited fullscreen." });
         if (result?.lockState === "locked_awaiting_teacher") {
@@ -204,11 +234,21 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           setIsFullscreenLocked(true);
           setLockMessage("This assignment requires fullscreen. Re-enter fullscreen to continue.");
         }
+      } else {
+        attemptResumePlayback();
       }
     };
 
     const handleWindowBlur = () => {
       setActiveTab(false);
+      if (videoRef.current) {
+        if (!videoRef.current.paused) {
+          wasPlayingRef.current = true;
+        } else {
+          wasPlayingRef.current = false;
+        }
+        videoRef.current.pause();
+      }
       blurCountRef.current += 1;
       const count = blurCountRef.current;
 
@@ -240,16 +280,27 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setViolationBanner((prev: ViolationBanner) =>
         prev.level === "low" ? { ...prev, show: false } : prev
       );
+      attemptResumePlayback();
     };
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
+        if (videoRef.current) {
+          if (!videoRef.current.paused) {
+            wasPlayingRef.current = true;
+          } else {
+            wasPlayingRef.current = false;
+          }
+          videoRef.current.pause();
+        }
         logIntegritySignal("visibility_hidden", "high", { detail: "Tab hidden / switched." });
         setViolationBanner({
           show: true,
           level: "low",
           message: "Return to the assignment window. Focus monitoring is active.",
         });
+      } else {
+        attemptResumePlayback();
       }
     };
 
@@ -287,6 +338,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     if (requireFullscreenOpt && !document.fullscreenElement) {
       setIsFullscreenLocked(true);
       setLockMessage("This assignment requires fullscreen focus mode. Enter fullscreen to begin.");
+    } else {
+      attemptResumePlayback();
     }
 
     const tickInterval = setInterval(() => {
@@ -307,6 +360,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             timestamp: videoRef.current ? Math.floor(videoRef.current.currentTime) : 0,
             activeTime: activeTimeRef.current,
             inactiveTime: inactiveTimeRef.current,
+            playbackRate: currentSpeed,
           }),
         })
           .then((res) => res.json())
@@ -340,6 +394,18 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     };
   }, [loading, attemptData, currentBlockIndex, isFullscreenLocked, activeTab]);
 
+  const handleVideoPlay = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    const requireFullscreenOpt = attemptData?.lesson?.settings?.requireFullscreen ?? true;
+    const isFull = !!document.fullscreenElement;
+    const isTabActive = document.hasFocus() && !document.hidden && activeTab;
+
+    if ((requireFullscreenOpt && !isFull) || !isTabActive) {
+      video.pause();
+    }
+  };
+
   const handleVideoTimeUpdate = async () => {
     const video = videoRef.current;
     if (!video) return;
@@ -359,10 +425,30 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         return;
       } else if (currentTime > furthestMaxTimestamp) {
         setFurthestMaxTimestamp(currentTime);
+        setAttemptData((prev: any) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            furthestVideoTimestamps: {
+              ...(prev.furthestVideoTimestamps || {}),
+              [block.id]: currentTime
+            }
+          };
+        });
       }
     } else {
       if (currentTime > furthestMaxTimestamp) {
         setFurthestMaxTimestamp(currentTime);
+        setAttemptData((prev: any) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            furthestVideoTimestamps: {
+              ...(prev.furthestVideoTimestamps || {}),
+              [block.id]: currentTime
+            }
+          };
+        });
       }
     }
 
@@ -401,9 +487,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         );
         return;
       }
+      const targetBlock = blocks[nextIdx];
+      const savedFurthest = attemptData?.furthestVideoTimestamps?.[targetBlock?.id] || 0;
       setCurrentBlockIndex(nextIdx);
       setActiveCheckpoint(null);
-      setFurthestMaxTimestamp(0);
+      setFurthestMaxTimestamp(savedFurthest);
       setViolationBanner((prev: ViolationBanner) => ({ ...prev, show: false }));
     } catch {
       setNavigationError("Unable to navigate. Please check your connection and try again.");
@@ -411,6 +499,67 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setIsNavigating(false);
     }
   };
+
+  // Dedicated helper to persist draft to backend
+  const persistDraftResponse = useCallback(async (questionId: string, value: string) => {
+    setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saving" }));
+    try {
+      localStorage.setItem(`veritas_draft_${attemptId}_${questionId}`, value);
+    } catch { /* ignore */ }
+
+    try {
+      const authHeader = await getAuthHeader();
+      if (authHeader.Authorization) {
+        await fetch(`/api/attempts/${attemptId}/draft`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeader },
+          body: JSON.stringify({ questionId, draftText: value }),
+        });
+      }
+      setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saved" }));
+    } catch {
+      setSaAutosave((prev: any) => ({ ...prev, [questionId]: "error" }));
+    }
+  }, [attemptId]);
+
+  // Keep references updated for the interval
+  const saTextRef = useRef(saText);
+  const saAutosaveRef = useRef(saAutosave);
+  const persistDraftResponseRef = useRef(persistDraftResponse);
+
+  useEffect(() => {
+    saTextRef.current = saText;
+  }, [saText]);
+
+  useEffect(() => {
+    saAutosaveRef.current = saAutosave;
+  }, [saAutosave]);
+
+  useEffect(() => {
+    persistDraftResponseRef.current = persistDraftResponse;
+  }, [persistDraftResponse]);
+
+  // Dedicated 15 seconds autosave interval for short-answer responses
+  useEffect(() => {
+    if (loading || !attemptId) return;
+
+    const saInterval = setInterval(() => {
+      const textMap = saTextRef.current;
+      const autosaveMap = saAutosaveRef.current;
+
+      Object.keys(textMap).forEach((qId) => {
+        const state = autosaveMap[qId];
+        if (state === "dirty" || state === "error") {
+          const value = textMap[qId];
+          persistDraftResponseRef.current(qId, value);
+        }
+      });
+    }, 15000);
+
+    return () => {
+      clearInterval(saInterval);
+    };
+  }, [loading, attemptId]);
 
   // SA draft autosave — debounced 800ms, persisted to server + localStorage fallback
   const handleSaChange = (questionId: string, value: string) => {
@@ -421,23 +570,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       clearTimeout(draftSaveTimers.current[questionId]);
     }
     draftSaveTimers.current[questionId] = setTimeout(async () => {
-      setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saving" }));
-      // Always write to localStorage as an immediate offline backup.
-      try { localStorage.setItem(`veritas_draft_${attemptId}_${questionId}`, value); } catch { /* ignore */ }
-      // Persist to server so drafts survive device changes.
-      try {
-        const authHeader = await getAuthHeader();
-        if (authHeader.Authorization) {
-          await fetch(`/api/attempts/${attemptId}/draft`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...authHeader },
-            body: JSON.stringify({ questionId, draftText: value }),
-          });
-        }
-        setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saved" }));
-      } catch {
-        setSaAutosave((prev: any) => ({ ...prev, [questionId]: "error" }));
-      }
+      await persistDraftResponse(questionId, value);
     }, 800);
   };
 
@@ -499,7 +632,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   useEffect(() => {
     const activeBlock = blocks[currentBlockIndex];
     if (activeBlock && activeBlock.type === "video") {
-      if (activeBlock.storagePath) {
+      if (activeBlock.storagePath && !activeBlock.storagePath.startsWith("uploads/")) {
         const fileRef = ref(storage, activeBlock.storagePath);
         getDownloadURL(fileRef)
           .then(setResolvedVideoUrl)
@@ -511,6 +644,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           });
       } else if (activeBlock.videoUrl) {
         setResolvedVideoUrl(activeBlock.videoUrl);
+      } else if (activeBlock.storagePath && activeBlock.storagePath.startsWith("uploads/")) {
+        setResolvedVideoUrl(`/${activeBlock.storagePath}`);
       } else {
         setResolvedVideoUrl("");
       }
@@ -542,11 +677,124 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const anyUnsubmitted = blockAssignments.some((a: any) => !submittedLocal[a.questionId]);
       if (anyUnsubmitted) return "Submit your response to continue.";
     }
+    if (activeBlock.type === "video") {
+      const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
+      const duration = activeBlock.duration ?? activeBlock.videoDuration;
+      if (restrictSeeking && duration) {
+        const requiredSeconds = duration * 0.9;
+        if (furthestMaxTimestamp < requiredSeconds) {
+          return "video_incomplete";
+        }
+      }
+      if (activeBlock.videoCheckpoints && activeBlock.videoCheckpoints.length > 0) {
+        const anyCpIncomplete = activeBlock.videoCheckpoints.some((cp: any) => {
+          if (cp.isRequired) {
+            const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
+            return !allAnswered;
+          }
+          return false;
+        });
+        if (anyCpIncomplete) {
+          return "Answer all required checkpoint questions to continue.";
+        }
+      }
+    }
     if (activeCheckpoint) {
       const allAnswered = activeCheckpoint.questions.every((q: any) => submittedLocal[q.id]);
       if (!allAnswered) return "Answer all checkpoint questions to continue.";
     }
     return null;
+  };
+
+  const getBlockStatus = (block: any, idx: number) => {
+    if (!block) return "locked";
+
+    // Determine if this block is complete
+    let isThisBlockComplete = true;
+    if (block.type === "question") {
+      const blockAssignments = assignments.filter((a: any) => a.blockId === block.id);
+      const anyUnsubmitted = blockAssignments.some((a: any) => !submittedLocal[a.questionId]);
+      if (anyUnsubmitted) {
+        isThisBlockComplete = false;
+      }
+    } else if (block.type === "video") {
+      const checkpoints = block.videoCheckpoints || [];
+      const cpIncomplete = checkpoints.some((cp: any) => {
+        if (cp.isRequired) {
+          const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
+          return !allAnswered;
+        }
+        return false;
+      });
+      if (cpIncomplete) {
+        isThisBlockComplete = false;
+      }
+
+      const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
+      const duration = block.duration ?? block.videoDuration;
+      if (restrictSeeking && duration) {
+        const requiredSeconds = duration * 0.9;
+        const furthestWatch = (attemptData?.furthestVideoTimestamps?.[block.id]) || (idx === currentBlockIndex ? furthestMaxTimestamp : 0);
+        if (furthestWatch < requiredSeconds) {
+          isThisBlockComplete = false;
+        }
+      }
+    }
+
+    // A block is "unlocked" and clickable if:
+    // 1. It is the current block index
+    // 2. Or it is a previous block (idx < currentBlockIndex)
+    // 3. Or all preceding blocks from 0 up to idx-1 are fully complete!
+    let allPrecedingComplete = true;
+    for (let i = 0; i < idx; i++) {
+      const precBlock = blocks[i];
+      let precComplete = true;
+      if (precBlock.type === "question") {
+        const blockAsgs = assignments.filter((a: any) => a.blockId === precBlock.id);
+        if (blockAsgs.some((a: any) => !submittedLocal[a.questionId])) {
+          precComplete = false;
+        }
+      } else if (precBlock.type === "video") {
+        const checkpoints = precBlock.videoCheckpoints || [];
+        const cpIncomplete = checkpoints.some((cp: any) => {
+          if (cp.isRequired) {
+            const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
+            return !allAnswered;
+          }
+          return false;
+        });
+        if (cpIncomplete) {
+          precComplete = false;
+        }
+        const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
+        const duration = precBlock.duration ?? precBlock.videoDuration;
+        if (restrictSeeking && duration) {
+          const requiredSeconds = duration * 0.9;
+          const furthestWatch = (attemptData?.furthestVideoTimestamps?.[precBlock.id]) || (i === currentBlockIndex ? furthestMaxTimestamp : 0);
+          if (furthestWatch < requiredSeconds) {
+            precComplete = false;
+          }
+        }
+      }
+      if (!precComplete) {
+        allPrecedingComplete = false;
+        break;
+      }
+    }
+
+    if (idx === currentBlockIndex) {
+      return isThisBlockComplete ? "current_complete" : "current_incomplete";
+    }
+
+    if (idx < currentBlockIndex) {
+      return "completed";
+    }
+
+    if (allPrecedingComplete) {
+      return "unlocked";
+    }
+
+    return "locked";
   };
 
   const nextBlockedReason = getNextBlockedReason();
@@ -588,7 +836,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   return (
     <div
-      className={`min-h-screen bg-slate-100 text-slate-800 font-sans flex flex-col relative ${
+      className={`h-screen max-h-screen overflow-hidden bg-slate-100 text-slate-800 font-sans flex flex-col relative ${
         attemptData?.isPreviewAttempt ? "pt-10" : ""
       }`}
     >
@@ -689,14 +937,25 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       {/* Top shell — progress and context */}
       <header className={`bg-white border-b border-slate-200 shadow-sm shrink-0 z-30 ${violationBanner.show && !isFullscreenLocked && !isTeacherLocked ? "mt-10" : ""}`}>
         <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
-          <button
-            onClick={onExit}
-            className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 transition cursor-pointer"
-            title="Save progress and exit"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="hidden sm:inline">Save and exit</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={onExit}
+              className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 transition cursor-pointer"
+              title="Save progress and exit"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span className="hidden b-sm:inline">Save and exit</span>
+            </button>
+            <span className="w-px h-4 bg-slate-200 hidden md:inline ml-1" />
+            <button
+              onClick={() => setIsTimelineOpen(!isTimelineOpen)}
+              className="md:hidden flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-800 transition cursor-pointer"
+              title="Toggle Timeline"
+            >
+              <List className="w-4 h-4" />
+              <span>Timeline</span>
+            </button>
+          </div>
 
           <div className="flex-1 min-w-0 text-center">
             <h1 className="text-sm font-bold text-slate-800 truncate">{attemptData?.lesson?.title || "Assignment"}</h1>
@@ -713,15 +972,114 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
         {/* Progress bar */}
         <div className="w-full h-1 bg-slate-100">
-          <div
-            className="h-1 bg-[#0A192F] transition-all duration-500"
-            style={{ width: `${Math.max(2, progressPercent)}%` }}
+          <motion.div
+            className="h-1 bg-[#0A192F]"
+            initial={{ width: 0 }}
+            animate={{ width: `${Math.max(2, progressPercent)}%` }}
+            transition={{ duration: 0.5, ease: "easeInOut" }}
           />
         </div>
       </header>
 
-      {/* Block content area — full-width for video blocks, contained for reading/question */}
-      <div className={`flex-1 flex flex-col ${activeBlock?.type === "video" ? "w-full" : "max-w-5xl mx-auto w-full px-4 md:px-6 py-6 space-y-4"}`}>
+      {/* Horizontal split for Timeline Sidebar and Main Workspace */}
+      <div className="flex-1 min-h-0 flex flex-row overflow-hidden w-full relative">
+        {/* Mobile Backdrop */}
+        {isTimelineOpen && (
+          <div
+            onClick={() => setIsTimelineOpen(false)}
+            className="fixed inset-0 bg-slate-900/40 z-40 md:hidden"
+          />
+        )}
+
+        {/* Timeline Sidebar */}
+        <aside
+          className={`${
+            isTimelineOpen ? "flex fixed inset-y-0 left-0 z-50 pt-10" : "hidden"
+          } md:flex md:static w-72 border-r border-slate-200 bg-white flex-col h-full shrink-0 min-h-0 overflow-hidden transition-all duration-300`}
+        >
+          <div className="p-4 border-b border-slate-100 shrink-0 flex items-center justify-between bg-slate-50">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+              <List className="w-3.5 h-3.5" />
+              <span>Lesson Timeline</span>
+            </h3>
+            <button
+              onClick={() => setIsTimelineOpen(false)}
+              className="md:hidden text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-2">
+            {blocks.map((b: any, idx: number) => {
+              const status = getBlockStatus(b, idx);
+              const isActive = idx === currentBlockIndex;
+              const isLocked = status === "locked";
+              const isCompleted = status === "completed" || status === "current_complete";
+
+              // Get config for icon
+              const displayConfigs: Record<string, { Icon: any; colorClass: string }> = {
+                video: { Icon: Video, colorClass: "text-blue-500" },
+                reading: { Icon: BookOpen, colorClass: "text-purple-500" },
+                question: { Icon: FileQuestion, colorClass: b.isPractice ? "text-amber-500" : "text-emerald-500" },
+              };
+              const blockConfig = displayConfigs[b.type] || { Icon: Info, colorClass: "text-slate-500" };
+              const Icon = blockConfig.Icon;
+
+              return (
+                <button
+                  key={b.id}
+                  disabled={isLocked}
+                  onClick={() => {
+                    handleBlockNavigation(idx);
+                    setIsTimelineOpen(false);
+                  }}
+                  className={`w-full text-left p-2 rounded-lg border transition flex items-start gap-2.5 relative ${
+                    isActive
+                      ? "border-[#0A192F] bg-slate-50 text-slate-900 ring-1 ring-[#0A192F]/20 font-medium"
+                      : isLocked
+                      ? "border-slate-100 opacity-60 text-slate-400 cursor-not-allowed bg-slate-50/50"
+                      : "border-slate-100 hover:bg-slate-50 text-slate-600 cursor-pointer"
+                  }`}
+                >
+                  <div className="mt-0.5 shrink-0">
+                    {isCompleted ? (
+                      <div className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center">
+                        <Check className="w-2.5 h-2.5 stroke-[3]" />
+                      </div>
+                    ) : isLocked ? (
+                      <div className="w-4 h-4 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center">
+                        <Lock className="w-2.5 h-2.5" />
+                      </div>
+                    ) : isActive ? (
+                      <div className="w-4 h-4 rounded-full border border-[#0A192F] bg-white flex items-center justify-center">
+                        <div className="w-1 h-1 rounded-full bg-[#0A192F]" />
+                      </div>
+                    ) : (
+                      <div className="w-4 h-4 rounded-full border border-slate-300 bg-white flex items-center justify-center">
+                        <div className="w-1 h-1 rounded-full bg-slate-300" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1">
+                      <Icon className={`w-3 h-3 shrink-0 ${blockConfig.colorClass}`} />
+                      <span className="text-[9px] font-mono uppercase tracking-wider text-slate-400">
+                        Step {idx + 1}
+                      </span>
+                    </div>
+                    <p className={`text-xs mt-0.5 truncate leading-snug ${isActive ? "font-bold" : ""}`}>
+                      {b.title || "Untitled Block"}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+
+        {/* Main Workspace content */}
+        <main className={`flex-1 min-h-0 flex flex-col ${activeBlock?.type === "video" ? "w-full" : "max-w-5xl mx-auto w-full px-4 md:px-6 py-4"}`}>
 
         {activeBlock && (
           <div className={`bg-white overflow-hidden flex-1 flex flex-col ${activeBlock.type === "video" ? "" : "border border-slate-200 rounded-lg shadow-sm"}`}>
@@ -758,16 +1116,59 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   ref={videoRef}
                   src={resolvedVideoUrl || undefined}
                   controls
-                  controlsList="nodownload noremoteplayback noplaybackrate"
+                  controlsList="nodownload noremoteplayback"
                   disablePictureInPicture
                   playsInline
                   preload="metadata"
                   draggable={false}
                   onContextMenu={(e) => e.preventDefault()}
+                  onPlay={handleVideoPlay}
                   onTimeUpdate={handleVideoTimeUpdate}
+                  onRateChange={() => {
+                    if (videoRef.current) {
+                      setCurrentSpeed(videoRef.current.playbackRate);
+                    }
+                  }}
+                  onLoadedMetadata={() => {
+                    if (videoRef.current) {
+                      videoRef.current.playbackRate = currentSpeed;
+                    }
+                  }}
                   className="w-full object-contain bg-black"
                   style={{ flex: 1, minHeight: 0, maxHeight: "calc(100vh - 160px)" }}
                 />
+
+                {/* Custom Playback Speed Controller Bar */}
+                <div className="bg-[#0b1526] border-t border-slate-800/80 px-6 py-2.5 flex items-center justify-between gap-4 font-sans select-none shrink-0 text-white z-10 w-full">
+                  <div className="flex items-center gap-2 text-xs text-slate-300 font-medium">
+                    <span className="text-slate-400">Video Speed:</span>
+                    <span className="font-mono bg-slate-800 px-2 py-0.5 rounded text-indigo-300 font-bold">{currentSpeed}x</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {[1, 1.25, 1.5].map((speed) => {
+                      const isActive = currentSpeed === speed;
+                      return (
+                        <button
+                          key={speed}
+                          type="button"
+                          onClick={() => {
+                            if (videoRef.current) {
+                              videoRef.current.playbackRate = speed;
+                              setCurrentSpeed(speed);
+                            }
+                          }}
+                          className={`px-3 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                            isActive
+                              ? "bg-indigo-600 text-white shadow-xs"
+                              : "bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/50"
+                          }`}
+                        >
+                          {speed}x
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
                 {/* Checkpoint overlay */}
                 <AnimatePresence>
@@ -826,15 +1227,23 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                   </div>
                                 ) : (
                                   <div className="space-y-1.5">
-                                    <textarea
-                                      disabled={isSubmitted}
-                                      className="w-full text-sm text-slate-800 bg-white p-3 rounded focus:outline-none font-serif leading-relaxed resize-none"
-                                      rows={3}
-                                      value={saText[q.id] || ""}
-                                      onChange={(e: any) => handleSaChange(q.id, e.target.value)}
-                                      placeholder="Write your response here…"
-                                    />
-                                    <AutosaveIndicator state={saAutosave[q.id] || "idle"} />
+                                    {isSubmitted ? (
+                                      <div className="w-full text-sm text-slate-200 bg-slate-900/60 p-3 rounded font-serif leading-relaxed border border-slate-800 prose max-w-none">
+                                        <RichContentRenderer content={saText[q.id] || ""} />
+                                      </div>
+                                    ) : (
+                                      <textarea
+                                        disabled={false}
+                                        className="w-full text-sm text-slate-800 bg-white p-3 rounded focus:outline-none font-serif leading-relaxed resize-none"
+                                        rows={3}
+                                        value={saText[q.id] || ""}
+                                        onChange={(e: any) => handleSaChange(q.id, e.target.value)}
+                                        placeholder="Write your response here…"
+                                      />
+                                    )}
+                                    {!isSubmitted && (
+                                      <AutosaveIndicator state={saAutosave[q.id] || "idle"} />
+                                    )}
                                   </div>
                                 )}
 
@@ -861,14 +1270,18 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
                                 {feedback && (
                                   <div
-                                    className={`p-3 rounded text-xs ${
+                                    className={`p-3 rounded text-xs space-y-1.5 ${
                                       feedback.correct
                                         ? "bg-emerald-900/40 text-emerald-300 border border-emerald-800"
                                         : "bg-red-900/40 text-red-300 border border-red-800"
                                     }`}
                                   >
-                                    <strong>{feedback.correct ? "Correct." : "Incorrect."}</strong>
-                                    {feedback.desc && <span className="ml-1 italic opacity-80">{feedback.desc}</span>}
+                                    <strong className="block">{feedback.correct ? "Correct." : "Incorrect."}</strong>
+                                    {feedback.desc && (
+                                      <div className="opacity-90 italic">
+                                        <RichContentRenderer content={feedback.desc} />
+                                      </div>
+                                    )}
                                   </div>
                                 )}
                               </div>
@@ -959,16 +1372,20 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                       ) : (
                         // SA textarea
                         <div className="space-y-2">
-                          <textarea
-                            disabled={isSubmitted}
-                            value={saText[q.id] || ""}
-                            onChange={(e: any) => handleSaChange(q.id, e.target.value)}
-                            rows={6}
-                            placeholder="Write your response here. Your draft is saved automatically."
-                            className={`w-full text-sm text-slate-800 border rounded-lg p-4 leading-relaxed focus:outline-none focus:border-slate-400 transition font-serif resize-none ${
-                              isSubmitted ? "bg-slate-50 border-slate-200 text-slate-500 cursor-default" : "bg-white border-slate-200 hover:border-slate-300"
-                            }`}
-                          />
+                          {isSubmitted ? (
+                            <div className="w-full text-sm text-slate-800 border border-slate-200 bg-slate-50 rounded-lg p-4 leading-relaxed font-serif prose max-w-none">
+                              <RichContentRenderer content={saText[q.id] || ""} />
+                            </div>
+                          ) : (
+                            <textarea
+                              disabled={false}
+                              value={saText[q.id] || ""}
+                              onChange={(e: any) => handleSaChange(q.id, e.target.value)}
+                              rows={6}
+                              placeholder="Write your response here. Your draft is saved automatically."
+                              className="w-full text-sm text-slate-800 border border-slate-200 rounded-lg p-4 leading-relaxed focus:outline-none focus:border-slate-400 transition font-serif resize-none bg-white hover:border-slate-300"
+                            />
+                          )}
                           {!isSubmitted && (
                             <div className="flex justify-between items-center">
                               <AutosaveIndicator state={saAutosave[q.id] || "idle"} />
@@ -1027,7 +1444,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                             {feedback.correct ? "Correct." : "Incorrect."}
                           </strong>
                           {feedback.desc && (
-                            <p className="text-sm opacity-80 italic">{feedback.desc}</p>
+                            <div className="text-sm opacity-80 italic">
+                              <RichContentRenderer content={feedback.desc} />
+                            </div>
                           )}
                         </div>
                       )}
@@ -1064,16 +1483,22 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                 </button>
 
                 <div className="flex flex-col items-end gap-1">
-                  {nextBlockedReason && (
+                  {nextBlockedReason && nextBlockedReason !== "video_incomplete" && (
                     <p className="text-[11px] text-slate-500 text-right max-w-[200px]">{nextBlockedReason}</p>
                   )}
 
                   {!isLastBlock ? (
                     <button
-                      onClick={() => handleBlockNavigation(currentBlockIndex + 1)}
-                      disabled={isNavigating || !!nextBlockedReason}
-                      title={nextBlockedReason || undefined}
-                      className="flex items-center gap-1.5 text-sm font-bold text-white bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-5 py-2 rounded-lg transition cursor-pointer"
+                      onClick={() => {
+                        if (nextBlockedReason === "video_incomplete") {
+                          setNavigationError("You must finish watching the video before proceeding.");
+                          return;
+                        }
+                        handleBlockNavigation(currentBlockIndex + 1);
+                      }}
+                      disabled={isNavigating || (!!nextBlockedReason && nextBlockedReason !== "video_incomplete")}
+                      title={nextBlockedReason === "video_incomplete" ? undefined : (nextBlockedReason || undefined)}
+                      className="flex items-center gap-1.5 text-sm font-bold text-white bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-5 py-2 rounded-lg transition"
                     >
                       {isNavigating ? (
                         <>
@@ -1087,9 +1512,15 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                     </button>
                   ) : (
                     <button
-                      onClick={handleCompleteLessonAttempt}
-                      disabled={!!nextBlockedReason}
-                      className="flex items-center gap-2 text-sm font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2 rounded-lg transition cursor-pointer"
+                      onClick={() => {
+                        if (nextBlockedReason === "video_incomplete") {
+                          setNavigationError("You must finish watching the video before proceeding.");
+                          return;
+                        }
+                        handleCompleteLessonAttempt();
+                      }}
+                      disabled={!!nextBlockedReason && nextBlockedReason !== "video_incomplete"}
+                      className="flex items-center gap-2 text-sm font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2 rounded-lg transition"
                     >
                       <Flag className="w-4 h-4" /> Submit assignment
                     </button>
@@ -1099,7 +1530,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             </div>
           </div>
         )}
-      </div>
+      </main>
     </div>
+  </div>
   );
 }

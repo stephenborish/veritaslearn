@@ -28,7 +28,7 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
   const isResolvingRef = useRef(false);
 
   const bucket = storage.app.options.storageBucket || "gen-lang-client-0781925544.firebasestorage.app";
-  const displayedVideoUrl = videoUrl || (storagePath ? `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodeURIComponent(storagePath)}?alt=media` : "");
+  const displayedVideoUrl = videoUrl || (storagePath ? (storagePath.startsWith("uploads/") ? `/${storagePath}` : `https://firebasestorage.googleapis.com/v1/b/${bucket}/o/${encodeURIComponent(storagePath)}?alt=media`) : "");
 
   const formatTime = (secs: number) => {
     if (isNaN(secs) || secs === Infinity) return "0:00";
@@ -40,6 +40,10 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
   // Automated resolver to check if a saved storagePath is present in database but URL hasn't been retrieved
   useEffect(() => {
     if (storagePath && !videoUrl && !isResolvingRef.current) {
+      if (storagePath.startsWith("uploads/")) {
+        onVideoUploaded(`/${storagePath}`, thumbnailUrl || extractedThumbnail || undefined, duration, storagePath);
+        return;
+      }
       isResolvingRef.current = true;
       const fileRef = ref(storage, storagePath);
       getDownloadURL(fileRef)
@@ -184,52 +188,117 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
 
       // 2. Fetch teacher's firebase auth check
       const user = auth.currentUser;
-      if (!user) {
-        throw new Error("You must be logged in as an authorized teacher to upload materials.");
+      const token = user ? await user.getIdToken() : "";
+
+      let result: { videoUrl: string; storagePath: string };
+      let uploadedViaClient = false;
+
+      // Primary Attempt: Try Direct Client-Side Firebase Storage upload
+      try {
+        if (!user) {
+          throw new Error("No authenticated teacher session found. Please sign in to Google classroom.");
+        }
+
+        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        const dotIndex = file.name.lastIndexOf(".");
+        const ext = dotIndex !== -1 ? file.name.slice(dotIndex) : "";
+        const base = dotIndex !== -1 ? file.name.slice(0, dotIndex).replace(/[^a-zA-Z0-9]/g, "_") : file.name.replace(/[^a-zA-Z0-9]/g, "_");
+        const filename = `${base}-${uniqueSuffix}${ext}`;
+        const fileStoragePath = `videos/${filename}`;
+        const fileRef = ref(storage, fileStoragePath);
+
+        const uploadTask = uploadBytesResumable(fileRef, file, {
+          contentType: file.type
+        });
+
+        const performClientSideUpload = () => {
+          return new Promise<{ videoUrl: string; storagePath: string }>((resolve, reject) => {
+            uploadTask.on(
+              "state_changed",
+              (snapshot) => {
+                const progress = Math.round(
+                  (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+                );
+                setUploadProgress(progress);
+              },
+              (error) => {
+                reject(new Error(error.message || "Firebase Storage client upload failed."));
+              },
+              async () => {
+                try {
+                  const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+                  resolve({
+                    videoUrl: downloadURL,
+                    storagePath: fileStoragePath
+                  });
+                } catch (err: any) {
+                  reject(new Error(err.message || "Failed to retrieve direct bucket download URL."));
+                }
+              }
+            );
+          });
+        };
+
+        result = await performClientSideUpload();
+        uploadedViaClient = true;
+        console.log("VERITAS Learn - Direct Firebase Storage client-side upload succeeded:", result);
+      } catch (clientErr: any) {
+        console.warn("VERITAS Learn - Firebase Client SDK write failed or uninitialized, falling back to server-side upload proxy. error:", clientErr.message || clientErr);
+        
+        // Secondary Fallback: Upload via server-side API proxy with XMLHttpRequest progress tracking
+        const uploadWithProgress = () => {
+          return new Promise<{ videoUrl: string; storagePath: string }>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", "/api/video/upload");
+            if (token) {
+              xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+            }
+            
+            xhr.upload.onprogress = (event) => {
+              if (event.lengthComputable) {
+                const progress = Math.round((event.loaded / event.total) * 100);
+                setUploadProgress(progress);
+              }
+            };
+            
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                  const response = JSON.parse(xhr.responseText);
+                  if (response.success) {
+                    resolve({
+                      videoUrl: response.videoUrl,
+                      storagePath: response.storagePath
+                    });
+                  } else {
+                    reject(new Error(response.error || "Failed file payload response from proxy server."));
+                  }
+                } catch (e) {
+                  reject(new Error("Invalid response form from proxy server."));
+                }
+              } else {
+                try {
+                  const res = JSON.parse(xhr.responseText);
+                  reject(new Error(res.error || `Proxy server returned status code: ${xhr.status}`));
+                } catch {
+                  reject(new Error(`Proxy server returned status code: ${xhr.status}`));
+                }
+              }
+            };
+            
+            xhr.onerror = () => {
+              reject(new Error("Network connection error connecting to server-side upload proxy."));
+            };
+            
+            const formData = new FormData();
+            formData.append("video", file);
+            xhr.send(formData);
+          });
+        };
+
+        result = await uploadWithProgress();
       }
 
-      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      const dotIndex = file.name.lastIndexOf(".");
-      const ext = dotIndex !== -1 ? file.name.slice(dotIndex) : "";
-      const base = dotIndex !== -1 ? file.name.slice(0, dotIndex).replace(/[^a-zA-Z0-9]/g, "_") : file.name.replace(/[^a-zA-Z0-9]/g, "_");
-      const filename = `${base}-${uniqueSuffix}${ext}`;
-      const fileStoragePath = `videos/${filename}`;
-      const fileRef = ref(storage, fileStoragePath);
-
-      const uploadTask = uploadBytesResumable(fileRef, file, {
-        contentType: file.type
-      });
-
-      // Wrap in a promise so we handle the async/await and block until completion
-      const handleFirebaseUpload = () => {
-        return new Promise<{ videoUrl: string; storagePath: string }>((resolve, reject) => {
-          uploadTask.on(
-            "state_changed",
-            (snapshot) => {
-              const progress = Math.round(
-                (snapshot.bytesTransferred / snapshot.totalBytes) * 100
-              );
-              setUploadProgress(progress);
-            },
-            (error) => {
-              reject(new Error(error.message || "Failed to upload file to Firebase Storage."));
-            },
-            async () => {
-              try {
-                const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-                resolve({
-                  videoUrl: downloadURL,
-                  storagePath: fileStoragePath
-                });
-              } catch (err: any) {
-                reject(new Error(err.message || "Failed to retrieve the storage download URL."));
-              }
-            }
-          );
-        });
-      };
-
-      const result = await handleFirebaseUpload();
       onVideoUploaded(
         result.videoUrl,
         localMeta.thumbnail || undefined,
@@ -395,7 +464,6 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
               preload="metadata" 
               className="w-full h-full max-h-[300px] rounded-lg object-contain"
               referrerPolicy="no-referrer"
-              crossOrigin="anonymous"
               onLoadedMetadata={(e) => {
                 const dur = e.currentTarget.duration || 0;
                 if (dur > 0 && dur !== videoDuration) {

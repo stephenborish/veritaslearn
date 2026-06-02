@@ -200,8 +200,14 @@ export default function AIReview({ students, lessons, blocks, attempts, response
                         OVERRIDDEN
                       </span>
                     )}
+                    {res.isLowEffort && (
+                      <span className="text-[9px] font-mono uppercase bg-rose-50 text-rose-700 border border-rose-300 font-bold px-2 py-0.5 rounded-sm tracking-wider flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3 shrink-0 text-rose-600 font-bold" />
+                        LOW EFFORT
+                      </span>
+                    )}
                     {grading.status === "needs_review" && (
-                      <span className="text-[9px] font-mono uppercase bg-red-50 text-red-700 border border-red-200 font-bold px-2 py-0.5 rounded-sm tracking-wider animate-pulse">
+                      <span className="text-[9px] font-mono uppercase bg-red-50 text-red-700 border border-red-200 font-bold px-2 py-0.5 rounded-sm tracking-wider animate-pulse font-bold">
                         NEEDS REVIEW
                       </span>
                     )}
@@ -238,6 +244,15 @@ export default function AIReview({ students, lessons, blocks, attempts, response
                       <div className="bg-slate-50 border border-slate-200 p-4 rounded font-serif text-sm leading-relaxed text-slate-800 shadow-inner">
                         {res.responseValue || <span className="text-slate-400 italic">No response provided</span>}
                       </div>
+                      {res.isLowEffort && (
+                        <div className="mt-2 bg-rose-50 border border-rose-200 rounded p-3 text-xs text-rose-800 flex items-start gap-2 shadow-sm">
+                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                          <div>
+                            <strong className="block font-sans text-rose-900 leading-normal">Academic Integrity Signal: Low-Effort Warning</strong>
+                            <span className="font-serif leading-relaxed text-rose-700 font-medium">Reason flagged: {res.lowEffortReason || "Extremely short response or gibberish character pattern."}</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div className="text-[11px] text-slate-500 font-mono">
                       ACTIVE WRITING TIME: <span className="font-bold text-slate-800">{Math.floor(res.activeTimeSpent / 60)}m {res.activeTimeSpent % 60}s</span>

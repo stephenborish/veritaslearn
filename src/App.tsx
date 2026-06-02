@@ -46,6 +46,7 @@ export default function App() {
   const [responses, setResponses] = useState<any[]>([]);
   const [signals, setSignals] = useState<any[]>([]);
   const [courses, setCourses] = useState<any[]>([]);
+  const [gradebookEntries, setGradebookEntries] = useState<any[]>([]);
 
   // Selection states
   const [activeTab, setActiveTab] = useState<"live" | "builder" | "courses" | "gradebook" | "ai">("live");
@@ -146,54 +147,92 @@ export default function App() {
       const lessonsRaw = await lessonsRes.json();
       setLessons(lessonsRaw.lessons || []);
 
-      // Fetch Assignments
-      const assignmentsRes = await fetch("/api/assignments", { headers: authHeader });
-      if (assignmentsRes.ok) {
-        const assignmentsRaw = await assignmentsRes.json();
-        setAssignments(assignmentsRaw.assignments || []);
+      // Fetch Assignments - Isolated defensively to handle transient network errors
+      try {
+        const assignmentsRes = await fetch("/api/assignments", { headers: authHeader });
+        if (assignmentsRes.ok) {
+          const assignmentsRaw = await assignmentsRes.json();
+          setAssignments(assignmentsRaw.assignments || []);
+        }
+      } catch (err) {
+        console.warn("VERITAS Learn - Failed to fetch assignments:", err);
       }
 
       // If teacher: Full class analytics payload
       if (user.role === "teacher") {
-        const analyticsRes = await fetch("/api/analytics", { headers: authHeader });
-        if (!analyticsRes.ok) {
-          throw new Error(`Analytics fetch failed with status ${analyticsRes.status}`);
-        }
-        const analyticsRaw = await analyticsRes.json();
-
-        setStudents(analyticsRaw.students || []);
-        setAttempts(analyticsRaw.attempts || []);
-        setResponses(analyticsRaw.responses || []);
-        setSignals(analyticsRaw.signals || []);
-
-        // Fetch teacher's courses
-        const coursesRes = await fetch("/api/courses", { headers: authHeader });
-        if (coursesRes.ok) {
-          const coursesRaw = await coursesRes.json();
-          setCourses(coursesRaw.courses || []);
-        }
-
-        // Flatten all lesson blocks
-        const allBlocks: any[] = [];
-        for (const lesson of (lessonsRaw.lessons || [])) {
-          const blocksRes = await fetch(`/api/lessons/${lesson.id}`, { headers: authHeader });
-          if (blocksRes.ok) {
-            const blocksRaw = await blocksRes.json();
-            allBlocks.push(...(blocksRaw.blocks || []));
+        try {
+          const analyticsRes = await fetch("/api/analytics", { headers: authHeader });
+          if (analyticsRes.ok) {
+            const analyticsRaw = await analyticsRes.json();
+            setStudents(analyticsRaw.students || []);
+            setAttempts(analyticsRaw.attempts || []);
+            setResponses(analyticsRaw.responses || []);
+            setSignals(analyticsRaw.signals || []);
+            setGradebookEntries(analyticsRaw.gradebookEntries || []);
+          } else {
+            console.warn(`VERITAS Learn - Analytics fetch returned non-ok status: ${analyticsRes.status}`);
           }
+        } catch (analyticsErr) {
+          console.warn("VERITAS Learn - Failed to fetch full student analytics payload:", analyticsErr);
         }
+
+        // Fetch teacher's courses - Isolated defensively
+        try {
+          const coursesRes = await fetch("/api/courses", { headers: authHeader });
+          if (coursesRes.ok) {
+            const coursesRaw = await coursesRes.json();
+            setCourses(coursesRaw.courses || []);
+          }
+        } catch (coursesErr) {
+          console.warn("VERITAS Learn - Failed to fetch teacher courses:", coursesErr);
+        }
+
+        // Recover all lesson blocks in parallel to maximize performance and resiliency.
+        // Wrap in Promise.allSettled to ensure that a transient/slow query or a missing/invalid lesson 
+        // does not throw and interrupt the payload generation, which would disable the entire dashboard.
+        const lessonItems = lessonsRaw.lessons || [];
+        const blockPromises = lessonItems.map(async (lesson: any) => {
+          if (!lesson?.id) return [];
+          try {
+            const blocksRes = await fetch(`/api/lessons/${lesson.id}`, { headers: authHeader });
+            if (blocksRes.ok) {
+              const blocksRaw = await blocksRes.json();
+              return blocksRaw.blocks || [];
+            }
+          } catch (blocksErr) {
+            console.warn(`VERITAS Learn - Failed to load blocks for lesson ${lesson.id || "unknown"}:`, blocksErr);
+          }
+          return [];
+        });
+
+        const blocksResults = await Promise.allSettled(blockPromises);
+        const allBlocks: any[] = [];
+        blocksResults.forEach((result) => {
+          if (result.status === "fulfilled") {
+            allBlocks.push(...result.value);
+          }
+        });
         setBlocks(allBlocks);
       } else {
         // Students: fetch existing attempts — do NOT create them here.
         // Attempts are only created when the student intentionally clicks "Begin/Resume".
-        const attemptsRes = await fetch("/api/attempts", { headers: authHeader });
-        if (attemptsRes.ok) {
-          const attemptsRaw = await attemptsRes.json();
-          setAttempts(attemptsRaw.attempts || []);
+        try {
+          const attemptsRes = await fetch("/api/attempts", { headers: authHeader });
+          if (attemptsRes.ok) {
+            const attemptsRaw = await attemptsRes.json();
+            setAttempts(attemptsRaw.attempts || []);
+          }
+        } catch (attemptsErr) {
+          console.warn("VERITAS Learn - Failed to fetch student attempts:", attemptsErr);
         }
       }
     } catch (error) {
       console.error("Payload extraction failed:", error);
+      console.warn("VERITAS Learn - Fetch encounter or platform start delay. Rescheduling payload sync in 3s...");
+      // Retrying in 3 seconds to recover gracefully once the port is active
+      setTimeout(() => {
+        fetchLmsPayload(user, passedToken, forceRefresh);
+      }, 3000);
     } finally {
       setIsFetching(false);
     }
@@ -683,17 +722,21 @@ export default function App() {
 
               {activeTab === "gradebook" && (
                 isFetching && (students.length === 0 || lessons.length === 0) ? (
-                  <GradebookSkeleton />
-                ) : (
-                  <Gradebook
-                    students={students}
-                    lessons={lessons}
-                    attempts={attempts}
-                    responses={responses}
-                    blocks={blocks}
-                  />
-                )
-              )}
+                   <GradebookSkeleton />
+                 ) : (
+                   <Gradebook
+                     students={students}
+                     lessons={lessons}
+                     attempts={attempts}
+                     responses={responses}
+                     blocks={blocks}
+                     assignments={assignments}
+                     idToken={idToken}
+                     onRefresh={() => fetchLmsPayload(currentUser)}
+                     gradebookEntries={gradebookEntries}
+                   />
+                 )
+               )}
 
               {activeTab === "ai" && (
                 isFetching && (responses.length === 0 || students.length === 0) ? (
@@ -729,6 +772,7 @@ export default function App() {
           signals={signals}
           lessons={lessons}
           blocks={blocks}
+          assignments={assignments}
           onOverrideSave={handleOverrideScore}
           onUnlockStudent={handleUnlockStudent}
           onClose={() => setActiveDossier(null)}

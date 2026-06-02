@@ -420,7 +420,7 @@ export default function LiveMonitor({
                   ? currentBlock.title
                   : `Segment ${latestAttempt.currentBlockIndex + 1}`;
                 const maxPoints = calcMaxPoints(latestAttempt.lessonId);
-                const earnedPoints = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
+                const earnedPoints = latestAttempt ? (latestAttempt.score || 0) : 0;
                 const hasPendingGrading = sResponses.some(
                   (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
                 );
@@ -624,7 +624,7 @@ export default function LiveMonitor({
                       const currentBlock = lessonBlocks[attempt.currentBlockIndex];
                       const currentBlockName = currentBlock ? currentBlock.title : `Segment ${attempt.currentBlockIndex + 1}`;
                       const maxPoints = calcMaxPoints(attempt.lessonId);
-                      const earnedPoints = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
+                      const earnedPoints = attempt ? (attempt.score || 0) : 0;
                       const hasPendingGrading = sResponses.some(
                         (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
                       );

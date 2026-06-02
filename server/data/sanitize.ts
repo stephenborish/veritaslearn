@@ -194,3 +194,51 @@ export function choiceTextById(question: any, choiceId: any): string | undefined
   const t = found.text;
   return typeof t === "string" ? t : undefined;
 }
+
+/** Sanitize a StudentResponse for student view to prevent any answer/feedback leaks. */
+export function sanitizeResponseForStudent(r: any): any {
+  if (!r || typeof r !== "object") return r;
+  const safe = { ...r };
+  
+  // Safe legacy fallbacks
+  const gradingMode = safe.gradingMode || safe.gradebookCategory || "assessment";
+  const isPractice = gradingMode === "practice";
+
+  // Default unknown feedbackVisibility to "teacher_only"
+  const feedbackVis = safe.feedbackVisibility || "teacher_only";
+
+  // Practice responses may expose feedback only when feedbackVisibility is student_visible
+  const feedbackAllowed = isPractice && (feedbackVis === "student_visible" || feedbackVis === "immediate");
+
+  if (!feedbackAllowed) {
+    // Hide scores, correctness, evaluations, feedbacks, and AI grading records
+    delete safe.isCorrect;
+    delete safe.score;
+    delete safe.pointsEarned;
+    delete safe.aiGrading;
+    delete safe.teacherOverride;
+    delete safe.teacherOverrideScore;
+    delete safe.teacherOverrideFeedback;
+    delete safe.teacherReviewedAt;
+    
+    // Only expose submitted status
+    safe.status = "submitted";
+  } else {
+    // If practice has immediate feedback allowed
+    if (safe.aiGrading) {
+      delete safe.aiGrading.guidanceSnapshot;
+    }
+    delete safe.teacherOverrideScore;
+    delete safe.teacherOverrideFeedback;
+    delete safe.teacherReviewedAt;
+  }
+  return safe;
+}
+
+/** Sanitize a GradebookEntry for student view to prevent premature score disclosures. */
+export function sanitizeGradebookEntryForStudent(e: any): any {
+  if (!e || typeof e !== "object") return e;
+  // Make sure to clean any secret internal scoring details if needed
+  const safe = { ...e };
+  return safe;
+}

@@ -31,6 +31,7 @@ interface StudentDossierModalProps {
   signals: any[];
   lessons: any[];
   blocks: any[];
+  assignments?: any[];
   onClose: () => void;
   onOverrideSave: (responseId: string, score: number, notes: string) => Promise<void>;
   onUnlockStudent?: (attemptId: string) => void;
@@ -51,6 +52,7 @@ export default function StudentDossierModal({
   signals, 
   lessons, 
   blocks, 
+  assignments = [],
   onClose, 
   onOverrideSave,
   onUnlockStudent 
@@ -104,8 +106,42 @@ export default function StudentDossierModal({
   };
 
   const maxLessonPoints = calcMaxPoints();
-  const earnedPoints = sResponses.reduce((sum, r) => sum + (r.score || 0), 0);
-  const scorePercentage = maxLessonPoints > 0 ? Math.round((earnedPoints / maxLessonPoints) * 105) : 0; // standard clamped helper
+  // Server-authoritative secure score representation: load directly from attempt object
+  const earnedPoints = attempt ? (attempt.score || 0) : 0;
+  const scorePercentage = maxLessonPoints > 0 ? Math.round((earnedPoints / maxLessonPoints) * 100) : 0;
+
+  // Find the assignment associated with this lesson to verify past-due (deadlines)
+  const asg = (assignments || []).find((a: any) => a.lessonId === lesson.id);
+  const isPastDue = asg?.dueAt && new Date(asg.dueAt) < new Date();
+
+  // Check if there are short answer questions in this lesson and if they are pending review/AI grading
+  const lessonQuestionBlocks = blocks.filter((b) => b.lessonId === lesson.id && b.type === "question" && !b.isPractice);
+  const hasPendingResponses = lessonQuestionBlocks.some((b) => {
+    const isSA = b.questionType === "sa" || b.singleQuestion?.type === "sa" || b.questionPool?.questions?.some((q: any) => q.type === "sa");
+    if (!isSA) return false;
+    const resp = sResponses.find((r) => r.blockId === b.id);
+    if (!resp) return false; // student didn't respond to SA yet
+    const isGraded = resp.teacherOverride || (resp.aiGrading && (resp.aiGrading.status === "success" || resp.aiGrading.status === "failed"));
+    return !isGraded;
+  });
+
+  const overrideStatus = attempt?.gradebookStatusOverride || null;
+
+  let finalStatus: "not_started" | "in_progress" | "completed" | "pending" | "missing" | "excused" = "not_started";
+  if (overrideStatus && overrideStatus !== "default") {
+    finalStatus = overrideStatus as any;
+  } else {
+    if (!attempt) {
+      finalStatus = isPastDue ? "missing" : "not_started";
+    } else {
+      if (attempt.status === "completed") {
+        finalStatus = hasPendingResponses ? "pending" : "completed";
+      } else {
+        // Started / in_progress
+        finalStatus = isPastDue ? "missing" : (hasPendingResponses ? "pending" : "in_progress");
+      }
+    }
+  }
 
   // Save manual grade correction callback
   const handleSaveOverrideAndNotes = async (responseId: string, maxPoints: number) => {
@@ -170,12 +206,18 @@ export default function StudentDossierModal({
               <h3 className="text-sm lg:text-base font-black text-slate-900 tracking-tight">
                 Academic Progress Portfolio Dossier
               </h3>
-              <span className={`text-[8px] font-mono font-bold uppercase tracking-widest px-2 py-0.5 rounded-sm border ${
-                attempt.status === 'completed'
-                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                  : 'bg-indigo-50 text-indigo-805 border-indigo-200'
+              <span className={`text-[8.5px] font-mono font-bold uppercase tracking-widest px-2.5 py-0.5 rounded border ${
+                finalStatus === "excused"
+                  ? "bg-purple-100 text-purple-800 border-purple-300"
+                  : finalStatus === "missing"
+                    ? "bg-rose-100 text-rose-800 border-rose-300"
+                    : finalStatus === "pending"
+                      ? "bg-amber-100 text-amber-805 border-amber-300 animate-pulse"
+                      : finalStatus === "completed"
+                        ? "bg-emerald-100 text-emerald-800 border-emerald-300"
+                        : "bg-blue-100 text-blue-800 border-blue-300"
               }`}>
-                {attempt.status === 'completed' ? 'SUBMITTED' : 'IN PROGRESS'}
+                {finalStatus.toUpperCase().replace("_", " ")}
               </span>
             </div>
             <p className="text-xs text-slate-400 font-mono font-medium mt-0.5 uppercase tracking-wide">
@@ -310,12 +352,44 @@ export default function StudentDossierModal({
               <span className="text-[9px] text-slate-400 block font-medium">Reconstruction sequence</span>
             </div>
 
-            <div className="bg-white border border-slate-200 p-4 rounded-lg shadow-xs space-y-1">
+            <div className={`border p-4 rounded-lg shadow-xs space-y-1 ${
+              finalStatus === "excused"
+                ? "bg-purple-50/55 border-purple-200"
+                : finalStatus === "missing"
+                  ? "bg-rose-50/55 border-rose-200"
+                  : finalStatus === "pending"
+                    ? "bg-amber-50/55 border-amber-200"
+                    : "bg-white border-slate-200"
+            }`}>
               <span className="text-[8.5px] uppercase font-mono tracking-widest text-slate-400 font-black block">Deductive score</span>
-              <span className="text-xs lg:text-sm font-extrabold text-indigo-700 font-mono">
-                🎯 {earnedPoints} / {maxLessonPoints} pts
+              <span className={`text-xs lg:text-sm font-semibold font-mono flex items-center gap-1.5 ${
+                finalStatus === "excused"
+                  ? "text-purple-700"
+                  : finalStatus === "missing"
+                    ? "text-rose-700"
+                    : finalStatus === "pending"
+                      ? "text-amber-700"
+                      : "text-indigo-700"
+              }`}>
+                {finalStatus === "excused" ? (
+                  <>🎯 Excused</>
+                ) : finalStatus === "missing" ? (
+                  <>⚠️ Missing</>
+                ) : (
+                  <>🎯 {earnedPoints} / {maxLessonPoints} pts {finalStatus === "pending" ? "(Pending)" : ""}</>
+                )}
               </span>
-              <span className="text-[9px] text-slate-400 block font-semibold">{scorePercentage}% total grade</span>
+              <span className="text-[9px] text-slate-400 block font-semibold">
+                {finalStatus === "excused" ? (
+                  "Excluded from grade records"
+                ) : finalStatus === "missing" ? (
+                  "No submission received"
+                ) : finalStatus === "pending" ? (
+                  `${scorePercentage}% (Awaiting review/grading)`
+                ) : (
+                  `${scorePercentage}% total grade`
+                )}
+              </span>
             </div>
           </div>
 
@@ -547,6 +621,12 @@ export default function StudentDossierModal({
                                     </span>
                                   )}
 
+                                  {bResponse.isLowEffort && (
+                                    <span className="bg-rose-50 border border-rose-200 text-rose-800 text-[8.5px] font-mono font-bold px-2 py-0.5 rounded-sm uppercase tracking-wide flex items-center gap-1 animate-pulse">
+                                      ⚠️ Low Effort Flagged
+                                    </span>
+                                  )}
+
                                   {bResponse.teacherOverride && (
                                     <span className="bg-indigo-50 border border-indigo-200 text-indigo-800 text-[8.5px] font-mono font-bold px-2 py-0.5 rounded-sm uppercase tracking-wide">
                                       ✍️ Teacher Override Applied
@@ -557,6 +637,19 @@ export default function StudentDossierModal({
                                   Current Points: <span className="text-slate-800 font-extrabold">{bResponse.score}</span> / {block.points || (block.singleQuestion?.points || 0)} pts
                                 </div>
                               </div>
+
+                              {/* Low Effort warnings details */}
+                              {bResponse.isLowEffort && (
+                                <div className="mt-3 bg-rose-50 border border-rose-150 rounded-lg p-3 text-xs text-rose-900 flex items-start gap-2 shadow-2xs font-sans">
+                                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                                  <div>
+                                    <strong className="block text-rose-955 font-bold">Academic Integrity Warning: Low-Effort Response</strong>
+                                    <p className="text-xs text-rose-800 font-serif leading-relaxed mt-0.5">
+                                      Flag reason: {bResponse.lowEffortReason || "Response is extremely short, keyboard smash, or lacks linguistic structure."}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
 
                               {/* AI rationale block if type is SA */}
                               {bResponse.type === "sa" && bResponse.aiGrading && (
