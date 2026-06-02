@@ -736,6 +736,7 @@ export default function App() {
                     onLaunchPreviewAttempt={handleLaunchPreviewAttempt}
                     courses={courses}
                     onEditingDirtyChange={setIsAuthoringDirty}
+                    idToken={idToken}
                   />
                 )
               )}

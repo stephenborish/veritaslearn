@@ -30,7 +30,28 @@ export interface Lesson {
   estimatedMinutes: number;
   isPublished: boolean;
   createdAt: string;
+  updatedAt?: string;
   settings: LessonSettings;
+}
+
+export interface LessonDraftPayload {
+  title: string;
+  description: string | RichContent;
+  estimatedMinutes: number;
+  isPublished: boolean;
+  settings: LessonSettings;
+  blocks: LessonBlock[];
+}
+
+export interface LessonDraft {
+  id: string;
+  lessonId: string;
+  teacherId: string;
+  draftPayload: LessonDraftPayload;
+  baseLessonUpdatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  status: "active" | "restored" | "discarded" | "published";
 }
 
 export type BlockType = 'video' | 'reading' | 'question';
@@ -398,4 +419,5 @@ export interface DatabaseSchema {
   aiGradingRecords: AIGradingRecord[];
   lessonAssignments: Assignment[];
   gradebookEntries?: GradebookEntry[];
+  lessonDrafts?: LessonDraft[];
 }
