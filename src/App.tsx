@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import Authenticator from "./components/Auth/Authenticator";
+import LandingPage, { PENDING_COURSE_CODE_KEY } from "./components/Auth/LandingPage";
 import LiveMonitor from "./components/TeacherDashboard/LiveMonitor";
 import LessonsBuilder from "./components/TeacherDashboard/LessonsBuilder";
 import Gradebook from "./components/TeacherDashboard/Gradebook";
@@ -259,6 +259,33 @@ export default function App() {
       setCurrentUser(user);
       setIdToken(token);
       fetchLmsPayload(user, token);
+
+      // After student login, check for a pending course code stored before auth flow
+      if (user.role === "student") {
+        const pendingCode = sessionStorage.getItem(PENDING_COURSE_CODE_KEY);
+        if (pendingCode) {
+          sessionStorage.removeItem(PENDING_COURSE_CODE_KEY);
+          try {
+            const res = await fetch("/api/enrollments/join", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`,
+              },
+              body: JSON.stringify({ joinCode: pendingCode }),
+            });
+            if (res.ok) {
+              // Refresh to reflect new enrollment in the student dashboard
+              fetchLmsPayload(user, token);
+            } else {
+              const data = await res.json().catch(() => ({}));
+              console.warn("VERITAS Learn - Course code join failed:", data.error || res.status);
+            }
+          } catch (e) {
+            console.warn("VERITAS Learn - Course code join request failed:", e);
+          }
+        }
+      }
     }
   };
 
@@ -452,7 +479,7 @@ export default function App() {
   }
 
   if (!currentUser) {
-    return <Authenticator onLoginSuccess={handleLogin} />;
+    return <LandingPage onLoginSuccess={handleLogin} />;
   }
 
   // STUDENT RUNTIME PORTAL PATH
