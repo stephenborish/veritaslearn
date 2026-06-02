@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { auth, storage } from "../../lib/firebase";
+import firebaseConfig from "../../../firebase-applet-config.json";
 import { ref, getDownloadURL } from "firebase/storage";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 
@@ -757,7 +758,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           .catch(() => {
             setResolvedVideoUrl(
               activeBlock.videoUrl ||
-                `https://firebasestorage.googleapis.com/v1/b/gen-lang-client-0781925544.firebasestorage.app/o/${encodeURIComponent(activeBlock.storagePath)}?alt=media`
+                `https://firebasestorage.googleapis.com/v0/b/${firebaseConfig.storageBucket}/o/${encodeURIComponent(activeBlock.storagePath)}?alt=media`
             );
           });
       } else if (activeBlock.videoUrl) {

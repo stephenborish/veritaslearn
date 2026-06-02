@@ -159,6 +159,8 @@ export interface LessonAttempt {
   isPreviewAttempt?: boolean;
   previewOwnerTeacherId?: string;
   excludeFromAnalytics?: boolean;
+  /** Teacher-set override for the gradebook status of this attempt. Applied on top of the calculated status. */
+  gradebookStatusOverride?: 'excused' | 'missing' | 'pending';
 }
 
 export interface QuestionAssignment {
@@ -183,12 +185,14 @@ export interface StudentResponse {
   responseValue: string | number; // choice id for MC, text for SA
   responseText?: string; // denormalized chosen choice text (MC) for teacher review display
   isCorrect?: boolean; // MC auto-graded
-  score: number; // Final registered score for this response
+  /** Final registered score for this response. `pointsEarned` mirrors this value for gradebook display. */
+  score: number;
   activeTimeSpent: number; // seconds spent focusing on this question
   gradingMode?: 'practice' | 'assessment';
   feedbackVisibility?: 'immediate' | 'after_submit' | 'hidden' | 'student_visible' | 'teacher_only';
   gradebookCategory?: 'practice' | 'assessment';
   maxPoints?: number;
+  /** Same value as `score`; kept as a display alias for gradebook UI components. */
   pointsEarned?: number;
   aiFeedbackReleasedAt?: string | null;
   teacherReviewedAt?: string | null;
@@ -215,6 +219,10 @@ export interface StudentResponse {
     notes: string;
     gradedAt: string;
   };
+  /** Set by server after AI grading; true when the response is gibberish, a keyboard-smash, etc. Teacher-only field. */
+  isLowEffort?: boolean;
+  /** Human-readable reason for the low-effort flag. Teacher-only. */
+  lowEffortReason?: string;
 }
 
 /** Durable, structured record of an AI grading pass (stored separately from the response). */
@@ -372,19 +380,20 @@ export interface GradebookEntry {
   attemptId?: string;
   responseId?: string;
   category?: 'practice' | 'assessment';
-  score?: number;
-  maxScore?: number;
+  // Response-level fields — set by upsertResponseGradebookEntry (one entry per response).
+  score?: number;      // points earned for this specific response
+  maxScore?: number;   // max points for this specific response
   feedback?: string;
   feedbackVisibleToStudent?: boolean;
   source?: 'multiple_choice' | 'ai_short_answer' | 'teacher_override' | 'manual';
   createdAt?: string;
   updatedAt?: string;
 
-  // Attempt-level summary fields (for backward compatibility)
-  rawScore?: number;
-  finalScore?: number;
-  maxPoints?: number;
-  percent?: number;
+  // Attempt-level summary fields — set by upsertGradebookEntryForAttempt (one entry per attempt).
+  rawScore?: number;   // sum of all assessment response scores
+  finalScore?: number; // = rawScore (no post-processing applied yet)
+  maxPoints?: number;  // sum of all assessment question maxPoints
+  percent?: number;    // Math.round(finalScore / maxPoints * 100)
   status:
     | 'not_started'
     | 'in_progress'
