@@ -48,8 +48,9 @@ See `.env.example` for all supported variables. Key ones:
 | `GEMINI_API_KEY` | AI grading (required) | — |
 | `APP_URL` | App base URL for OAuth + links | `https://learn.veritas.courses` |
 | `ALLOWED_ORIGINS` | CORS allowed origins (comma-separated) | same as APP_URL |
-| `GOOGLE_ALLOWED_DOMAIN` | School domain for sign-in restriction | `malvernprep.org` |
-| `TEACHER_EMAILS` | Comma-separated teacher email list | `stephenborish@gmail.com` |
+| `GOOGLE_ALLOWED_DOMAIN` | School domain allowed for normal student accounts. | `malvernprep.org` |
+| `TEACHER_EMAILS` | Comma-separated teacher email list. These users receive teacher privileges. | `stephenborish@gmail.com` |
+| `AUTHORIZED_STUDENT_EMAILS` | Comma-separated exact outside student email allowlist. These users can sign in and join courses as students only. | — |
 | `AI_GRADING_MODEL` | Gemini model for AI grading | `gemini-2.0-flash` |
 
 ---
@@ -97,6 +98,7 @@ PUBLIC_APP_URL=https://learn.veritas.courses
 ALLOWED_ORIGINS=https://learn.veritas.courses
 GOOGLE_ALLOWED_DOMAIN=malvernprep.org
 TEACHER_EMAILS=stephenborish@gmail.com
+AUTHORIZED_STUDENT_EMAILS=student1@gmail.com,student2@example.com
 GEMINI_API_KEY=<your-gemini-key>
 ```
 

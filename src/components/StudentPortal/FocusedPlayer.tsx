@@ -545,6 +545,15 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // Dedicated helper to persist draft to backend
   const persistDraftResponse = useCallback(async (questionId: string, value: string) => {
+    if (submittedLocal[questionId]) {
+      if (draftSaveTimers.current[questionId]) {
+        clearTimeout(draftSaveTimers.current[questionId]);
+        delete draftSaveTimers.current[questionId];
+      }
+      setSaAutosave((prev: any) => ({ ...prev, [questionId]: "idle" }));
+      return;
+    }
+
     setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saving" }));
     try {
       localStorage.setItem(`veritas_draft_${attemptId}_${questionId}`, value);
@@ -563,7 +572,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     } catch {
       setSaAutosave((prev: any) => ({ ...prev, [questionId]: "error" }));
     }
-  }, [attemptId]);
+  }, [attemptId, submittedLocal]);
 
   // Keep references updated for the interval
   const saTextRef = useRef(saText);
@@ -670,6 +679,14 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // SA draft autosave — debounced 800ms, persisted to server + localStorage fallback
   const handleSaChange = (questionId: string, value: string) => {
+    if (submittedLocal[questionId]) {
+      if (draftSaveTimers.current[questionId]) {
+        clearTimeout(draftSaveTimers.current[questionId]);
+        delete draftSaveTimers.current[questionId];
+      }
+      return;
+    }
+
     setSaText((prev: any) => ({ ...prev, [questionId]: value }));
     setSaAutosave((prev: any) => ({ ...prev, [questionId]: "dirty" }));
 
@@ -1035,16 +1052,21 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   // SA autosave indicator
   const AutosaveIndicator = ({ state }: { state: AutosaveState }) => {
     if (state === "idle") return null;
-    const configs: Record<string, { text: string; cls: string }> = {
-      dirty: { text: "Saving draft…", cls: "text-slate-400" },
-      saving: { text: "Saving draft…", cls: "text-slate-400" },
-      saved: { text: "Draft saved", cls: "text-emerald-600" },
-      error: { text: "Unable to save draft", cls: "text-rose-600" },
+    const configs: Record<string, { text: string; cls: string; icon?: string }> = {
+      dirty: { text: "Saving draft…", cls: "text-slate-400 animate-pulse", icon: "save" },
+      saving: { text: "Saving draft…", cls: "text-blue-500 animate-pulse", icon: "save" },
+      saved: { text: "Draft autosaved to server", cls: "text-emerald-600 font-semibold", icon: "check" },
+      error: { text: "Unable to save draft — check connection", cls: "text-rose-600 font-semibold", icon: "alert" },
     };
     const c = configs[state];
     if (!c) return null;
     return (
-      <span className={`text-[10px] font-medium font-mono ${c.cls}`}>{c.text}</span>
+      <span className={`text-[10.5px] inline-flex items-center gap-1 font-sans ${c.cls}`}>
+        {c.icon === "save" && <RefreshCw className="w-3 h-3 animate-spin text-slate-400 shrink-0" />}
+        {c.icon === "check" && <Check className="w-3 h-3 text-emerald-600 shrink-0" />}
+        {c.icon === "alert" && <AlertTriangle className="w-3.5 h-3.5 text-rose-500 shrink-0 animate-bounce" />}
+        <span>{c.text}</span>
+      </span>
     );
   };
 
@@ -1394,13 +1416,25 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                       className="absolute inset-0 bg-[#0A192F]/96 flex flex-col justify-center p-8 text-white z-40 overflow-y-auto"
                     >
                       <div className="max-w-lg mx-auto w-full space-y-5">
-                        <div className="flex items-center gap-2 text-[#E5B53B] font-mono text-xs uppercase tracking-widest font-bold">
-                          <Lock className="w-3.5 h-3.5" />
-                          <span>Checkpoint — answer to continue</span>
-                          <span className="opacity-60">({activeCheckpoint.timestamp}s)</span>
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center gap-2 text-[#E5B53B] font-mono text-xs uppercase tracking-widest font-bold">
+                            <Lock className="w-3.5 h-3.5" />
+                            <span>Checkpoint — answer to continue</span>
+                            <span className="opacity-60">({activeCheckpoint.timestamp}s)</span>
+                          </div>
+                          <div className="flex flex-wrap gap-2 items-center">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider font-extrabold shadow-xs ${activeCheckpoint.isPractice ? "bg-teal-500/20 text-teal-300 border border-teal-500/30" : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"}`}>
+                              {activeCheckpoint.isPractice ? "Practice Checkpoint · Answers & Explanations Shown" : "Graded Checkpoint · Handed In to Portfolio"}
+                            </span>
+                          </div>
                         </div>
                         <h3 className="text-base font-bold leading-snug">{activeCheckpoint.title}</h3>
-                        <p className="text-xs text-slate-400">Complete these questions to resume the video.</p>
+                        <p className="text-xs text-slate-400">
+                          {activeCheckpoint.isPractice 
+                            ? "Complete these questions to check your current understanding. Correct answers and explanations will clear immediately upon submission."
+                            : "Complete these questions for formal course evaluation. Your response is recorded securely, and feedback is hidden until released by your teacher."
+                          }
+                        </p>
 
                         <div className="space-y-5">
                           {activeCheckpoint.questions.map((q: any) => {
@@ -1494,7 +1528,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                   </div>
                                 )}
 
-                                {feedback && q.choices && (
+                                {feedback && isCpPractice && q.choices && (
                                   <div
                                     className={`p-3 rounded text-xs space-y-1.5 ${
                                       feedback.correct
@@ -1551,9 +1585,25 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   const saFeedbackData = saFeedback[q.id];
 
                   return (
-                    <div key={asg.id} className="space-y-4">
+                    <div key={asg.id} className="space-y-4 bg-white border border-slate-100 rounded-xl p-5 md:p-6 shadow-xs">
+                      {/* Mode Badge Indicator */}
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <span className={`px-2.5 py-1 rounded text-[10px] font-sans uppercase tracking-wider font-extrabold shadow-2xs border ${
+                          isPracticeBlock 
+                            ? "bg-teal-50 text-teal-800 border-teal-200" 
+                            : "bg-emerald-50 text-emerald-800 border-emerald-200"
+                        }`}>
+                          {isPracticeBlock ? "Practice Check · Immediate Corrective Feedback" : "Graded Assessment · Locked & Saved to Portfolio"}
+                        </span>
+                        {isSubmitted && (
+                          <span className="text-[10px] text-slate-400 font-medium">
+                            {isPracticeBlock ? "Response evaluated" : "Response logged to portfolio"}
+                          </span>
+                        )}
+                      </div>
+
                       {/* Question stem */}
-                      <div className="font-serif text-[16px] font-semibold text-slate-900 leading-relaxed">
+                      <div className="font-serif text-[16px] font-semibold text-slate-900 leading-relaxed pt-2 border-t border-slate-50">
                         <RichContentRenderer content={q.stem} />
                       </div>
 
@@ -1665,7 +1715,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                       )}
 
                       {/* MC practice feedback (immediate correct/incorrect) */}
-                      {feedback && choicesMaybe && (
+                      {feedback && isPracticeBlock && choicesMaybe && (
                         <div
                           className={`p-4 rounded-lg text-sm space-y-1.5 border ${
                             feedback.correct

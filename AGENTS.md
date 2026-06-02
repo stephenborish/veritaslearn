@@ -2834,3 +2834,82 @@ FILES CHANGED:
 VERIFICATION:
 - `npm run lint`: PASS (Linter fully clean and green)
 - `npm run build`: PASS (Production bundle compiled successfully)
+
+---
+
+### Step 25: Trust Isolation and Hardening Sprint Completion
+
+Date: 2026-06-02
+Agent: Google AI Studio Coding Agent
+Task: Harden the application's feedback display, draft timing mechanisms, teacher admin workflows, and automate post-login banner notifications for courses code joining.
+
+FILES CHANGED:
+- `server.ts`:
+  - Sanitized target immediate MCQ response paylod so that correctness and score structures are never returned for assessments where `feedbackVisibility` is not set to `"student_visible"`.
+- `src/components/StudentPortal/FocusedPlayer.tsx`:
+  - Modified the video checkpoint overlay and the main block renderer to hide immediate MCQ feedback and correctness/re-evaluation blocks during assessments, restricting display strictly to practice units.
+  - Hardened the `handleSaChange` event check and the debounced `persistDraftResponse` callback to halt execution and instantly dismantle/empty pending draft timers if a question was already submitted.
+- `src/App.tsx`:
+  - Implemented client-side `joinFeedback` notification state.
+  - Bound post-login background course-joining to provide immediate, user-facing success or failure banner notifications on the student dashboard, complete with error codes translations.
+- `src/components/TeacherDashboard/AIReview.tsx`:
+  - Standardized checkpoint schema questions lookup to correctly evaluate the robust `ck.questions` array, resolving the teacher-facing checkpoint question title/body query defect.
+
+VERIFICATION:
+- `npm run lint`: PASS (Linter fully clean and green)
+- `npm run build`: PASS (Production bundle compiled successfully)
+
+---
+
+### Step 26: Production Deployment Readiness Audit & Environs Harmonization
+
+Date: 2026-06-02
+Agent: Google AI Studio Coding Agent
+Task: Perform a comprehensive deployment readiness audit for https://learn.veritas.courses, check environment variable usage, verify same-origin/cross-origin safety, audit database/auth assumptions, and verify local development functionality.
+
+FILES CHANGED:
+- `.env.example`:
+  - Documented missing backend configuration points (`GOOGLE_ALLOWED_DOMAIN`, `TEACHER_EMAILS`, and `AI_GRADING_MODEL`) to establish a single, unified setup matrix for deployments. We also set the default mapped `APP_URL` to `https://learn.veritas.courses` for seamless staging documentation.
+- `AGENTS.md`:
+  - Appended this deployment readiness audit log.
+
+AUDIT CONCLUSIONS:
+1. **APP_URL / PUBLIC_APP_URL / ALLOWED_ORIGINS**: Confirmed these are only documented inside `README.md` and `.env.example` as environmental reference specs. The main web application requires zero origin-based configurations because the SPA build is served together with the API route handlers from the same origin, ensuring native same-origin request safety with zero CORS complications.
+2. **Google Auth Redirect Assumptions**: Confirmed client-side `signInWithPopup(auth, googleProvider)` handles callbacks within the popups natively. Production setups simply require configuring Firebase Authentication settings and adding custom redirects to Authorized Domains.
+3. **Firestore Rules Security**: Verified that `firestore.rules` enforces strict default-deny criteria and isolates answers, explanations, and rubric Categories so that student payloads cannot read raw metadata blocks, achieving maximum information isolation.
+4. **Verification Scripts**: Ran both `verify-slice.ts` and `verify-workflow.ts` successfully (61 assertions fully passed, 0 failures).
+5. **Local Development Resilience**: Verified that local development remains perfectly functional, offering dual-persistence mode with automatic local file-based `data/db.json` mirroring when cloud credentials are not supplied.
+
+VERIFICATION:
+- `npm run lint`: PASS (100% clean check)
+- `npm run build`: PASS (Production SPA bundler compilation successful)
+
+---
+
+### Step 27: Safe External Student Testing Allowlist Implementation
+
+Date: 2026-06-02
+Agent: Google AI Studio Coding Agent
+Task: Implement a secure, robust external student tester allowlist using AUTHORIZED_STUDENT_EMAILS to allow specific outside users to sign in and enroll in courses without compromising admin/teacher structures.
+
+FILES CHANGED:
+- `server.ts`:
+  - Added initialization and parsing for `AUTHORIZED_STUDENT_EMAILSSet` with surrounding space trimming, lowercasing, and skipping empty strings.
+  - Setup a production startup warning logging block that triggers if `AUTHORIZED_STUDENT_EMAILS` is enabled (`AUTHORIZED_STUDENT_EMAILS.size > 0`).
+  - Updated standard API auth session checks in `getSessionUser` and `/api/auth/login` to admit users matching the allowed school domain, teachers, or allowed external student tester email allowlist.
+  - Ensured that newly authenticated external student testers are assigned the standard `"student"` role and cannot escalate privileges.
+  - Refactored `/api/enrollments/join` checking criteria so allowed student testers can safely enroll in courses.
+- `package.json`:
+  - Added new run command script `"verify:allowlist": "tsx scripts/verify-allowlist.ts"`.
+- `scripts/verify-allowlist.ts`:
+  - Penned a complete 11-assertion regression verification suite that verifies sign-in capabilities, default role rules, invalid login rejection, role escalation prevention, course join logic, and isolation rules.
+- `.env.example`:
+  - Documented and declared `AUTHORIZED_STUDENT_EMAILS` default options and usage instructions.
+- `README.md`:
+  - Updated the environments specification comparison table and production hosting code blocks.
+
+VERIFICATION:
+- `npm run lint`: PASS (100% clean)
+- `npm run build`: PASS (Production bundle compiled successfully)
+- `npx tsx scripts/verify-allowlist.ts`: PASS (11 assertions passed successfully, 0 failures)
+- `npx tsx scripts/verify-workflow.ts`: PASS (61 assertions passed successfully, 0 failures)

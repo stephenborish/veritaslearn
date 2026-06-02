@@ -47,10 +47,16 @@ const CONFIG_FILE = path.join(process.cwd(), "firebase-applet-config.json");
 let firestoreDb: any = null;
 let firebaseBucket: any = null;
 
-// Configurable domain and teacher allowlist from environment
+// Configurable domain, teacher allowlist, and external student test allowlist from environment
 const ALLOWED_DOMAIN = (process.env.GOOGLE_ALLOWED_DOMAIN || "malvernprep.org").toLowerCase();
 const TEACHER_EMAILS: Set<string> = new Set(
   (process.env.TEACHER_EMAILS || "stephenborish@gmail.com")
+    .split(",")
+    .map((e: string) => e.trim().toLowerCase())
+    .filter(Boolean)
+);
+const AUTHORIZED_STUDENT_EMAILS: Set<string> = new Set(
+  (process.env.AUTHORIZED_STUDENT_EMAILS || "")
     .split(",")
     .map((e: string) => e.trim().toLowerCase())
     .filter(Boolean)
@@ -61,6 +67,9 @@ if (!process.env.GOOGLE_ALLOWED_DOMAIN) {
 }
 if (!process.env.TEACHER_EMAILS) {
   console.warn("VERITAS Learn - TEACHER_EMAILS not set; using built-in default. Set this env var before deploying to production.");
+}
+if (AUTHORIZED_STUDENT_EMAILS.size > 0) {
+  console.warn("VERITAS Learn - WARNING: External student allowlist (AUTHORIZED_STUDENT_EMAILS) is enabled. Remove AUTHORIZED_STUDENT_EMAILS when testing is complete.");
 }
 
 if (fs.existsSync(CONFIG_FILE)) {
@@ -144,6 +153,7 @@ const DB_COLLECTIONS = [
   "aiGradingRecords",
   "lessonAssignments",
   "gradebookEntries",
+  "gradebookResponseEntries",
   "lessonDrafts",
 ] as const;
 
@@ -397,7 +407,7 @@ function calcMaxPointsForAttempt(attempt: any, db: any): number {
   return total;
 }
 
-// Calculate and write a durable GradebookEntry for a single student response
+// Calculate and write a durable GradebookResponseEntry for a single student response
 function upsertResponseGradebookEntry(
   response: any,
   attempt: any,
@@ -406,8 +416,8 @@ function upsertResponseGradebookEntry(
   feedback: string | undefined,
   db: any
 ): void {
-  if (!db.gradebookEntries) {
-    db.gradebookEntries = [];
+  if (!db.gradebookResponseEntries) {
+    db.gradebookResponseEntries = [];
   }
 
   const lessonId = attempt.lessonId;
@@ -420,7 +430,7 @@ function upsertResponseGradebookEntry(
   const courseId = assignment ? assignment.courseId : (lesson ? lesson.courseId : "");
 
   const entryId = `ge_resp_${response.id}`;
-  const entryIdx = db.gradebookEntries.findIndex((e: any) => e.id === entryId);
+  const entryIdx = db.gradebookResponseEntries.findIndex((e: any) => e.id === entryId);
 
   const isPractice = response.gradebookCategory === "practice" || response.gradingMode === "practice";
 
@@ -444,10 +454,10 @@ function upsertResponseGradebookEntry(
   };
 
   if (entryIdx !== -1) {
-    entryData.createdAt = db.gradebookEntries[entryIdx].createdAt || entryData.createdAt;
-    db.gradebookEntries[entryIdx] = entryData;
+    entryData.createdAt = db.gradebookResponseEntries[entryIdx].createdAt || entryData.createdAt;
+    db.gradebookResponseEntries[entryIdx] = entryData;
   } else {
-    db.gradebookEntries.push(entryData);
+    db.gradebookResponseEntries.push(entryData);
   }
 }
 
@@ -1010,8 +1020,11 @@ async function getSessionUser(req: express.Request) {
     const email = decodedToken.email?.toLowerCase();
     if (!email) return null;
 
-    // Domain and allowlist check — no role based on email text patterns
-    if (!email.endsWith(`@${ALLOWED_DOMAIN}`) && !TEACHER_EMAILS.has(email)) {
+    // Domain and allowlist check (school domain, exact teachers, or allowed external student tester list) — no role based on email text patterns
+    const isAuthorized = email.endsWith(`@${ALLOWED_DOMAIN}`) || 
+                         TEACHER_EMAILS.has(email) || 
+                         AUTHORIZED_STUDENT_EMAILS.has(email);
+    if (!isAuthorized) {
       return null;
     }
 
@@ -1156,7 +1169,10 @@ app.post("/api/auth/login", async (req, res) => {
       return;
     }
 
-    if (!email.endsWith(`@${ALLOWED_DOMAIN}`) && !TEACHER_EMAILS.has(email)) {
+    const isAuthorized = email.endsWith(`@${ALLOWED_DOMAIN}`) || 
+                         TEACHER_EMAILS.has(email) || 
+                         AUTHORIZED_STUDENT_EMAILS.has(email);
+    if (!isAuthorized) {
       res.status(403).json({ error: "Access restricted to authorized Malvern Prep accounts. Contact your administrator if you believe this is an error." });
       return;
     }
@@ -1818,11 +1834,15 @@ app.post("/api/enrollments/join", requireAuth, async (req, res) => {
       return;
     }
 
-    // Domain verification: require school email or allowlisted teacher email
-    const emailDomain = user.email.split("@")[1]?.toLowerCase() || "";
-    if (emailDomain !== ALLOWED_DOMAIN && !TEACHER_EMAILS.has(user.email.toLowerCase())) {
+    // Domain verification: require school email, allowed external student tester email, or allowlisted teacher email
+    const emailLower = user.email.toLowerCase();
+    const emailDomain = emailLower.split("@")[1] || "";
+    const isAllowedToEnroll = emailDomain === ALLOWED_DOMAIN || 
+                              TEACHER_EMAILS.has(emailLower) || 
+                              AUTHORIZED_STUDENT_EMAILS.has(emailLower);
+    if (!isAllowedToEnroll) {
       res.status(403).json({
-        error: "Use your Malvern Prep Google account to join this course.",
+        error: "Use your Malvern Prep Google account or an authorized student register email to join this course.",
         code: "DOMAIN_MISMATCH",
       });
       return;
@@ -2912,6 +2932,11 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       return;
     }
 
+    if (attempt.status === "completed" || attempt.completedAt) {
+      fail(res, "FORBIDDEN", "This attempt is already completed. No further submissions are allowed.");
+      return;
+    }
+
     // Students can only submit to their own attempts
     const submitUser = (req as any).user;
     if (submitUser?.role === "student" && attempt.studentId !== submitUser?.id) {
@@ -2967,6 +2992,20 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       declaredType === "mc" ? true : declaredType === "sa" ? false : originalQuestion.type === "mc";
     const isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
 
+    if (!isPracticeQuestion) {
+      const existsAlready = (db.responses || []).some(
+        (r: any) =>
+          r.attemptId === id &&
+          r.blockId === blockId &&
+          r.questionId === questionId &&
+          (checkpointId ? r.checkpointId === checkpointId : !r.checkpointId)
+      );
+      if (existsAlready) {
+        fail(res, "FORBIDDEN", "This assessment question has already been submitted.");
+        return;
+      }
+    }
+
         // Idempotent: replace any prior response for this exact question (never double-count score).
     db.responses = db.responses.filter(
       (r: any) =>
@@ -3016,8 +3055,8 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       res.json({
         success: true,
         gradedImmediate: true,
-        isCorrect,
-        score: newResponse.score,
+        isCorrect: feedbackVisibility === "student_visible" ? isCorrect : undefined,
+        score: feedbackVisibility === "student_visible" ? newResponse.score : undefined,
         explanation: feedbackVisibility === "student_visible" ? originalQuestion.explanation : undefined
       });
       return;
@@ -3426,6 +3465,20 @@ app.post("/api/attempts/:id/draft", requireAuth, (req, res) => {
   const user = (req as any).user;
   if (user?.role === "student" && db.attempts[attemptIdx].studentId !== user?.id) {
     res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
+  // Reject late draft writes after submission or attempt completion
+  if (db.attempts[attemptIdx].status === "completed" || db.attempts[attemptIdx].completedAt) {
+    res.status(403).json({ error: "This attempt is already completed. Cannot save drafts." });
+    return;
+  }
+
+  const alreadySubmitted = (db.responses || []).some(
+    (r: any) => r.attemptId === id && r.questionId === questionId
+  );
+  if (alreadySubmitted) {
+    res.status(403).json({ error: "This question has already been submitted. Cannot save drafts for it." });
     return;
   }
 

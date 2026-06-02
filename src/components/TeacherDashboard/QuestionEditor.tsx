@@ -346,6 +346,68 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
           )}
         </div>
 
+        {type === "sa" && (
+          <div className="bg-slate-50 border border-slate-200 rounded p-2.5 space-y-1.5 text-xs text-slate-700">
+            <span className="font-bold text-[10px] uppercase tracking-wider text-slate-600 block">AI Grading Status Dashboard (Teacher-Only Metadata)</span>
+            <div className="flex flex-wrap gap-1.5 align-middle">
+              {/* AI Rubric Ready vs Rubric total mismatch or Missing Rubric */}
+              {rubric.length === 0 ? (
+                <span className="inline-flex items-center gap-1 bg-rose-50 text-rose-700 border border-rose-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <AlertCircle className="w-3 h-3 text-rose-500" /> Missing Rubric Categories
+                </span>
+              ) : rubricTotal === Number(q.points) ? (
+                <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> AI Rubric Ready ({rubricTotal}/{q.points} pts matched)
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <AlertCircle className="w-3 h-3 text-amber-500" /> Rubric Points Mismatch ({rubricTotal} pts vs {Number(q.points) || 0} pts)
+                </span>
+              )}
+
+              {/* Model Answer status */}
+              {!textContent(q.modelAnswer).trim() ? (
+                <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <AlertCircle className="w-3 h-3 text-amber-500" /> Missing Ideal Model Answer
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Ideal Model Answer Set
+                </span>
+              )}
+
+              {/* Scoring Guidance status */}
+              {!textContent(q.aiScoringGuidance).trim() ? (
+                <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <AlertCircle className="w-3 h-3 text-amber-500" /> Missing AI Scoring Guidance
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> AI Scoring Guidance Configured
+                </span>
+              )}
+
+              {/* AI generated status */}
+              {aiDraftActive ? (
+                <span className="inline-flex items-center gap-1 bg-violet-50 text-violet-700 border border-violet-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <Wand2 className="w-3 h-3 text-violet-500" /> Drafted by AI (Editable)
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-600 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  Manual Setup
+                </span>
+              )}
+
+              <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                Teacher Review Recommended
+              </span>
+            </div>
+            <div className="text-[10px] text-slate-500 italic mt-1 leading-snug">
+              ℹ️ Model answers, scoring guidance, and rubrics are strictly <strong className="text-amber-800 font-semibold uppercase">teacher-only</strong> and secure; students are never shown these values.
+            </div>
+          </div>
+        )}
+
         {type === "mc" ? (
           <div className="space-y-2">
             <div className="flex items-center justify-between mb-1">

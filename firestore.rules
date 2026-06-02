@@ -144,6 +144,12 @@ service cloud.firestore {
       allow write: if isTeacher();
     }
 
+    // 11b. Gradebook Response Entries — teacher read/write; student can read their own response grade record
+    match /gradebookResponseEntries/{entryId} {
+      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow write: if isTeacher();
+    }
+
     // 11. Audit Logs — teacher/admin read; system writes only (no client writes)
     match /auditLogs/{logId} {
       allow read: if isTeacher();

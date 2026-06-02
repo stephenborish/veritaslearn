@@ -371,7 +371,7 @@ export interface Assignment {
   securityReviewRequired?: boolean;
 }
 
-export interface GradebookEntry {
+export interface GradebookResponseEntry {
   id: string;
   studentId: string;
   assignmentId?: string;
@@ -380,14 +380,32 @@ export interface GradebookEntry {
   attemptId?: string;
   responseId?: string;
   category?: 'practice' | 'assessment';
-  // Response-level fields — set by upsertResponseGradebookEntry (one entry per response).
   score?: number;      // points earned for this specific response
   maxScore?: number;   // max points for this specific response
   feedback?: string;
   feedbackVisibleToStudent?: boolean;
   source?: 'multiple_choice' | 'ai_short_answer' | 'teacher_override' | 'manual';
+  status:
+    | 'pending_ai'
+    | 'auto_scored'
+    | 'ai_scored'
+    | 'needs_teacher_review'
+    | 'teacher_reviewed'
+    | 'teacher_overridden'
+    | 'missing'
+    | 'excused'
+    | 'error';
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface GradebookEntry {
+  id: string;
+  studentId: string;
+  assignmentId?: string;
+  courseId?: string;
+  lessonId?: string;
+  attemptId?: string;
 
   // Attempt-level summary fields — set by upsertGradebookEntryForAttempt (one entry per attempt).
   rawScore?: number;   // sum of all assessment response scores
@@ -401,14 +419,7 @@ export interface GradebookEntry {
     | 'needs_grading'
     | 'graded'
     | 'missing'
-    | 'excused'
-    | 'pending_ai'
-    | 'auto_scored'
-    | 'ai_scored'
-    | 'needs_teacher_review'
-    | 'teacher_reviewed'
-    | 'teacher_overridden'
-    | 'error';
+    | 'excused';
   aiPendingCount?: number;
   teacherReviewRequired?: boolean;
   lastCalculatedAt?: string;
@@ -428,5 +439,6 @@ export interface DatabaseSchema {
   aiGradingRecords: AIGradingRecord[];
   lessonAssignments: Assignment[];
   gradebookEntries?: GradebookEntry[];
+  gradebookResponseEntries?: GradebookResponseEntry[];
   lessonDrafts?: LessonDraft[];
 }

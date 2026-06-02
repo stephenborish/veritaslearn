@@ -138,6 +138,37 @@
         "gradedAt": { "type": "string" }
       },
       "required": ["id", "responseId", "parsedScore", "confidence", "status"]
+    },
+    "GradebookEntry": {
+      "title": "GradebookEntry",
+      "description": "Overall attempt-level grading summary for a student's lesson assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "assignmentId": { "type": "string" },
+        "rawScore": { "type": "number" },
+        "finalScore": { "type": "number" },
+        "maxPoints": { "type": "number" },
+        "percent": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "studentId", "assignmentId", "finalScore", "maxPoints", "status"]
+    },
+    "GradebookResponseEntry": {
+      "title": "GradebookResponseEntry",
+      "description": "Detailed question-by-question evaluation record of student responses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "attemptId": { "type": "string" },
+        "responseId": { "type": "string" },
+        "score": { "type": "number" },
+        "maxScore": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "studentId", "attemptId", "responseId", "score", "maxScore", "status"]
     }
   },
   "firestore": {
@@ -176,6 +207,14 @@
     "aiGradingRecords/{recordId}": {
       "schema": "AIGradingRecord",
       "description": "AI grading records for teacher verification and review of short answer responses"
+    },
+    "gradebookEntries/{entryId}": {
+      "schema": "GradebookEntry",
+      "description": "Durable high-level grades per lesson assignment and student"
+    },
+    "gradebookResponseEntries/{entryId}": {
+      "schema": "GradebookResponseEntry",
+      "description": "Durable answer scores tracking correctness per student response"
     }
   }
 }

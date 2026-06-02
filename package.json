@@ -9,7 +9,9 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist server.cjs",
     "lint": "tsc --noEmit",
-    "verify:slice": "tsx scripts/verify-slice.ts"
+    "verify:slice": "tsx scripts/verify-slice.ts",
+    "verify:workflow": "tsx scripts/verify-workflow.ts",
+    "verify:allowlist": "tsx scripts/verify-allowlist.ts"
   },
   "dependencies": {
     "@ckeditor/ckeditor5-react": "^11.1.2",

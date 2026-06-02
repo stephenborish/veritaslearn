@@ -110,6 +110,7 @@ export default function LessonsBuilder({
   const [saveError, setSaveError] = useState<string[] | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [showPublishConfirm, setShowPublishConfirm] = useState(false);
+  const [postPublishLessonId, setPostPublishLessonId] = useState<string | null>(null);
 
   const [currentBlocks, setCurrentBlocks] = useState<any[]>([]);
 
@@ -117,6 +118,7 @@ export default function LessonsBuilder({
   const [asgDueAt, setAsgDueAt] = useState(getDefaultDueDate());
   const [asgClosesAt, setAsgClosesAt] = useState(getDefaultCloseDate());
   const [asgError, setAsgError] = useState("");
+  const [savedAssignmentConfirm, setSavedAssignmentConfirm] = useState<any>(null);
 
   // ---- Normalize helpers ----
 
@@ -738,7 +740,10 @@ export default function LessonsBuilder({
 
   const handleConfirmPublish = async () => {
     setShowPublishConfirm(false);
-    await saveWithPublishedStatus(true);
+    const saved = await saveWithPublishedStatus(true);
+    if (saved && saved.id) {
+      setPostPublishLessonId(saved.id);
+    }
   };
 
   const handleAssignAndLaunch = async () => {
@@ -771,7 +776,10 @@ export default function LessonsBuilder({
     if (new Date(asgOpensAt) >= new Date(asgDueAt)) { setAsgError("Opening date must be before due date."); return; }
     if (new Date(asgDueAt) > new Date(asgClosesAt)) { setAsgError("Due date must be on or before closing date."); return; }
     if (onSaveAssignment) {
-      await onSaveAssignment({
+      const selectedCourse = courses.find((c: any) => c.id === asgCourseId.trim());
+      const selectedLessonObj = lessons.find((l: any) => l.id === asgLessonId);
+      
+      const payload = {
         lessonId: asgLessonId,
         courseId: asgCourseId.trim(),
         section: asgSection.trim(),
@@ -779,7 +787,20 @@ export default function LessonsBuilder({
         dueAt: new Date(asgDueAt).toISOString(),
         closesAt: new Date(asgClosesAt).toISOString(),
         integrityPolicy: asgIntegrityPolicy,
+      };
+
+      await onSaveAssignment(payload);
+
+      setSavedAssignmentConfirm({
+        lessonTitle: selectedLessonObj?.title || selectedLesson?.title || "Lesson",
+        courseName: selectedCourse?.name || asgCourseId.trim(),
+        section: asgSection.trim() || "All Sections",
+        opensAt: asgOpensAt,
+        dueAt: asgDueAt,
+        closesAt: asgClosesAt,
+        integrityPolicy: asgIntegrityPolicy,
       });
+
       setShowAssignmentForm(false);
       setAsgLessonId("");
       setAsgCourseId("");
@@ -789,9 +810,7 @@ export default function LessonsBuilder({
   };
 
   // ---- Readiness computation ----
-  type ReadinessIssue = { message: string; target: "setup" | number };
-
-  const computeReadiness = (): {
+  type ReadinessIssue = { message: string; target: "setup" | number };  const computeReadiness = (): {
     issues: ReadinessIssue[];
     warnings: ReadinessIssue[];
     gradedQCount: number;
@@ -804,39 +823,127 @@ export default function LessonsBuilder({
     const warnings: ReadinessIssue[] = [];
     let gradedQCount = 0, practiceQCount = 0, videoCount = 0, readingCount = 0, aiGradedCount = 0;
 
-    if (!title.trim()) issues.push({ message: "Lesson title is required.", target: "setup" });
-    if (currentBlocks.length === 0) issues.push({ message: "Add at least one block.", target: "setup" });
+    if (!title || !title.trim()) {
+      issues.push({ message: "Lesson title is missing. Set a title in Lesson Setup.", target: "setup" });
+    }
+    if (currentBlocks.length === 0) {
+      issues.push({ message: "No content blocks. Add at least one Video, Reading, or Question block.", target: "setup" });
+    }
+
+    // Helper choice blank check
+    const isChoiceNonBlank = (c: any): boolean => {
+      if (!c) return false;
+      const t = c.text;
+      if (!t) return false;
+      if (typeof t === "string") return t.trim().length > 0;
+      if (typeof t === "object") {
+        const plain = (t.plainText || "").trim();
+        const html = (t.html || "").replace(/<[^>]*>/g, "").trim();
+        return plain.length > 0 || html.length > 0;
+      }
+      return false;
+    };
+
+    // Advanced question inspector
+    const checkQuestion = (q: any, blockIdx: number, contextLabel: string, isPractice: boolean) => {
+      if (!q) {
+        issues.push({ message: `${contextLabel}: Question configuration is missing.`, target: blockIdx });
+        return;
+      }
+
+      const isMc = q.type === "mc";
+      const isSa = q.type === "sa";
+
+      // Stem/Prompt empty check
+      const stemText = q.stem ? (typeof q.stem === "string" ? q.stem : (q.stem.plainText || "")) : "";
+      if (!stemText.trim()) {
+        issues.push({ message: `${contextLabel}: Question prompt stem is empty or incomplete.`, target: blockIdx });
+      }
+
+      if (isMc) {
+        const nonBlank = (q.choices || []).filter((c: any) => isChoiceNonBlank(c));
+        const blank = (q.choices || []).filter((c: any) => !isChoiceNonBlank(c));
+
+        if (!q.choices || q.choices.length === 0 || nonBlank.length === 0) {
+          issues.push({ message: `${contextLabel}: Incomplete multiple choice question — no options are defined.`, target: blockIdx });
+        } else if (nonBlank.length < 2) {
+          issues.push({ message: `${contextLabel}: Incomplete multiple choice question — need 2 or more complete answer choices.`, target: blockIdx });
+        }
+
+        if (blank.length > 0) {
+          issues.push({ message: `${contextLabel}: Incomplete multiple choice question — has empty candidate answers.`, target: blockIdx });
+        }
+
+        if (!q.correctChoiceId) {
+          issues.push({ message: `${contextLabel}: Missing correct answer — no option is marked as correct.`, target: blockIdx });
+        }
+      } else if (isSa) {
+        // SA Prompt vs rubric vs model answers
+        const modelAnsText = q.modelAnswer ? (typeof q.modelAnswer === "string" ? q.modelAnswer : (q.modelAnswer.plainText || "")) : "";
+        const isModelAnsMissing = !modelAnsText.trim();
+
+        const guidanceText = q.aiScoringGuidance ? (typeof q.aiScoringGuidance === "string" ? q.aiScoringGuidance : (q.aiScoringGuidance.plainText || "")) : "";
+        const isGuidanceMissing = !guidanceText.trim();
+
+        if (!isPractice) {
+          // Graded short-answers
+          if (isModelAnsMissing) {
+            warnings.push({ message: `${contextLabel}: Missing model answer — AI grading quality improves significantly with a reference solution.`, target: blockIdx });
+          }
+          if (isGuidanceMissing) {
+            warnings.push({ message: `${contextLabel}: Missing AI scoring guidance — adding details ensures robust automatic scoring.`, target: blockIdx });
+          }
+
+          if (!q.rubricCategories || q.rubricCategories.length === 0) {
+            issues.push({ message: `${contextLabel}: Missing rubric categories — required for graded AI evaluations.`, target: blockIdx });
+          } else {
+            const rubricTotal = (q.rubricCategories as any[]).reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+            if (q.points > 0 && rubricTotal !== q.points) {
+              issues.push({ message: `${contextLabel}: Rubric points mismatch — rubric sum (${rubricTotal} pts) does not match question points (${q.points} pts).`, target: blockIdx });
+            }
+          }
+        } else {
+          // Practice short answers
+          if (isModelAnsMissing) {
+            warnings.push({ message: `${contextLabel}: Missing model answer — help students evaluate practice draft results.`, target: blockIdx });
+          }
+        }
+      }
+    };
 
     currentBlocks.forEach((b: any, i: number) => {
-      if (!b.title?.trim()) issues.push({ message: `Block ${i + 1}: title is missing.`, target: i });
+      const blockLabel = `Block ${i + 1} ("${b.title || "Untitled"}")`;
+      if (!b.title?.trim()) {
+        issues.push({ message: `Block ${i + 1}: title is missing or empty.`, target: i });
+      }
+
       if (b.type === "video") {
         videoCount++;
-        if (!b.videoUrl && !b.storagePath) issues.push({ message: `Block ${i + 1}: no video source.`, target: i });
+        if (!b.videoUrl && !b.storagePath) {
+          issues.push({ message: `${blockLabel}: no video source uploaded or selected.`, target: i });
+        }
         const cps: any[] = b.videoCheckpoints || [];
         cps.forEach((cp: any, ci: number) => {
+          const checkpointLabel = `${blockLabel} Checkpoint ${ci + 1} ("${cp.title || "Untitled"}")`;
           const q = cp.questions?.[0];
-          if (!cp.isPractice) {
-            gradedQCount++;
-            if (q?.type === "mc") {
-              if (!q.correctChoiceId) issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: no correct answer.`, target: i });
-              const nonBlank = (q.choices || []).filter((c: any) => isChoiceNonBlank(c));
-              if (nonBlank.length < 2) issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: need ≥2 choices.`, target: i });
-            }
-            if (!q) issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: missing question.`, target: i });
-            if (cp.timestamp < 0) issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: invalid timestamp.`, target: i });
-            if (q?.type === "sa") {
-              aiGradedCount++;
-              if (!(q.rubricCategories?.length >= 1)) {
-                issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: add a rubric category for AI grading.`, target: i });
-              } else {
-                const rubricTotal = (q.rubricCategories as any[]).reduce((s: number, c: any) => s + (Number(c.maxPoints) || 0), 0);
-                if (q.points > 0 && rubricTotal !== q.points) {
-                  issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: rubric total (${rubricTotal} pts) ≠ question points (${q.points} pts).`, target: i });
-                }
-              }
+          
+          if (cp.timestamp === undefined || cp.timestamp < 0) {
+            issues.push({ message: `${checkpointLabel}: invalid point timestamp (${cp.timestamp}s).`, target: i });
+          }
+
+          if (cp.isPractice) {
+            practiceQCount++;
+            if (q) {
+              checkQuestion(q, i, checkpointLabel, true);
             }
           } else {
-            practiceQCount++;
+            gradedQCount++;
+            if (!q) {
+              issues.push({ message: `${checkpointLabel}: question configuration is missing.`, target: i });
+            } else {
+              if (q.type === "sa") aiGradedCount++;
+              checkQuestion(q, i, checkpointLabel, false);
+            }
           }
         });
       } else if (b.type === "reading") {
@@ -844,41 +951,39 @@ export default function LessonsBuilder({
         const hasContent = typeof b.content === "string"
           ? b.content.trim().length > 0
           : !!(b.content?.plainText?.trim() || b.content?.html?.replace(/<[^>]*>/g, "").trim());
-        if (!hasContent) issues.push({ message: `Block ${i + 1}: reading content is empty.`, target: i });
+        if (!hasContent) {
+          issues.push({ message: `${blockLabel}: reading section content is empty.`, target: i });
+        }
       } else if (b.type === "question" && b.singleQuestion) {
-        if (!b.isPractice) {
-          gradedQCount++;
-          const q = b.singleQuestion;
-          const stemOk = typeof q.stem === "string" ? q.stem.trim().length > 0 : !!(q.stem?.plainText?.trim() || q.stem?.html?.replace(/<[^>]*>/g, "").trim());
-          if (!stemOk) issues.push({ message: `Block ${i + 1}: question stem is required.`, target: i });
-          if (q.type === "mc") {
-            if (!q.correctChoiceId) issues.push({ message: `Block ${i + 1}: no correct answer selected.`, target: i });
-            const nonBlank = (q.choices || []).filter((c: any) => isChoiceNonBlank(c));
-            if (nonBlank.length < 2) issues.push({ message: `Block ${i + 1}: need ≥2 answer choices.`, target: i });
-            const blank = (q.choices || []).filter((c: any) => !isChoiceNonBlank(c));
-            if (blank.length > 0) issues.push({ message: `Block ${i + 1}: blank choices not allowed.`, target: i });
-          } else if (q.type === "sa") {
-            aiGradedCount++;
-            if (!(q.rubricCategories?.length >= 1)) {
-              issues.push({ message: `Block ${i + 1}: add a rubric category for AI grading.`, target: i });
-            } else {
-              const rubricTotal = (q.rubricCategories as any[]).reduce((s: number, c: any) => s + (Number(c.maxPoints) || 0), 0);
-              if (q.points > 0 && rubricTotal !== q.points) {
-                issues.push({ message: `Block ${i + 1}: rubric total (${rubricTotal} pts) ≠ question points (${q.points} pts). Adjust categories or points.`, target: i });
-              }
-            }
-            const hasModelAnswer = q.modelAnswer && (
-              typeof q.modelAnswer === "string" ? q.modelAnswer.trim().length > 0 : !!(q.modelAnswer as any).plainText?.trim()
-            );
-            if (!hasModelAnswer) {
-              warnings.push({ message: `Block ${i + 1}: no model answer — AI grading quality may be lower.`, target: i });
-            }
-          }
-        } else {
+        const isPractice = !!b.isPractice;
+        if (isPractice) {
           practiceQCount++;
+          checkQuestion(b.singleQuestion, i, blockLabel, true);
+        } else {
+          gradedQCount++;
+          if (b.singleQuestion.type === "sa") aiGradedCount++;
+          checkQuestion(b.singleQuestion, i, blockLabel, false);
         }
       }
     });
+
+    // Checklist of assignments-level publishing states
+    if (selectedLesson && selectedLesson.id && selectedLesson.id !== "new") {
+      if (!isPublished) {
+        warnings.push({ message: "Unpublished lesson — students cannot view or launch this lesson. Click Publish to release.", target: "setup" });
+      } else {
+        const lessonAssignments = (assignments || []).filter((a: any) => a.lessonId === selectedLesson.id);
+        if (lessonAssignments.length === 0) {
+          warnings.push({ message: "Published but unassigned lesson — assign this lesson to a course so students can register/practice.", target: "setup" });
+        } else {
+          const activeCourseIds = new Set((courses || []).map((c: any) => c.id));
+          const hasUnassignedActiveCourse = lessonAssignments.some((a: any) => !activeCourseIds.has(a.courseId));
+          if (hasUnassignedActiveCourse) {
+            warnings.push({ message: "Assigned lesson with no active course target — assignments link to a course that is missing or archived.", target: "setup" });
+          }
+        }
+      }
+    }
 
     return { issues, warnings, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount };
   };
@@ -1303,6 +1408,126 @@ export default function LessonsBuilder({
             );
           })()}
 
+          {/* Post-publish prompt modal */}
+          {postPublishLessonId && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-lg border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+                <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                  <div className="w-9 h-9 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                    <CheckCircle className="w-5 h-5 text-emerald-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-base">Lesson Published!</h3>
+                    <p className="text-xs text-slate-500">"{title || "Untitled Lesson"}" is now live</p>
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-600 leading-relaxed space-y-2">
+                  <p>
+                    Great work! This lesson plan is now locked and published.
+                  </p>
+                  <p className="font-semibold text-slate-850 bg-amber-50/80 border border-amber-200 p-2.5 rounded">
+                    ⚠️ Note: To make this lesson accessible to students, you must assign it to an active course section.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2 pt-2">
+                  <button
+                    onClick={() => {
+                      setAsgLessonId(postPublishLessonId);
+                      setShowAssignmentForm(true);
+                      setBuilderSubTab("assignments");
+                      setPostPublishLessonId(null);
+                    }}
+                    className="w-full bg-[#0A192F] hover:bg-[#15294b] text-white text-sm py-2.5 rounded font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                  >
+                    <Calendar className="w-4 h-4" />
+                    Assign to Course Section Now
+                  </button>
+                  <button
+                    onClick={() => setPostPublishLessonId(null)}
+                    className="w-full border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm py-2 rounded font-semibold transition cursor-pointer"
+                  >
+                    I'll assign it later
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Assignment Creation Confirmation Modal */}
+          {savedAssignmentConfirm && (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-xl border border-slate-100 shadow-2xl max-w-lg w-full p-6 space-y-4">
+                <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                  <div className="w-10 h-10 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center justify-center shrink-0">
+                    <Calendar className="w-5 h-5 text-indigo-700" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-base">Assignment Configuration Confirmed</h3>
+                    <p className="text-xs text-slate-500">Successfully scheduled for students</p>
+                  </div>
+                </div>
+
+                {/* Details grid */}
+                <div className="space-y-3">
+                  <div className="grid grid-cols-3 gap-2.5 bg-slate-50 border border-slate-150 p-4 rounded-lg text-xs leading-normal">
+                    <span className="font-bold text-slate-550">Lesson Plan:</span>
+                    <span className="font-semibold text-slate-900 col-span-2">{savedAssignmentConfirm.lessonTitle}</span>
+
+                    <span className="font-bold text-slate-550">Target Course:</span>
+                    <span className="font-semibold text-slate-900 col-span-2">{savedAssignmentConfirm.courseName}</span>
+
+                    <span className="font-bold text-slate-550">Section Tag:</span>
+                    <span className="font-semibold text-slate-900 col-span-2">{savedAssignmentConfirm.section || "Universal / All Section Members"}</span>
+                  </div>
+
+                  <div className="bg-amber-50/60 border border-amber-200/60 p-4 rounded-lg space-y-2 text-xs leading-normal text-slate-700">
+                    <div className="font-bold text-amber-800 flex items-center gap-1.5 uppercase tracking-wide text-[10px]">
+                      <Clock className="w-3.5 h-3.5 text-amber-600" />
+                      Section Availability Window
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <span className="text-slate-400 block font-sans text-[9px] uppercase font-bold">Opens / Visible:</span>
+                        <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.opensAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block font-sans text-[9px] uppercase font-bold">Recommended Due Date:</span>
+                        <span className="font-semibold text-slate-850 font-bold">{new Date(savedAssignmentConfirm.dueAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                      </div>
+                    </div>
+                    <div className="pt-1.5 border-t border-amber-200/40 text-[10.5px]">
+                      <span className="font-bold text-amber-850">Hard Close:</span> locked on <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.closesAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>. Retakes are not allowed.
+                    </div>
+                  </div>
+
+                  {/* Feedback summary based on policy defaults */}
+                  <div className="bg-indigo-50/40 border border-indigo-150 p-4 rounded-lg text-xs leading-normal text-slate-700">
+                    <div className="font-bold text-indigo-800 uppercase tracking-wide text-[10px] mb-1.5 flex items-center gap-1.5">
+                      <GraduationCap className="w-3.5 h-3.5" />
+                      Feedback & Student Portal Experience
+                    </div>
+                    <ul className="space-y-1.5 list-disc list-inside text-[11px] text-indigo-950">
+                      <li><strong>Practice Items</strong>: Students receive direct corrective feedback with explanations immediately.</li>
+                      <li><strong>Graded Items</strong>: Choice answers, scores, model responses, and rubrics are hidden until released by review.</li>
+                      <li><strong>Integrity Controls</strong>: Fullscreen strict layout, no scroll bypassing, passive pacing logs active.</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div className="pt-2 flex justify-end">
+                  <button
+                    onClick={() => setSavedAssignmentConfirm(null)}
+                    className="bg-[#0A192F] hover:bg-[#15294b] text-white text-xs font-bold px-5 py-2.5 rounded-lg transition shrink-0 cursor-pointer shadow-xs"
+                  >
+                    Got it, Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Three-column canvas */}
           <div className="flex flex-1 gap-0 mt-3 min-h-0">
 
@@ -1682,19 +1907,25 @@ function ReadinessPanel({
       {/* Critical issues */}
       {issues.length > 0 && (
         <div className="p-4 border-b border-slate-100">
-          <div className="text-[9px] font-bold uppercase tracking-widest text-rose-500 mb-2 flex items-center gap-1">
-            <AlertCircle className="w-3 h-3" /> Must fix (blocks publish)
+          <div className="text-[10px] font-bold uppercase tracking-widest text-rose-600 mb-2.5 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5" /> Must fix (blocks publish)
           </div>
-          <ul className="space-y-1">
+          <ul className="space-y-2">
             {issues.map((issue, i) => (
               <li key={i}>
                 <button
                   type="button"
                   onClick={() => onNavigate(issue.target)}
-                  className="w-full text-left text-[11px] text-rose-700 flex items-start gap-1.5 hover:text-rose-900 hover:bg-rose-50 rounded p-1 transition"
+                  className="w-full text-left text-[11px] text-rose-700 flex flex-col hover:bg-rose-50/50 rounded p-1.5 border border-transparent hover:border-rose-200 transition"
+                  title="Click to navigate and fix this issue immediately"
                 >
-                  <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
-                  <span>{issue.message}</span>
+                  <div className="flex items-start gap-1.5 font-semibold">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-500" />
+                    <span>{issue.message}</span>
+                  </div>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-rose-600 mt-1 ml-5 bg-rose-50 px-1 py-0.5 rounded border border-rose-100 transition">
+                    Fix this issue →
+                  </span>
                 </button>
               </li>
             ))}
@@ -1705,19 +1936,25 @@ function ReadinessPanel({
       {/* Non-critical warnings */}
       {warnings.length > 0 && (
         <div className="p-4 border-b border-slate-100">
-          <div className="text-[9px] font-bold uppercase tracking-widest text-amber-500 mb-2 flex items-center gap-1">
-            <Info className="w-3 h-3" /> Suggestions (won't block publish)
+          <div className="text-[10px] font-bold uppercase tracking-widest text-amber-600 mb-2.5 flex items-center gap-1">
+            <Info className="w-3.5 h-3.5" /> Suggestions (won't block publish)
           </div>
-          <ul className="space-y-1">
+          <ul className="space-y-2">
             {warnings.map((w, i) => (
               <li key={i}>
                 <button
                   type="button"
                   onClick={() => onNavigate(w.target)}
-                  className="w-full text-left text-[11px] text-amber-700 flex items-start gap-1.5 hover:text-amber-900 hover:bg-amber-50 rounded p-1 transition"
+                  className="w-full text-left text-[11px] text-amber-750 flex flex-col hover:bg-amber-50/50 rounded p-1.5 border border-transparent hover:border-amber-200 transition"
+                  title="Click to view and adjust suggestion"
                 >
-                  <Info className="w-3 h-3 shrink-0 mt-0.5" />
-                  <span>{w.message}</span>
+                  <div className="flex items-start gap-1.5 font-semibold">
+                    <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
+                    <span>{w.message}</span>
+                  </div>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-amber-600 mt-1 ml-5 bg-amber-50 px-1 py-0.5 rounded border border-amber-100 transition">
+                    Adjust block →
+                  </span>
                 </button>
               </li>
             ))}
@@ -1726,26 +1963,47 @@ function ReadinessPanel({
       )}
 
       {/* Save status + notes */}
-      <div className="p-4 text-[11px] text-slate-500 space-y-2">
-        <div className="font-bold text-slate-600 text-xs">Save Status</div>
-        {saveStatus === "saved" && <div className="text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Saved successfully</div>}
-        {saveStatus === "saving" && <div className="text-blue-600 flex items-center gap-1"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving…</div>}
-        {saveStatus === "error" && <div className="text-red-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Save failed — check connectivity</div>}
-        {saveStatus === "clean" && isDirty && <div className="text-amber-600">Unsaved changes</div>}
+      <div className="p-4 text-[11px] text-slate-500 space-y-2 border-b border-slate-150">
+        <div className="font-bold text-slate-600 text-xs text-left">Save Status</div>
+        {saveStatus === "saved" && <div className="text-emerald-600 flex items-center gap-1 font-semibold"><CheckCircle className="w-3.5 h-3.5" /> Saved successfully</div>}
+        {saveStatus === "saving" && <div className="text-blue-600 flex items-center gap-1 font-semibold"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving…</div>}
+        {saveStatus === "error" && <div className="text-red-600 flex items-center gap-1 font-semibold"><AlertCircle className="w-3.5 h-3.5" /> Save failed — check connectivity</div>}
+        {saveStatus === "clean" && isDirty && <div className="text-amber-600 font-semibold">Unsaved changes</div>}
         {saveStatus === "clean" && !isDirty && lastSavedAt && <div className="text-slate-400">Last saved: {lastSavedAt.toLocaleTimeString()}</div>}
         {selectedLessonId && selectedLessonId !== "new" && (
-          <div className="text-[10px] font-mono text-slate-400 truncate">ID: {selectedLessonId}</div>
+          <div className="text-[10px] font-mono text-slate-400 truncate text-left">ID: {selectedLessonId}</div>
         )}
         <div className="border-t border-slate-100 pt-2 space-y-1">
-          <div className="text-slate-500 leading-relaxed">
+          <div className="text-slate-500 leading-relaxed text-left">
             <strong className="text-slate-600">Student Preview</strong> hides all teacher-only fields — answer keys, rubrics, AI guidance, and model answers.
           </div>
           {aiGradedCount > 0 && (
-            <div className="text-indigo-600 flex items-start gap-1 leading-relaxed">
+            <div className="text-indigo-600 flex items-start gap-1 leading-relaxed text-left">
               <GraduationCap className="w-3.5 h-3.5 shrink-0 mt-0.5" />
               <span>Teacher review recommended for AI-graded short answers before releasing scores to students.</span>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Student Visibility Preview Guide */}
+      <div className="p-4 bg-slate-50/80 mt-auto space-y-2.5 text-[11px] text-slate-500 leading-normal border-t border-slate-200">
+        <div className="text-[9px] font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1">
+          <Eye className="w-3.5 h-3.5 text-[#0A192F]" /> What Students See (By Mode)
+        </div>
+        <div className="space-y-2 text-[10px] text-left">
+          <div className="flex items-start gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0 mt-1"></span>
+            <span><strong>Practice Mode:</strong> Immediate correct/incorrect results and written explanation shown instantly.</span>
+          </div>
+          <div className="flex items-start gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-650 shrink-0 mt-1"></span>
+            <span><strong>Assessment Mode:</strong> Correct answer and explanation remain hidden until released.</span>
+          </div>
+          <div className="flex items-start gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0 mt-1"></span>
+            <span><strong>Short-Answers:</strong> Answer draft is autosaved; scoring details hold as "Pending Review."</span>
+          </div>
         </div>
       </div>
     </aside>
@@ -1895,7 +2153,7 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-4 text-[11px]">
+                  <div className="flex flex-wrap gap-4 text-[11px] items-center">
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <input type="checkbox" checked={!!cp.isRequired} onChange={(e) => updateCheckpoint(index, cp.id, { isRequired: e.target.checked })} />
                       Required (blocks progress)
@@ -1904,10 +2162,34 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                       <input type="checkbox" checked={!!cp.pauseVideo} onChange={(e) => updateCheckpoint(index, cp.id, { pauseVideo: e.target.checked })} />
                       Pause video
                     </label>
-                    <label className="flex items-center gap-1.5 cursor-pointer" title="Practice: feedback visible to student. Assessment: answer hidden, score recorded for teacher.">
-                      <input type="checkbox" checked={!!cp.isPractice} onChange={(e) => updateCheckpoint(index, cp.id, { isPractice: e.target.checked })} />
-                      {cp.isPractice ? "Practice — feedback shown to student" : "Assessment — answer hidden from student"}
-                    </label>
+                  </div>
+
+                  <div className="w-full mt-2 bg-slate-50 border border-slate-200 rounded p-2.5 space-y-2">
+                    <span className="font-semibold text-slate-600 text-xs block">Grading Mode Selection</span>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className={`border rounded p-2 flex flex-col justify-between cursor-pointer transition ${!cp.isPractice ? "bg-emerald-50/60 border-emerald-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
+                        <div className="flex items-center gap-1.5 font-bold text-emerald-800 text-[11px]">
+                          <input type="radio" name={`cp-mode-${cp.id}`} checked={!cp.isPractice} onChange={() => updateCheckpoint(index, cp.id, { isPractice: false })} />
+                          <span>Assessment Mode</span>
+                        </div>
+                        <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
+                          <li>Students do not receive score or feedback immediately</li>
+                          <li>Score is securely recorded for teacher review</li>
+                          <li>Appropriate for graded checkpoints</li>
+                        </ul>
+                      </label>
+                      <label className={`border rounded p-2 flex flex-col justify-between cursor-pointer transition ${cp.isPractice ? "bg-teal-50/60 border-teal-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
+                        <div className="flex items-center gap-1.5 font-bold text-teal-800 text-[11px]">
+                          <input type="radio" name={`cp-mode-${cp.id}`} checked={!!cp.isPractice} onChange={() => updateCheckpoint(index, cp.id, { isPractice: true })} />
+                          <span>Practice Mode</span>
+                        </div>
+                        <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
+                          <li>Students receive feedback immediately</li>
+                          <li>Score is recorded as practice</li>
+                          <li>Does not count toward assessment score</li>
+                        </ul>
+                      </label>
+                    </div>
                   </div>
 
                   {cp.questions?.[0] ? (
@@ -1962,21 +2244,32 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                 </select>
               </div>
 
-              <div>
-                <label className="font-semibold text-slate-600 block mb-1">Mode</label>
-                <select
-                  value={block.isPractice ? "true" : "false"}
-                  onChange={(e) => onBlockChange(index, "isPractice", e.target.value === "true")}
-                  className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-slate-800 focus:outline-none"
-                >
-                  <option value="false">Assessment — answer key hidden, score recorded for review</option>
-                  <option value="true">Practice — feedback shown to student immediately</option>
-                </select>
-                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                  {block.isPractice
-                    ? "Students see whether they're correct. Feedback and score are visible. Use for learning checks."
-                    : "Answer keys and explanations are hidden. Score is recorded for teacher review. Use for formal assessment."}
-                </p>
+              <div className="col-span-2">
+                <span className="font-semibold text-slate-600 text-xs block mb-1">Grading Mode Selection</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className={`border rounded p-2.5 flex flex-col justify-between cursor-pointer transition ${!block.isPractice ? "bg-emerald-50/60 border-emerald-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
+                    <div className="flex items-center gap-1.5 font-bold text-emerald-800 text-[11px]">
+                      <input type="radio" name={`block-mode-${index}`} checked={!block.isPractice} onChange={() => onBlockChange(index, "isPractice", false)} />
+                      <span>Assessment Mode</span>
+                    </div>
+                    <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
+                      <li>Students do not receive score or correctness feedback immediately</li>
+                      <li>Score is securely recorded in the teacher's review queue</li>
+                      <li>Appropriate for graded assessments</li>
+                    </ul>
+                  </label>
+                  <label className={`border rounded p-2.5 flex flex-col justify-between cursor-pointer transition ${block.isPractice ? "bg-teal-50/60 border-teal-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
+                    <div className="flex items-center gap-1.5 font-bold text-teal-800 text-[11px]">
+                      <input type="radio" name={`block-mode-${index}`} checked={!!block.isPractice} onChange={() => onBlockChange(index, "isPractice", true)} />
+                      <span>Practice Mode</span>
+                    </div>
+                    <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
+                      <li>Students receive immediate results & corrective feedback</li>
+                      <li>Score is recorded separately as practice data</li>
+                      <li>Does not count toward final assessment grades</li>
+                    </ul>
+                  </label>
+                </div>
               </div>
             </div>
 

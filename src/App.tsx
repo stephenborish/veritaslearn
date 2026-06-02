@@ -53,6 +53,7 @@ export default function App() {
   const [activeDossier, setActiveDossier] = useState<{ studentId: string; lessonId: string } | null>(null);
   const [activeStudentAttempt, setActiveStudentAttempt] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+  const [joinFeedback, setJoinFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   // Listen to Firebase Auth state change dynamically (Durable Auth Persistence)
   useEffect(() => {
@@ -274,14 +275,33 @@ export default function App() {
               },
               body: JSON.stringify({ joinCode: pendingCode }),
             });
+            const data = await res.json().catch(() => ({}));
             if (res.ok) {
+              const name = [data.courseName, data.sectionName].filter(Boolean).join(" — ");
+              setJoinFeedback({
+                type: "success",
+                message: `Successfully joined ${name || "your new course"}.`
+              });
               // Refresh to reflect new enrollment in the student dashboard
               fetchLmsPayload(user, token);
             } else {
-              const data = await res.json().catch(() => ({}));
+              let errMsg = "Course code join failed. Please check the code or contact your teacher.";
+              if (data.code === "ALREADY_ENROLLED") errMsg = "You are already enrolled in this course.";
+              else if (data.code === "DOMAIN_MISMATCH") errMsg = "Please use your Malvern Prep Google account to join.";
+              else if (data.code === "INVALID_CODE") errMsg = "Course code was not found. Please verify it.";
+              else if (data.code === "CODE_DISABLED") errMsg = "This course join code is disabled.";
+              
+              setJoinFeedback({
+                type: "error",
+                message: errMsg
+              });
               console.warn("VERITAS Learn - Course code join failed:", data.error || res.status);
             }
           } catch (e) {
+            setJoinFeedback({
+              type: "error",
+              message: "Network error trying to join course automatically. Please join manually."
+            });
             console.warn("VERITAS Learn - Course code join request failed:", e);
           }
         }
@@ -521,6 +541,26 @@ export default function App() {
           </div>
         </nav>
         <div className="flex-1 overflow-y-auto">
+          {joinFeedback && (
+            <div className="max-w-7xl mx-auto px-6 pt-6">
+              <div className={`p-4 rounded-lg flex items-center justify-between border shadow-sm ${
+                joinFeedback.type === "success"
+                  ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                  : "bg-red-50 text-red-800 border-red-200"
+              }`}>
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${joinFeedback.type === "success" ? "bg-emerald-500" : "bg-red-500"}`} />
+                  <span className="text-sm font-medium leading-relaxed">{joinFeedback.message}</span>
+                </div>
+                <button
+                  onClick={() => setJoinFeedback(null)}
+                  className="text-slate-400 hover:text-slate-600 font-bold text-xs p-1 cursor-pointer transition-colors"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
           <PracticeDashboard
             assignments={assignments}
             attempts={attempts}

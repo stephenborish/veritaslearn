@@ -174,7 +174,9 @@ export default function AIReview({ students, lessons, blocks, attempts, response
               } else {
                 const ck = block.videoCheckpoints?.find((c: any) => c.id === res.checkpointId);
                 if (ck) {
-                  question = ck.singleQuestion || ck.questionPool?.questions?.find((qu: any) => qu.id === res.questionId);
+                  question = (ck.questions || []).find((qu: any) => qu.id === res.questionId) ||
+                             ck.singleQuestion || 
+                             ck.questionPool?.questions?.find((qu: any) => qu.id === res.questionId);
                 }
               }
             }
