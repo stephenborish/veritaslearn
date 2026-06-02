@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock,
   ArrowUp, ArrowDown, BookOpen, Calendar, Eye, Play, CheckCircle,
-  ChevronRight, ChevronLeft, HelpCircle
+  ChevronRight, ChevronLeft, HelpCircle, Info, Send, GraduationCap,
+  BarChart2, Layers
 } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
@@ -97,6 +98,8 @@ export default function LessonsBuilder({
   const [isDirty, setIsDirty] = useState(false);
   const [initialSnapshotStr, setInitialSnapshotStr] = useState("");
   const [saveError, setSaveError] = useState<string[] | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [showPublishConfirm, setShowPublishConfirm] = useState(false);
 
   const [currentBlocks, setCurrentBlocks] = useState<any[]>([]);
 
@@ -477,6 +480,7 @@ export default function LessonsBuilder({
     try {
       const savedResult = await onSaveLesson(payload);
       setSaveStatus("saved");
+      setLastSavedAt(new Date());
       setTimeout(() => setSaveStatus("clean"), 3000);
 
       // Clear the old draft key
@@ -538,9 +542,20 @@ export default function LessonsBuilder({
     await saveWithPublishedStatus(false);
   };
 
-  const handlePublishLive = async () => {
+  const handlePublishLive = () => {
+    setSaveError(null);
+    const { issues } = computeReadiness();
+    if (issues.length > 0) {
+      setSaveError(issues.map((i) => i.message));
+      setSaveStatus("error");
+      return;
+    }
+    setShowPublishConfirm(true);
+  };
+
+  const handleConfirmPublish = async () => {
+    setShowPublishConfirm(false);
     await saveWithPublishedStatus(true);
-    // NOTE: do NOT set isPublished to true on failure — the save function handles this
   };
 
   const handleAssignAndLaunch = async () => {
@@ -593,9 +608,18 @@ export default function LessonsBuilder({
   // ---- Readiness computation ----
   type ReadinessIssue = { message: string; target: "setup" | number };
 
-  const computeReadiness = (): { issues: ReadinessIssue[]; gradedQCount: number; practiceQCount: number; videoCount: number; readingCount: number } => {
+  const computeReadiness = (): {
+    issues: ReadinessIssue[];
+    warnings: ReadinessIssue[];
+    gradedQCount: number;
+    practiceQCount: number;
+    videoCount: number;
+    readingCount: number;
+    aiGradedCount: number;
+  } => {
     const issues: ReadinessIssue[] = [];
-    let gradedQCount = 0, practiceQCount = 0, videoCount = 0, readingCount = 0;
+    const warnings: ReadinessIssue[] = [];
+    let gradedQCount = 0, practiceQCount = 0, videoCount = 0, readingCount = 0, aiGradedCount = 0;
 
     if (!title.trim()) issues.push({ message: "Lesson title is required.", target: "setup" });
     if (currentBlocks.length === 0) issues.push({ message: "Add at least one block.", target: "setup" });
@@ -617,6 +641,17 @@ export default function LessonsBuilder({
             }
             if (!q) issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: missing question.`, target: i });
             if (cp.timestamp < 0) issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: invalid timestamp.`, target: i });
+            if (q?.type === "sa") {
+              aiGradedCount++;
+              if (!(q.rubricCategories?.length >= 1)) {
+                issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: add a rubric category for AI grading.`, target: i });
+              } else {
+                const rubricTotal = (q.rubricCategories as any[]).reduce((s: number, c: any) => s + (Number(c.maxPoints) || 0), 0);
+                if (q.points > 0 && rubricTotal !== q.points) {
+                  issues.push({ message: `Block ${i + 1} checkpoint ${ci + 1}: rubric total (${rubricTotal} pts) ≠ question points (${q.points} pts).`, target: i });
+                }
+              }
+            }
           } else {
             practiceQCount++;
           }
@@ -640,7 +675,21 @@ export default function LessonsBuilder({
             const blank = (q.choices || []).filter((c: any) => !isChoiceNonBlank(c));
             if (blank.length > 0) issues.push({ message: `Block ${i + 1}: blank choices not allowed.`, target: i });
           } else if (q.type === "sa") {
-            if (!(q.rubricCategories?.length >= 1)) issues.push({ message: `Block ${i + 1}: add a rubric category for grading.`, target: i });
+            aiGradedCount++;
+            if (!(q.rubricCategories?.length >= 1)) {
+              issues.push({ message: `Block ${i + 1}: add a rubric category for AI grading.`, target: i });
+            } else {
+              const rubricTotal = (q.rubricCategories as any[]).reduce((s: number, c: any) => s + (Number(c.maxPoints) || 0), 0);
+              if (q.points > 0 && rubricTotal !== q.points) {
+                issues.push({ message: `Block ${i + 1}: rubric total (${rubricTotal} pts) ≠ question points (${q.points} pts). Adjust categories or points.`, target: i });
+              }
+            }
+            const hasModelAnswer = q.modelAnswer && (
+              typeof q.modelAnswer === "string" ? q.modelAnswer.trim().length > 0 : !!(q.modelAnswer as any).plainText?.trim()
+            );
+            if (!hasModelAnswer) {
+              warnings.push({ message: `Block ${i + 1}: no model answer — AI grading quality may be lower.`, target: i });
+            }
           }
         } else {
           practiceQCount++;
@@ -648,7 +697,7 @@ export default function LessonsBuilder({
       }
     });
 
-    return { issues, gradedQCount, practiceQCount, videoCount, readingCount };
+    return { issues, warnings, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount };
   };
 
   function isChoiceNonBlank(c: any): boolean {
@@ -874,15 +923,41 @@ export default function LessonsBuilder({
             <div className="flex items-center gap-2 flex-wrap min-w-0">
               <BookOpen className="w-4 h-4 text-[#0A192F] shrink-0" />
               <span className="font-bold text-slate-800 text-sm truncate max-w-xs">{title || "Untitled Lesson"}</span>
-              <span className={`text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 ${isPublished ? "bg-emerald-100 text-emerald-800 border border-emerald-200" : "bg-slate-100 text-slate-600 border border-slate-200"}`}>
-                {isPublished ? "Published" : "Draft"}
-              </span>
+              {/* Derived status badge */}
+              {(() => {
+                const lessonAsgs = assignments.filter((a: any) => a.lessonId === selectedLesson?.id && selectedLesson?.id !== "new");
+                const now = new Date().toISOString();
+                if (!isPublished) {
+                  return (
+                    <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-slate-100 text-slate-600 border border-slate-200">
+                      {isDirty ? "Unsaved changes" : "Draft"}
+                    </span>
+                  );
+                }
+                if (lessonAsgs.length === 0) {
+                  return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-emerald-50 text-emerald-700 border border-emerald-200">Published · Not assigned</span>;
+                }
+                const active = lessonAsgs.some((a: any) => now >= a.opensAt && now <= (a.closesAt || a.dueAt));
+                if (active) return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-green-100 text-green-800 border border-green-200 animate-pulse">● Active</span>;
+                const upcoming = lessonAsgs.some((a: any) => now < a.opensAt);
+                if (upcoming) return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-blue-50 text-blue-700 border border-blue-200">Assigned</span>;
+                return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-slate-100 text-slate-500 border border-slate-200">Closed</span>;
+              })()}
+              {/* Save state indicator */}
               <span className="text-[11px] font-medium flex items-center gap-1 shrink-0">
                 {saveStatus === "saving" && <span className="text-blue-600 flex items-center gap-1"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving…</span>}
                 {saveStatus === "saved" && <span className="text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Saved</span>}
                 {saveStatus === "error" && <span className="text-red-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Save failed</span>}
-                {saveStatus === "clean" && isDirty && <span className="text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5 animate-pulse" /> Unsaved</span>}
-                {saveStatus === "clean" && !isDirty && <span className="text-slate-400 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Saved</span>}
+                {saveStatus === "clean" && isDirty && <span className="text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5 animate-pulse" /> Unsaved changes</span>}
+                {saveStatus === "clean" && !isDirty && lastSavedAt && (
+                  <span className="text-slate-400 flex items-center gap-1">
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    Saved {formatRelativeTime(lastSavedAt)}
+                  </span>
+                )}
+                {saveStatus === "clean" && !isDirty && !lastSavedAt && (
+                  <span className="text-slate-400 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> No changes</span>
+                )}
               </span>
             </div>
 
@@ -893,11 +968,15 @@ export default function LessonsBuilder({
               <button onClick={handleSaveAsDraft} disabled={saveStatus === "saving"} className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold px-2.5 py-1.5 rounded flex items-center gap-1 transition cursor-pointer shadow-sm">
                 <Save className="w-3.5 h-3.5" /> Save Draft
               </button>
-              <button onClick={handlePublishLive} disabled={saveStatus === "saving"} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-2.5 py-1.5 rounded transition cursor-pointer shadow-sm">
-                Publish Live
+              <button
+                onClick={handlePublishLive}
+                disabled={saveStatus === "saving"}
+                className={`text-white text-xs font-bold px-2.5 py-1.5 rounded transition cursor-pointer shadow-sm ${isPublished ? "bg-emerald-500 hover:bg-emerald-600" : "bg-emerald-600 hover:bg-emerald-700"}`}
+              >
+                {isPublished ? "Re-Publish" : "Publish Lesson"}
               </button>
               <button onClick={handleAssignAndLaunch} disabled={saveStatus === "saving"} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-2.5 py-1.5 rounded flex items-center gap-1 transition cursor-pointer shadow-sm">
-                <Calendar className="w-3.5 h-3.5" /> Assign & Launch
+                <Calendar className="w-3.5 h-3.5" /> Assign
               </button>
               <button
                 onClick={handlePreviewAsStudent}
@@ -923,21 +1002,146 @@ export default function LessonsBuilder({
             </div>
           )}
 
+          {/* Publish confirmation modal */}
+          {showPublishConfirm && (() => {
+            const r = computeReadiness();
+            return (
+              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-lg border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+                  <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+                    <div className="w-9 h-9 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                      <Send className="w-4 h-4 text-emerald-700" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-base">Publish this lesson?</h3>
+                      <p className="text-xs text-slate-500">"{title || "Untitled Lesson"}"</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-2">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">What students will see</div>
+                    <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs text-slate-600">
+                      <span>Content blocks</span><span className="font-bold text-slate-800">{r.gradedQCount + r.practiceQCount > 0 ? currentBlocks.length : currentBlocks.length}</span>
+                      <span>Practice questions</span><span className="font-bold text-slate-800">{r.practiceQCount}</span>
+                      <span>Assessment questions</span><span className="font-bold text-slate-800">{r.gradedQCount}</span>
+                      {r.aiGradedCount > 0 && <><span>AI-graded (SA)</span><span className="font-bold text-indigo-700">{r.aiGradedCount}</span></>}
+                    </div>
+                  </div>
+
+                  {r.warnings.length > 0 && (
+                    <div className="bg-amber-50 border border-amber-200 rounded p-3 space-y-1">
+                      <div className="text-[10px] font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1">
+                        <Info className="w-3 h-3" /> Suggestions
+                      </div>
+                      {r.warnings.map((w, i) => (
+                        <div key={i} className="text-xs text-amber-700 pl-3">• {w.message}</div>
+                      ))}
+                    </div>
+                  )}
+
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    After publishing, this lesson can be assigned to a course. Students cannot access it until it's assigned and the availability window opens.
+                  </p>
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={() => setShowPublishConfirm(false)}
+                      className="flex-1 border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm py-2.5 rounded font-semibold transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleConfirmPublish}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm py-2.5 rounded font-bold transition cursor-pointer"
+                    >
+                      Publish Lesson
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Three-column canvas */}
           <div className="flex flex-1 gap-0 mt-3 min-h-0">
 
             {/* LEFT RAIL */}
             <aside className="w-64 shrink-0 border border-slate-200 rounded-l-lg bg-white flex flex-col overflow-y-auto mr-3">
-              {/* Workflow steps */}
-              <div className="border-b border-slate-100 p-3">
-                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Workflow</div>
-                <button
-                  onClick={() => setActiveWorkspace("setup")}
-                  className={`w-full flex items-center gap-2 px-2 py-2 rounded text-xs font-semibold transition ${activeWorkspace === "setup" ? "bg-[#0A192F] text-white" : "text-slate-600 hover:bg-slate-50"}`}
-                >
-                  <Settings className="w-3.5 h-3.5 shrink-0" /> Lesson Setup
-                </button>
-              </div>
+              {/* Workflow stages */}
+              {(() => {
+                const r = computeReadiness();
+                const setupDone = !!title.trim();
+                const contentDone = currentBlocks.length > 0;
+                const questionsDone = contentDone && r.issues.length === 0;
+                const lessonAsgs = assignments.filter((a: any) => a.lessonId === selectedLesson?.id && selectedLesson?.id !== "new");
+
+                const stages = [
+                  {
+                    key: "setup", label: "Lesson Setup", icon: Settings,
+                    done: setupDone, action: () => setActiveWorkspace("setup"),
+                    active: activeWorkspace === "setup"
+                  },
+                  {
+                    key: "content", label: "Build Content", icon: Layers,
+                    done: contentDone, action: () => setActiveWorkspace(currentBlocks.length > 0 ? 0 : "setup"),
+                    active: typeof activeWorkspace === "number" && currentBlocks[activeWorkspace]?.type !== "question",
+                    note: "Add blocks below"
+                  },
+                  {
+                    key: "questions", label: "Questions & Rubrics", icon: HelpCircle,
+                    done: questionsDone, action: () => {
+                      const qi = currentBlocks.findIndex((b: any) => b.type === "question");
+                      if (qi >= 0) setActiveWorkspace(qi);
+                    },
+                    active: typeof activeWorkspace === "number" && currentBlocks[activeWorkspace]?.type === "question",
+                    note: r.issues.length > 0 ? `${r.issues.length} issue${r.issues.length !== 1 ? "s" : ""}` : undefined
+                  },
+                  {
+                    key: "preview", label: "Preview as Student", icon: Eye,
+                    done: false, action: handlePreviewAsStudent, active: false,
+                    note: isDirty ? "Saves first" : undefined
+                  },
+                  {
+                    key: "publish", label: "Publish", icon: Send,
+                    done: isPublished, action: handlePublishLive, active: false,
+                    note: isPublished ? "Published" : questionsDone ? "Ready" : "Fix issues first"
+                  },
+                  {
+                    key: "assign", label: "Assign to Course", icon: Calendar,
+                    done: lessonAsgs.length > 0, action: handleAssignAndLaunch, active: false,
+                    note: !isPublished ? "Publish first" : lessonAsgs.length > 0 ? `${lessonAsgs.length} active` : undefined
+                  },
+                ];
+
+                return (
+                  <div className="border-b border-slate-100 p-3 space-y-0.5">
+                    <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Workflow</div>
+                    {stages.map((stage) => {
+                      const Icon = stage.icon;
+                      return (
+                        <button
+                          key={stage.key}
+                          onClick={stage.action}
+                          className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-[11px] font-semibold transition text-left ${stage.active ? "bg-[#0A192F] text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                        >
+                          <span className={`shrink-0 w-4 h-4 rounded-full flex items-center justify-center ${stage.done ? "bg-emerald-500" : stage.active ? "bg-white/20" : "bg-slate-100"}`}>
+                            {stage.done
+                              ? <CheckCircle className="w-3 h-3 text-white" />
+                              : <Icon className={`w-2.5 h-2.5 ${stage.active ? "text-white" : "text-slate-400"}`} />
+                            }
+                          </span>
+                          <span className="flex-1 truncate">{stage.label}</span>
+                          {stage.note && !stage.active && (
+                            <span className={`text-[9px] font-bold uppercase shrink-0 ${stage.note.includes("issue") || stage.note === "Fix issues first" || stage.note === "Publish first" ? "text-amber-500" : "text-slate-400"}`}>
+                              {stage.note}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
 
               {/* Block sequence */}
               <div className="flex-1 p-3 space-y-1 overflow-y-auto">
@@ -1116,18 +1320,27 @@ export default function LessonsBuilder({
             </main>
 
             {/* RIGHT READINESS PANEL */}
-            <ReadinessPanel
-              issues={computeReadiness().issues}
-              gradedQCount={computeReadiness().gradedQCount}
-              practiceQCount={computeReadiness().practiceQCount}
-              videoCount={computeReadiness().videoCount}
-              readingCount={computeReadiness().readingCount}
-              totalBlocks={currentBlocks.length}
-              saveStatus={saveStatus}
-              isDirty={isDirty}
-              selectedLessonId={selectedLesson?.id}
-              onNavigate={setActiveWorkspace}
-            />
+            {(() => {
+              const r = computeReadiness();
+              return (
+                <ReadinessPanel
+                  issues={r.issues}
+                  warnings={r.warnings}
+                  gradedQCount={r.gradedQCount}
+                  practiceQCount={r.practiceQCount}
+                  videoCount={r.videoCount}
+                  readingCount={r.readingCount}
+                  aiGradedCount={r.aiGradedCount}
+                  totalBlocks={currentBlocks.length}
+                  saveStatus={saveStatus}
+                  isDirty={isDirty}
+                  lastSavedAt={lastSavedAt}
+                  selectedLessonId={selectedLesson?.id}
+                  isPublished={isPublished}
+                  onNavigate={setActiveWorkspace}
+                />
+              );
+            })()}
           </div>
         </div>
       )}
@@ -1136,30 +1349,52 @@ export default function LessonsBuilder({
 }
 
 // =====================================================
+// Helpers
+// =====================================================
+
+function formatRelativeTime(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 10) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} min ago`;
+  return date.toLocaleTimeString();
+}
+
+// =====================================================
 // Sub-components
 // =====================================================
 
 interface ReadinessPanelProps {
   issues: Array<{ message: string; target: "setup" | number }>;
+  warnings: Array<{ message: string; target: "setup" | number }>;
   gradedQCount: number;
   practiceQCount: number;
   videoCount: number;
   readingCount: number;
+  aiGradedCount: number;
   totalBlocks: number;
   saveStatus: string;
   isDirty: boolean;
+  lastSavedAt: Date | null;
   selectedLessonId: string | undefined;
+  isPublished: boolean;
   onNavigate: (target: "setup" | number) => void;
 }
 
-function ReadinessPanel({ issues, gradedQCount, practiceQCount, videoCount, readingCount, totalBlocks, saveStatus, isDirty, selectedLessonId, onNavigate }: ReadinessPanelProps) {
+function ReadinessPanel({
+  issues, warnings, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount,
+  totalBlocks, saveStatus, isDirty, lastSavedAt, selectedLessonId, isPublished, onNavigate
+}: ReadinessPanelProps) {
   const canPublish = issues.length === 0;
   return (
     <aside className="w-72 shrink-0 border border-slate-200 rounded-r-lg bg-white flex flex-col overflow-y-auto ml-3">
+      {/* Summary stats */}
       <div className="p-4 border-b border-slate-100">
         <div className="flex items-center gap-2 mb-3">
-          <CheckCircle className="w-4 h-4 text-emerald-600" />
-          <span className="font-bold text-xs uppercase tracking-wider text-slate-800">Publish Readiness</span>
+          <BarChart2 className="w-4 h-4 text-slate-500" />
+          <span className="font-bold text-xs uppercase tracking-wider text-slate-800">Lesson Summary</span>
         </div>
 
         <div className="grid grid-cols-2 gap-2 text-[11px] mb-3">
@@ -1169,12 +1404,18 @@ function ReadinessPanel({ issues, gradedQCount, practiceQCount, videoCount, read
           </div>
           <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
             <div className="font-bold text-slate-800 text-base">{gradedQCount}</div>
-            <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Graded Qs</div>
+            <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Assessment Qs</div>
           </div>
           {practiceQCount > 0 && (
             <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
               <div className="font-bold text-slate-800 text-base">{practiceQCount}</div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Practice</div>
+              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Practice Qs</div>
+            </div>
+          )}
+          {aiGradedCount > 0 && (
+            <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
+              <div className="font-bold text-indigo-700 text-base">{aiGradedCount}</div>
+              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">AI-Graded SA</div>
             </div>
           )}
           {videoCount > 0 && (
@@ -1185,18 +1426,24 @@ function ReadinessPanel({ issues, gradedQCount, practiceQCount, videoCount, read
           )}
         </div>
 
-        <div className={`rounded p-2 flex items-center gap-2 ${canPublish ? "bg-emerald-100/60 text-emerald-800" : "bg-amber-50 text-amber-800 border border-amber-200"}`}>
-          {canPublish ? (
+        {/* Publish readiness badge */}
+        <div className={`rounded p-2 flex items-center gap-2 ${canPublish && isPublished ? "bg-emerald-100/60 text-emerald-800" : canPublish ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-800 border border-amber-200"}`}>
+          {canPublish && isPublished ? (
+            <><CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" /><span className="text-[11px] font-bold">Published</span></>
+          ) : canPublish ? (
             <><CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" /><span className="text-[11px] font-bold">Ready to publish</span></>
           ) : (
-            <><AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" /><span className="text-[11px] font-bold">{issues.length} issue{issues.length !== 1 ? "s" : ""} to fix</span></>
+            <><AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" /><span className="text-[11px] font-bold">{issues.length} issue{issues.length !== 1 ? "s" : ""} to fix before publishing</span></>
           )}
         </div>
       </div>
 
+      {/* Critical issues */}
       {issues.length > 0 && (
         <div className="p-4 border-b border-slate-100">
-          <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Issues (click to navigate)</div>
+          <div className="text-[9px] font-bold uppercase tracking-widest text-rose-500 mb-2 flex items-center gap-1">
+            <AlertCircle className="w-3 h-3" /> Must fix (blocks publish)
+          </div>
           <ul className="space-y-1">
             {issues.map((issue, i) => (
               <li key={i}>
@@ -1214,18 +1461,50 @@ function ReadinessPanel({ issues, gradedQCount, practiceQCount, videoCount, read
         </div>
       )}
 
+      {/* Non-critical warnings */}
+      {warnings.length > 0 && (
+        <div className="p-4 border-b border-slate-100">
+          <div className="text-[9px] font-bold uppercase tracking-widest text-amber-500 mb-2 flex items-center gap-1">
+            <Info className="w-3 h-3" /> Suggestions (won't block publish)
+          </div>
+          <ul className="space-y-1">
+            {warnings.map((w, i) => (
+              <li key={i}>
+                <button
+                  type="button"
+                  onClick={() => onNavigate(w.target)}
+                  className="w-full text-left text-[11px] text-amber-700 flex items-start gap-1.5 hover:text-amber-900 hover:bg-amber-50 rounded p-1 transition"
+                >
+                  <Info className="w-3 h-3 shrink-0 mt-0.5" />
+                  <span>{w.message}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Save status + notes */}
       <div className="p-4 text-[11px] text-slate-500 space-y-2">
         <div className="font-bold text-slate-600 text-xs">Save Status</div>
-        {saveStatus === "saved" && <div className="text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Last save successful</div>}
-        {saveStatus === "saving" && <div className="text-blue-600">Saving…</div>}
-        {saveStatus === "error" && <div className="text-red-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Save failed</div>}
-        {isDirty && <div className="text-amber-600">Unsaved changes present</div>}
+        {saveStatus === "saved" && <div className="text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Saved successfully</div>}
+        {saveStatus === "saving" && <div className="text-blue-600 flex items-center gap-1"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving…</div>}
+        {saveStatus === "error" && <div className="text-red-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Save failed — check connectivity</div>}
+        {saveStatus === "clean" && isDirty && <div className="text-amber-600">Unsaved changes</div>}
+        {saveStatus === "clean" && !isDirty && lastSavedAt && <div className="text-slate-400">Last saved: {lastSavedAt.toLocaleTimeString()}</div>}
         {selectedLessonId && selectedLessonId !== "new" && (
           <div className="text-[10px] font-mono text-slate-400 truncate">ID: {selectedLessonId}</div>
         )}
-
-        <div className="border-t border-slate-100 pt-2">
-          <strong className="text-slate-600">Student Preview</strong> hides all teacher-only fields (answer keys, rubrics, AI guidance).
+        <div className="border-t border-slate-100 pt-2 space-y-1">
+          <div className="text-slate-500 leading-relaxed">
+            <strong className="text-slate-600">Student Preview</strong> hides all teacher-only fields — answer keys, rubrics, AI guidance, and model answers.
+          </div>
+          {aiGradedCount > 0 && (
+            <div className="text-indigo-600 flex items-start gap-1 leading-relaxed">
+              <GraduationCap className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>Teacher review recommended for AI-graded short answers before releasing scores to students.</span>
+            </div>
+          )}
         </div>
       </div>
     </aside>
@@ -1256,16 +1535,32 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
   return (
     <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm">
       {/* Block header */}
-      <div className={`px-5 py-3 border-b border-slate-200 flex items-center justify-between ${block.type === "video" ? "bg-blue-50" : block.type === "reading" ? "bg-purple-50" : "bg-emerald-50"}`}>
+      <div className={`px-5 py-3 border-b border-slate-200 flex items-center justify-between ${block.type === "video" ? "bg-blue-50" : block.type === "reading" ? "bg-purple-50" : block.isPractice ? "bg-teal-50" : "bg-emerald-50"}`}>
         <div className="flex items-center gap-2">
           <span className="font-mono text-[10px] text-slate-400">#{index + 1}</span>
-          <span className={`text-xs font-bold uppercase tracking-wider ${block.type === "video" ? "text-blue-700" : block.type === "reading" ? "text-purple-700" : "text-emerald-700"}`}>{typeLabel}</span>
+          <span className={`text-xs font-bold uppercase tracking-wider ${block.type === "video" ? "text-blue-700" : block.type === "reading" ? "text-purple-700" : block.isPractice ? "text-teal-700" : "text-emerald-700"}`}>{typeLabel}</span>
         </div>
-        <div className="text-[10px] text-slate-500">
-          {block.type === "video" && (restrictSeeking ? "Seeking Restricted" : "Open Seeking")}
-          {block.type === "reading" && "Acknowledgement Required"}
-          {block.type === "question" && (block.isPractice ? "Practice — Feedback Revealed" : "Graded — Keys Hidden")}
-        </div>
+        {block.type === "question" && (
+          <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${block.isPractice ? "bg-teal-100 text-teal-800 border border-teal-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200"}`}>
+            {block.isPractice ? (
+              <>
+                <Eye className="w-3 h-3" />
+                Practice — feedback visible to student
+              </>
+            ) : (
+              <>
+                <GraduationCap className="w-3 h-3" />
+                Assessment — answer key hidden from student
+              </>
+            )}
+          </div>
+        )}
+        {block.type !== "question" && (
+          <div className="text-[10px] text-slate-500">
+            {block.type === "video" && (restrictSeeking ? "Seeking Restricted" : "Open Seeking")}
+            {block.type === "reading" && "Acknowledgement Required"}
+          </div>
+        )}
       </div>
 
       <div className="p-5 space-y-5 text-xs">
@@ -1368,9 +1663,9 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                       <input type="checkbox" checked={!!cp.pauseVideo} onChange={(e) => updateCheckpoint(index, cp.id, { pauseVideo: e.target.checked })} />
                       Pause video
                     </label>
-                    <label className="flex items-center gap-1.5 cursor-pointer">
+                    <label className="flex items-center gap-1.5 cursor-pointer" title="Practice: feedback visible to student. Assessment: answer hidden, score recorded for teacher.">
                       <input type="checkbox" checked={!!cp.isPractice} onChange={(e) => updateCheckpoint(index, cp.id, { isPractice: e.target.checked })} />
-                      Practice (reveals feedback)
+                      {cp.isPractice ? "Practice — feedback shown to student" : "Assessment — answer hidden from student"}
                     </label>
                   </div>
 
@@ -1427,15 +1722,20 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
               </div>
 
               <div>
-                <label className="font-semibold text-slate-600 block mb-1">Scoring Mode</label>
+                <label className="font-semibold text-slate-600 block mb-1">Mode</label>
                 <select
                   value={block.isPractice ? "true" : "false"}
                   onChange={(e) => onBlockChange(index, "isPractice", e.target.value === "true")}
                   className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-slate-800 focus:outline-none"
                 >
-                  <option value="false">Graded (keeps answer keys secret)</option>
-                  <option value="true">Practice (reveals feedback instantly)</option>
+                  <option value="false">Assessment — answer key hidden, score recorded for review</option>
+                  <option value="true">Practice — feedback shown to student immediately</option>
                 </select>
+                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                  {block.isPractice
+                    ? "Students see whether they're correct. Feedback and score are visible. Use for learning checks."
+                    : "Answer keys and explanations are hidden. Score is recorded for teacher review. Use for formal assessment."}
+                </p>
               </div>
             </div>
 
