@@ -195,50 +195,123 @@ export function choiceTextById(question: any, choiceId: any): string | undefined
   return typeof t === "string" ? t : undefined;
 }
 
-/** Sanitize a StudentResponse for student view to prevent any answer/feedback leaks. */
-export function sanitizeResponseForStudent(r: any): any {
-  if (!r || typeof r !== "object") return r;
-  const safe = { ...r };
-  
-  // Safe legacy fallbacks
-  const gradingMode = safe.gradingMode || safe.gradebookCategory || "assessment";
-  const isPractice = gradingMode === "practice";
-
-  // Default unknown feedbackVisibility to "teacher_only"
-  const feedbackVis = safe.feedbackVisibility || "teacher_only";
-
-  // Practice responses may expose feedback only when feedbackVisibility is student_visible
-  const feedbackAllowed = isPractice && (feedbackVis === "student_visible" || feedbackVis === "immediate");
-
-  if (!feedbackAllowed) {
-    // Hide scores, correctness, evaluations, feedbacks, and AI grading records
-    delete safe.isCorrect;
-    delete safe.score;
-    delete safe.pointsEarned;
-    delete safe.aiGrading;
-    delete safe.teacherOverride;
-    delete safe.teacherOverrideScore;
-    delete safe.teacherOverrideFeedback;
-    delete safe.teacherReviewedAt;
-    
-    // Only expose submitted status
-    safe.status = "submitted";
-  } else {
-    // If practice has immediate feedback allowed
-    if (safe.aiGrading) {
-      delete safe.aiGrading.guidanceSnapshot;
-    }
-    delete safe.teacherOverrideScore;
-    delete safe.teacherOverrideFeedback;
-    delete safe.teacherReviewedAt;
-  }
+/**
+ * Strip teacher-only fields from an AI grading object for student view.
+ * Exposes score, student-facing feedback, rubric breakdown, misconceptions, confidence, and status.
+ * Removes: rationale, teacherNotes, needsTeacherReview, guidanceSnapshot.
+ */
+export function sanitizeAiGradingForStudent(aiGrading: any): any {
+  if (!aiGrading || typeof aiGrading !== "object") return aiGrading;
+  const safe: any = { status: aiGrading.status };
+  if (aiGrading.score !== undefined) safe.score = aiGrading.score;
+  if (aiGrading.feedback !== undefined) safe.feedback = aiGrading.feedback;
+  if (aiGrading.confidence !== undefined) safe.confidence = aiGrading.confidence;
+  if (aiGrading.gradedAt !== undefined) safe.gradedAt = aiGrading.gradedAt;
+  if (aiGrading.rubricBreakdown !== undefined) safe.rubricBreakdown = aiGrading.rubricBreakdown;
+  if (Array.isArray(aiGrading.misconceptions)) safe.misconceptions = aiGrading.misconceptions;
+  // Explicitly excluded: rationale, teacherNotes, needsTeacherReview, guidanceSnapshot
   return safe;
 }
 
-/** Sanitize a GradebookEntry for student view to prevent premature score disclosures. */
+/**
+ * Strip teacher-only fields from an attempt for student view.
+ * Removes internal security review flags and gradebook override status.
+ */
+export function sanitizeAttemptForStudent(attempt: any): any {
+  if (!attempt || typeof attempt !== "object") return attempt;
+  const safe = { ...attempt };
+  delete safe.gradebookStatusOverride;
+  delete safe.securityReviewRequired;
+  delete safe.securityReviewReason;
+  delete safe.securityReviewAt;
+  return safe;
+}
+
+/**
+ * Sanitize a StudentResponse for student view.
+ *
+ * Assessment SA: hides all scoring, feedback, and grading data. Returns only responseValue and status "submitted".
+ * Practice SA (feedback not yet released): hides score but exposes minimal aiGrading.status for pending state.
+ * Practice SA (feedback released): exposes score and sanitized AI grading via sanitizeAiGradingForStudent.
+ * MC: hides correctness and score unless feedbackAllowed.
+ */
+export function sanitizeResponseForStudent(r: any): any {
+  if (!r || typeof r !== "object") return r;
+  const safe = { ...r };
+
+  // Always remove teacher-only fields from every response type
+  delete safe.teacherOverrideScore;
+  delete safe.teacherOverrideFeedback;
+  delete safe.teacherReviewedAt;
+  delete safe.teacherOverride;
+
+  const gradingMode = safe.gradingMode || safe.gradebookCategory || "assessment";
+  const isPractice = gradingMode === "practice";
+  const feedbackVis = safe.feedbackVisibility || "teacher_only";
+  const feedbackAllowed = isPractice && (feedbackVis === "student_visible" || feedbackVis === "immediate");
+
+  if (safe.type === "sa") {
+    if (feedbackAllowed) {
+      // Practice response with released feedback: sanitize AI grading for student
+      if (safe.aiGrading) {
+        safe.aiGrading = sanitizeAiGradingForStudent(safe.aiGrading);
+      }
+      delete safe.isLowEffort;
+      delete safe.lowEffortReason;
+    } else if (isPractice) {
+      // Practice response with feedback not yet released: hide score but expose minimal status
+      delete safe.score;
+      delete safe.pointsEarned;
+      delete safe.isCorrect;
+      delete safe.isLowEffort;
+      delete safe.lowEffortReason;
+      // Expose only the grading status so the client can show "pending" or "grading_failed"
+      const aiStatus = safe.aiGrading?.status;
+      safe.aiGrading = aiStatus ? { status: aiStatus } : undefined;
+    } else {
+      // Assessment SA: hide all scoring and grading information
+      delete safe.score;
+      delete safe.pointsEarned;
+      delete safe.isCorrect;
+      delete safe.aiGrading;
+      delete safe.isLowEffort;
+      delete safe.lowEffortReason;
+      delete safe.aiFeedbackReleasedAt;
+      safe.status = "submitted";
+    }
+  } else {
+    // MC question: hide correctness and score unless feedback is allowed
+    if (!feedbackAllowed) {
+      delete safe.isCorrect;
+      delete safe.score;
+      delete safe.pointsEarned;
+      delete safe.aiGrading;
+      safe.status = "submitted";
+    }
+  }
+
+  return safe;
+}
+
+/**
+ * Sanitize a GradebookEntry for student view.
+ * Only exposes non-sensitive status and category fields.
+ * Score and feedback are only exposed when feedbackVisibleToStudent is explicitly true.
+ */
 export function sanitizeGradebookEntryForStudent(e: any): any {
   if (!e || typeof e !== "object") return e;
-  // Make sure to clean any secret internal scoring details if needed
-  const safe = { ...e };
+  const safe: any = {
+    id: e.id,
+    category: e.category,
+    status: e.status,
+    attemptId: e.attemptId,
+    responseId: e.responseId,
+    updatedAt: e.updatedAt,
+  };
+  if (e.feedbackVisibleToStudent) {
+    safe.score = e.score;
+    safe.maxScore = e.maxScore;
+    if (e.feedback) safe.feedback = e.feedback;
+  }
   return safe;
 }
