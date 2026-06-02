@@ -3444,6 +3444,375 @@ app.post("/api/lessons/:lessonId/students/:studentId/gradebook-status", requireT
   }
 });
 
+// ====================================================
+// AI Rubric Authoring Endpoints (teacher-only)
+// ====================================================
+
+function buildRubricGenerationPrompt(input: {
+  lessonTitle: string;
+  lessonDescription?: string;
+  blockTitle?: string;
+  questionStem: string;
+  studentInstructions?: string;
+  courseContext?: string;
+  gradeLevel?: string;
+  desiredDifficulty?: string;
+  points: number;
+  existingTeacherNotes?: string;
+}): string {
+  const lines: string[] = [
+    `You are an expert academic rubric designer assisting a teacher at Malvern Prep.`,
+    `Generate a complete, practical short-answer rubric for classroom grading.`,
+    ``,
+    `CRITICAL RULES:`,
+    `1. Output ONLY valid JSON. No markdown fences (no backticks). No commentary before or after the JSON.`,
+    `2. rubricCategories must sum to EXACTLY ${input.points} total points. Verify the sum before outputting.`,
+    `3. Each category maxPoints must be a positive integer (minimum 1).`,
+    `4. modelAnswer must be scientifically accurate and represent a complete full-credit response.`,
+    `5. aiScoringGuidance is teacher/AI-only — it MUST NEVER be shown to students. Include specific criteria and edge cases.`,
+    `6. studentFeedbackStyle describes the tone and approach for student-facing AI feedback WITHOUT revealing the model answer.`,
+    `7. Rubric descriptions must be specific. Avoid vague criteria like "demonstrates understanding" alone.`,
+    `8. full/partial/noCreditExample must be realistic student-written responses (not summaries or descriptions).`,
+    `9. If the question is too vague to grade reliably, note this clearly in aiScoringGuidance.`,
+    `10. commonMisconceptions: list 2–5 specific, concrete errors students commonly make on this type of question.`,
+    `11. Do NOT include correct answers or scoring guidance in studentFeedbackStyle.`,
+    ``,
+    `CONTEXT:`,
+    `- Lesson: "${input.lessonTitle}"`,
+  ];
+
+  if (input.lessonDescription) lines.push(`- Lesson description: "${input.lessonDescription}"`);
+  if (input.blockTitle) lines.push(`- Section/block: "${input.blockTitle}"`);
+  if (input.courseContext) lines.push(`- Course context: "${input.courseContext}"`);
+  if (input.gradeLevel) lines.push(`- Grade level: "${input.gradeLevel}"`);
+  if (input.desiredDifficulty) lines.push(`- Desired difficulty: "${input.desiredDifficulty}"`);
+  if (input.existingTeacherNotes) lines.push(`- Teacher notes: "${input.existingTeacherNotes}"`);
+
+  lines.push(``, `QUESTION:`, `"${input.questionStem}"`);
+  if (input.studentInstructions) lines.push(``, `Student instructions given: "${input.studentInstructions}"`);
+  lines.push(
+    ``,
+    `TOTAL POINTS: ${input.points}`,
+    ``,
+    `Output exactly this JSON structure (all fields required):`,
+    `{`,
+    `  "modelAnswer": "complete full-credit response",`,
+    `  "aiScoringGuidance": "specific teacher-facing scoring criteria and edge cases",`,
+    `  "rubricCategories": [`,
+    `    {`,
+    `      "name": "category name",`,
+    `      "maxPoints": 1,`,
+    `      "description": "specific criteria for earning credit in this category",`,
+    `      "fullCreditExample": "realistic student response that earns full credit",`,
+    `      "partialCreditExample": "realistic student response that earns partial credit",`,
+    `      "noCreditExample": "realistic student response that earns no credit"`,
+    `    }`,
+    `  ],`,
+    `  "commonMisconceptions": ["specific misconception 1", "specific misconception 2"],`,
+    `  "studentFeedbackStyle": "how AI feedback should be phrased for students without revealing answers"`,
+    `}`
+  );
+
+  return lines.join("\n");
+}
+
+function buildRubricRevisionPrompt(input: {
+  questionStem: string;
+  currentModelAnswer: string;
+  currentScoringGuidance: string;
+  currentRubricCategories: any[];
+  points: number;
+  revisionInstruction: string;
+  courseContext?: string;
+  desiredDifficulty?: string;
+}): string {
+  const currentRubricJson = input.currentRubricCategories.length
+    ? JSON.stringify(
+        input.currentRubricCategories.map((c: any) => ({
+          name: asPlainText(c.name),
+          maxPoints: c.maxPoints,
+          description: asPlainText(c.description),
+          fullCreditExample: asPlainText(c.fullCreditExample),
+          partialCreditExample: asPlainText(c.partialCreditExample),
+          noCreditExample: asPlainText(c.noCreditExample),
+        })),
+        null,
+        2
+      )
+    : "(none)";
+
+  return [
+    `You are an expert academic rubric designer assisting a teacher at Malvern Prep.`,
+    `Revise the existing short-answer rubric according to the teacher's instruction.`,
+    ``,
+    `CRITICAL RULES:`,
+    `1. Output ONLY valid JSON. No markdown fences. No commentary before or after the JSON.`,
+    `2. rubricCategories must sum to EXACTLY ${input.points} total points. Verify the sum before outputting.`,
+    `3. Each category maxPoints must be a positive integer (minimum 1).`,
+    `4. Apply the revision instruction faithfully while keeping the rubric practical for classroom grading.`,
+    `5. full/partial/noCreditExample must be concrete, realistic student-written responses.`,
+    `6. If the question is too vague to grade reliably after revision, note this in aiScoringGuidance.`,
+    `7. Do NOT include correct answers or scoring guidance in studentFeedbackStyle.`,
+    ``,
+    `QUESTION: "${input.questionStem}"`,
+    input.courseContext ? `COURSE CONTEXT: "${input.courseContext}"` : "",
+    input.desiredDifficulty ? `DESIRED DIFFICULTY: "${input.desiredDifficulty}"` : "",
+    `TOTAL POINTS: ${input.points}`,
+    ``,
+    `CURRENT MODEL ANSWER:`,
+    input.currentModelAnswer || "(not set)",
+    ``,
+    `CURRENT SCORING GUIDANCE:`,
+    input.currentScoringGuidance || "(not set)",
+    ``,
+    `CURRENT RUBRIC CATEGORIES:`,
+    currentRubricJson,
+    ``,
+    `REVISION INSTRUCTION FROM TEACHER:`,
+    `"${input.revisionInstruction}"`,
+    ``,
+    `Output exactly this JSON structure:`,
+    `{`,
+    `  "modelAnswer": "...",`,
+    `  "aiScoringGuidance": "...",`,
+    `  "rubricCategories": [`,
+    `    {`,
+    `      "name": "...",`,
+    `      "maxPoints": 1,`,
+    `      "description": "...",`,
+    `      "fullCreditExample": "...",`,
+    `      "partialCreditExample": "...",`,
+    `      "noCreditExample": "..."`,
+    `    }`,
+    `  ],`,
+    `  "commonMisconceptions": ["..."],`,
+    `  "studentFeedbackStyle": "..."`,
+    `}`,
+  ]
+    .filter((l) => l !== undefined)
+    .join("\n");
+}
+
+function normalizeGeneratedRubric(
+  parsed: any,
+  requestedPoints: number
+): { result: any; warnings: string[] } {
+  const warnings: string[] = [];
+  let categories: any[] = Array.isArray(parsed.rubricCategories) ? parsed.rubricCategories : [];
+
+  // Ensure each category has a stable id and positive maxPoints
+  categories = categories.map((cat: any, i: number) => ({
+    id:
+      cat.id && typeof cat.id === "string"
+        ? cat.id
+        : `rub_${Date.now().toString(36)}${i}${Math.random().toString(36).substring(2, 5)}`,
+    name: typeof cat.name === "string" ? cat.name : `Category ${i + 1}`,
+    maxPoints: Math.max(1, Math.round(Number(cat.maxPoints) || 1)),
+    description: typeof cat.description === "string" ? cat.description : "",
+    fullCreditExample: typeof cat.fullCreditExample === "string" ? cat.fullCreditExample : "",
+    partialCreditExample: typeof cat.partialCreditExample === "string" ? cat.partialCreditExample : "",
+    noCreditExample: typeof cat.noCreditExample === "string" ? cat.noCreditExample : "",
+  }));
+
+  if (categories.length === 0) {
+    warnings.push("AI returned no rubric categories. Add categories manually.");
+  } else {
+    const total = categories.reduce((s: number, c: any) => s + c.maxPoints, 0);
+    if (total !== requestedPoints) {
+      warnings.push(
+        `Rubric total (${total} pts) did not match requested points (${requestedPoints} pts). Points have been normalized proportionally.`
+      );
+      // Proportional normalization: preserve relative weights, fix last category remainder
+      if (total > 0) {
+        let remaining = requestedPoints;
+        categories = categories.map((cat: any, i: number) => {
+          if (i === categories.length - 1) {
+            return { ...cat, maxPoints: Math.max(1, remaining) };
+          }
+          const share = Math.max(1, Math.round((cat.maxPoints / total) * requestedPoints));
+          remaining = Math.max(categories.length - i - 1, remaining - share);
+          return { ...cat, maxPoints: share };
+        });
+      } else {
+        // All-zero edge case: distribute evenly
+        const per = Math.max(1, Math.floor(requestedPoints / categories.length));
+        let rem = requestedPoints;
+        categories = categories.map((cat: any, i: number) => {
+          if (i === categories.length - 1) return { ...cat, maxPoints: Math.max(1, rem) };
+          rem -= per;
+          return { ...cat, maxPoints: per };
+        });
+      }
+    }
+  }
+
+  return {
+    result: {
+      modelAnswer: typeof parsed.modelAnswer === "string" ? parsed.modelAnswer : "",
+      aiScoringGuidance: typeof parsed.aiScoringGuidance === "string" ? parsed.aiScoringGuidance : "",
+      rubricCategories: categories,
+      commonMisconceptions: Array.isArray(parsed.commonMisconceptions)
+        ? parsed.commonMisconceptions.filter((m: any) => typeof m === "string")
+        : [],
+      studentFeedbackStyle: typeof parsed.studentFeedbackStyle === "string" ? parsed.studentFeedbackStyle : "",
+    },
+    warnings,
+  };
+}
+
+// POST /api/ai/generate-short-answer-rubric
+app.post("/api/ai/generate-short-answer-rubric", requireTeacher, async (req, res) => {
+  try {
+    const {
+      lessonTitle,
+      lessonDescription,
+      blockTitle,
+      questionStem,
+      studentInstructions,
+      courseContext,
+      gradeLevel,
+      desiredDifficulty,
+      points,
+      existingTeacherNotes,
+    } = req.body;
+
+    if (!questionStem || typeof questionStem !== "string" || questionStem.trim().length === 0) {
+      res.status(400).json({ error: "questionStem is required and cannot be empty." });
+      return;
+    }
+    if (!lessonTitle || typeof lessonTitle !== "string" || lessonTitle.trim().length === 0) {
+      res.status(400).json({ error: "lessonTitle is required." });
+      return;
+    }
+    const pointsNum = Number(points);
+    if (!Number.isFinite(pointsNum) || pointsNum < 1 || pointsNum > 100) {
+      res.status(400).json({ error: "points must be a positive integer between 1 and 100." });
+      return;
+    }
+    const validDifficulties = ["introductory", "standard", "advanced", "AP-style"];
+    if (desiredDifficulty && !validDifficulties.includes(desiredDifficulty)) {
+      res.status(400).json({ error: `desiredDifficulty must be one of: ${validDifficulties.join(", ")}.` });
+      return;
+    }
+
+    const prompt = buildRubricGenerationPrompt({
+      lessonTitle: lessonTitle.trim(),
+      lessonDescription: lessonDescription ? String(lessonDescription).trim() : undefined,
+      blockTitle: blockTitle ? String(blockTitle).trim() : undefined,
+      questionStem: questionStem.trim(),
+      studentInstructions: studentInstructions ? String(studentInstructions).trim() : undefined,
+      courseContext: courseContext ? String(courseContext).trim() : undefined,
+      gradeLevel: gradeLevel ? String(gradeLevel).trim() : undefined,
+      desiredDifficulty: desiredDifficulty || undefined,
+      points: Math.round(pointsNum),
+      existingTeacherNotes: existingTeacherNotes ? String(existingTeacherNotes).trim() : undefined,
+    });
+
+    const ai = getAI();
+    const aiResponse = await ai.models.generateContent({
+      model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
+      contents: prompt,
+      config: {
+        systemInstruction:
+          "You are an expert academic rubric designer. Output strictly valid JSON only. No markdown fences, no commentary. Produce rubrics that are specific, practical, and classroom-ready.",
+        responseMimeType: "application/json",
+      },
+    });
+
+    const rawText = (aiResponse.text || "").trim();
+    let parsed: any;
+    try {
+      parsed = parseAiGradingJson(rawText);
+    } catch {
+      res.status(502).json({
+        error: "AI returned invalid JSON. Please retry.",
+        rawPreview: rawText.substring(0, 300),
+      });
+      return;
+    }
+
+    const { result, warnings } = normalizeGeneratedRubric(parsed, Math.round(pointsNum));
+    res.json({ ...result, ...(warnings.length > 0 ? { warnings } : {}) });
+  } catch (err) {
+    console.error("VERITAS Learn - Rubric generation error:", err);
+    sendAppError(res, err);
+  }
+});
+
+// POST /api/ai/revise-rubric
+app.post("/api/ai/revise-rubric", requireTeacher, async (req, res) => {
+  try {
+    const {
+      questionStem,
+      currentModelAnswer,
+      currentScoringGuidance,
+      currentRubricCategories,
+      points,
+      revisionInstruction,
+      courseContext,
+      desiredDifficulty,
+    } = req.body;
+
+    if (!questionStem || typeof questionStem !== "string" || questionStem.trim().length === 0) {
+      res.status(400).json({ error: "questionStem is required and cannot be empty." });
+      return;
+    }
+    if (
+      !revisionInstruction ||
+      typeof revisionInstruction !== "string" ||
+      revisionInstruction.trim().length === 0
+    ) {
+      res.status(400).json({ error: "revisionInstruction is required." });
+      return;
+    }
+    const pointsNum = Number(points);
+    if (!Number.isFinite(pointsNum) || pointsNum < 1 || pointsNum > 100) {
+      res.status(400).json({ error: "points must be a positive integer between 1 and 100." });
+      return;
+    }
+
+    const prompt = buildRubricRevisionPrompt({
+      questionStem: questionStem.trim(),
+      currentModelAnswer: asPlainText(currentModelAnswer),
+      currentScoringGuidance: asPlainText(currentScoringGuidance),
+      currentRubricCategories: Array.isArray(currentRubricCategories) ? currentRubricCategories : [],
+      points: Math.round(pointsNum),
+      revisionInstruction: revisionInstruction.trim(),
+      courseContext: courseContext ? String(courseContext).trim() : undefined,
+      desiredDifficulty: desiredDifficulty ? String(desiredDifficulty).trim() : undefined,
+    });
+
+    const ai = getAI();
+    const aiResponse = await ai.models.generateContent({
+      model: process.env.AI_GRADING_MODEL || "gemini-2.0-flash",
+      contents: prompt,
+      config: {
+        systemInstruction:
+          "You are an expert academic rubric designer. Apply the teacher's revision instruction faithfully. Output strictly valid JSON only. No markdown fences, no commentary.",
+        responseMimeType: "application/json",
+      },
+    });
+
+    const rawText = (aiResponse.text || "").trim();
+    let parsed: any;
+    try {
+      parsed = parseAiGradingJson(rawText);
+    } catch {
+      res.status(502).json({
+        error: "AI returned invalid JSON. Please retry.",
+        rawPreview: rawText.substring(0, 300),
+      });
+      return;
+    }
+
+    const { result, warnings } = normalizeGeneratedRubric(parsed, Math.round(pointsNum));
+    res.json({ ...result, ...(warnings.length > 0 ? { warnings } : {}) });
+  } catch (err) {
+    console.error("VERITAS Learn - Rubric revision error:", err);
+    sendAppError(res, err);
+  }
+});
+
 // Unmatched API routes fallback to avoid serving SPA HTML
 app.all("/api/*", (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.originalUrl} not found.` });

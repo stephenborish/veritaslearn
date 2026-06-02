@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Plus, Trash, ArrowUp, ArrowDown, Eye, EyeOff, AlertCircle, CheckCircle2, Lock } from "lucide-react";
+import { Plus, Trash, ArrowUp, ArrowDown, Eye, EyeOff, AlertCircle, CheckCircle2, Lock, Wand2, RotateCcw, X } from "lucide-react";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
+import { auth } from "../../lib/firebase";
 
 type AnyQuestion = any;
 
@@ -61,6 +62,39 @@ export function validateQuestionClient(q: AnyQuestion, type: "mc" | "sa", graded
   return errors;
 }
 
+/**
+ * Soft readiness warnings for SA questions — non-blocking, shown in amber.
+ * Reminds teachers to fill in AI grading guidance before publishing.
+ */
+export function saReadinessWarnings(q: AnyQuestion, type: "mc" | "sa", graded: boolean): string[] {
+  if (type !== "sa") return [];
+  const warnings: string[] = [];
+  if (graded) {
+    if (!textContent(q?.modelAnswer).trim()) {
+      warnings.push("No model answer — AI grading quality improves significantly with a model answer.");
+    }
+    if (!textContent(q?.aiScoringGuidance).trim()) {
+      warnings.push("No scoring guidance — add guidance so the AI knows exactly what to look for.");
+    }
+    const rubric = Array.isArray(q?.rubricCategories) ? q.rubricCategories : [];
+    if (rubric.length === 0) {
+      warnings.push("No rubric categories — required for AI grading.");
+    } else {
+      const total = rubric.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+      if (total !== Number(q?.points)) {
+        warnings.push(
+          `Rubric total (${total} pts) does not match point value (${Number(q?.points) || 0} pts).`
+        );
+      }
+    }
+  } else {
+    if (!textContent(q?.modelAnswer).trim() && !textContent(q?.aiScoringGuidance).trim()) {
+      warnings.push("No model answer or scoring guidance — practice feedback quality may be limited.");
+    }
+  }
+  return warnings;
+}
+
 const inputCls = "w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 focus:outline-none focus:border-slate-400 text-slate-800 text-xs";
 const labelCls = "font-bold text-slate-700 block mb-1 text-xs";
 const secretLabelCls = "font-bold text-amber-700 mb-1 text-xs flex items-center gap-1";
@@ -68,15 +102,31 @@ const zoneLabelCls = "text-[10px] font-bold uppercase tracking-widest text-slate
 
 const CHOICE_LETTERS = ["A", "B", "C", "D", "E", "F"];
 
+export interface LessonContext {
+  lessonTitle?: string;
+  blockTitle?: string;
+  courseContext?: string;
+}
+
 interface QuestionEditorProps {
   question: AnyQuestion;
   type: "mc" | "sa";
   graded: boolean;
   onChange: (q: AnyQuestion) => void;
+  lessonContext?: LessonContext;
 }
 
-export default function QuestionEditor({ question, type, graded, onChange }: QuestionEditorProps) {
+type AiStatus = "idle" | "generating" | "error";
+
+export default function QuestionEditor({ question, type, graded, onChange, lessonContext }: QuestionEditorProps) {
   const [showPreview, setShowPreview] = useState(false);
+  const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiWarnings, setAiWarnings] = useState<string[]>([]);
+  const [aiDraftActive, setAiDraftActive] = useState(false);
+  const [showRevise, setShowRevise] = useState(false);
+  const [revisionInstruction, setRevisionInstruction] = useState("");
+
   const q = question || {};
   const patch = (partial: any) => onChange({ ...q, ...partial });
 
@@ -109,7 +159,147 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
   const deleteRubric = (id: string) => setRubric(rubric.filter((r) => r.id !== id));
   const rubricTotal = rubric.reduce((s, r) => s + (Number(r.maxPoints) || 0), 0);
 
+  // ---- AI helpers ----
+  const getToken = async (): Promise<string | null> => {
+    try {
+      return (await auth.currentUser?.getIdToken()) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const applyAiResult = (data: any) => {
+    patch({
+      modelAnswer: data.modelAnswer || "",
+      aiScoringGuidance: data.aiScoringGuidance || "",
+      rubricCategories: data.rubricCategories || [],
+    });
+    setAiWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+    setAiDraftActive(true);
+    setAiStatus("idle");
+  };
+
+  const generateRubric = async () => {
+    const stem = textContent(q.stem).trim();
+    if (!stem) {
+      setAiError("Enter a question stem before generating.");
+      setAiStatus("error");
+      return;
+    }
+    const pts = Number(q.points);
+    if (!(pts > 0)) {
+      setAiError("Set a positive point value before generating.");
+      setAiStatus("error");
+      return;
+    }
+
+    setAiStatus("generating");
+    setAiError(null);
+
+    try {
+      const token = await getToken();
+      if (!token) {
+        setAiStatus("error");
+        setAiError("Not authenticated. Please reload and try again.");
+        return;
+      }
+
+      const body: any = {
+        lessonTitle: lessonContext?.lessonTitle || "Lesson",
+        questionStem: stem,
+        points: pts,
+      };
+      if (lessonContext?.blockTitle) body.blockTitle = lessonContext.blockTitle;
+      if (lessonContext?.courseContext) body.courseContext = lessonContext.courseContext;
+      if (textContent(q.studentInstructions).trim()) {
+        body.studentInstructions = textContent(q.studentInstructions);
+      }
+      if (textContent(q.teacherNotes).trim()) {
+        body.existingTeacherNotes = textContent(q.teacherNotes);
+      }
+
+      const res = await fetch("/api/ai/generate-short-answer-rubric", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || `Server error ${res.status}`);
+      }
+
+      const data = await res.json();
+      applyAiResult(data);
+    } catch (err: any) {
+      setAiStatus("error");
+      setAiError(err.message || "Generation failed. Please try again.");
+    }
+  };
+
+  const reviseRubric = async () => {
+    const stem = textContent(q.stem).trim();
+    if (!stem) {
+      setAiError("Question stem is required.");
+      setAiStatus("error");
+      return;
+    }
+    if (!revisionInstruction.trim()) {
+      setAiError("Enter revision instructions.");
+      setAiStatus("error");
+      return;
+    }
+    const pts = Number(q.points);
+    if (!(pts > 0)) {
+      setAiError("Set a positive point value first.");
+      setAiStatus("error");
+      return;
+    }
+
+    setAiStatus("generating");
+    setAiError(null);
+
+    try {
+      const token = await getToken();
+      if (!token) {
+        setAiStatus("error");
+        setAiError("Not authenticated. Please reload and try again.");
+        return;
+      }
+
+      const body: any = {
+        questionStem: stem,
+        currentModelAnswer: textContent(q.modelAnswer),
+        currentScoringGuidance: textContent(q.aiScoringGuidance),
+        currentRubricCategories: q.rubricCategories || [],
+        points: pts,
+        revisionInstruction: revisionInstruction.trim(),
+      };
+      if (lessonContext?.courseContext) body.courseContext = lessonContext.courseContext;
+
+      const res = await fetch("/api/ai/revise-rubric", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as any).error || `Server error ${res.status}`);
+      }
+
+      const data = await res.json();
+      applyAiResult(data);
+      setShowRevise(false);
+      setRevisionInstruction("");
+    } catch (err: any) {
+      setAiStatus("error");
+      setAiError(err.message || "Revision failed. Please try again.");
+    }
+  };
+
   const errors = validateQuestionClient(q, type, graded);
+  const readinessWarns = saReadinessWarnings(q, type, graded);
 
   return (
     <div className="space-y-0 divide-y divide-slate-100 border border-slate-200 rounded-lg overflow-hidden bg-white">
@@ -230,7 +420,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
             <label className={secretLabelCls}><Lock className="w-3 h-3" /> Model / Expected Answer (hidden from students)</label>
             <RichContentEditor
               value={q.modelAnswer ?? ""}
-              onChange={(val) => patch({ modelAnswer: val })}
+              onChange={(val) => { patch({ modelAnswer: val }); setAiDraftActive(false); }}
               mode="compact"
               placeholder="A strong, full-credit answer."
               documentKey={`qmodel-${q.id || "new"}`}
@@ -262,11 +452,115 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
 
         {type === "sa" && (
           <>
+            {/* ---- AI Authoring Controls ---- */}
+            <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 space-y-2">
+              <div className="flex items-center gap-1.5 mb-1">
+                <Wand2 className="w-3.5 h-3.5 text-violet-600" />
+                <span className="text-[10px] font-bold uppercase tracking-widest text-violet-700">AI Rubric Authoring</span>
+                <span className="text-[9px] text-violet-500 normal-case tracking-normal font-normal ml-1">— drafts only, you control the final version</span>
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  disabled={aiStatus === "generating"}
+                  onClick={generateRubric}
+                  className="flex items-center gap-1 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
+                >
+                  {aiStatus === "generating" && !showRevise ? (
+                    <><RotateCcw className="w-3 h-3 animate-spin" /> Generating…</>
+                  ) : (
+                    <><Wand2 className="w-3 h-3" /> Generate ideal answer + rubric</>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={aiStatus === "generating"}
+                  onClick={() => { setShowRevise((v) => !v); setAiError(null); }}
+                  className="flex items-center gap-1 bg-white hover:bg-violet-50 disabled:opacity-50 border border-violet-300 text-violet-700 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
+                >
+                  <RotateCcw className="w-3 h-3" /> Revise current rubric
+                </button>
+              </div>
+
+              {/* Revision input */}
+              {showRevise && (
+                <div className="space-y-1.5 mt-1">
+                  <textarea
+                    value={revisionInstruction}
+                    onChange={(e) => setRevisionInstruction(e.target.value)}
+                    placeholder='e.g. "Make it stricter", "AP Biology style", "Reduce to 4 points", "Add a misconception category"'
+                    rows={2}
+                    className="w-full bg-white border border-violet-200 rounded px-2.5 py-1.5 text-xs focus:outline-none focus:border-violet-400 text-slate-800 resize-none"
+                  />
+                  <div className="flex gap-1.5">
+                    <button
+                      type="button"
+                      disabled={aiStatus === "generating" || !revisionInstruction.trim()}
+                      onClick={reviseRubric}
+                      className="flex items-center gap-1 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
+                    >
+                      {aiStatus === "generating" && showRevise ? (
+                        <><RotateCcw className="w-3 h-3 animate-spin" /> Applying…</>
+                      ) : (
+                        <>Apply revision</>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowRevise(false); setRevisionInstruction(""); setAiError(null); }}
+                      className="flex items-center gap-1 border border-slate-200 text-slate-500 hover:text-slate-700 px-2 py-1 rounded text-[10px] transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* AI draft review banner */}
+              {aiDraftActive && aiStatus !== "generating" && (
+                <div className="flex items-start gap-2 bg-violet-100 border border-violet-300 rounded px-2.5 py-1.5 text-[10px] text-violet-800">
+                  <Wand2 className="w-3 h-3 mt-0.5 shrink-0" />
+                  <span className="flex-1">
+                    <strong>AI draft loaded.</strong> Review and edit all fields below before saving.
+                    Model answer and scoring guidance are teacher-only — students never see them.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAiDraftActive(false)}
+                    className="shrink-0 text-violet-500 hover:text-violet-700"
+                    title="Dismiss"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
+
+              {/* AI warnings */}
+              {aiWarnings.length > 0 && aiStatus !== "generating" && (
+                <div className="space-y-0.5">
+                  {aiWarnings.map((w, i) => (
+                    <div key={i} className="flex items-start gap-1.5 text-[10px] text-amber-700">
+                      <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" /> {w}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Error state */}
+              {aiStatus === "error" && aiError && (
+                <div className="flex items-start gap-1.5 bg-red-50 border border-red-200 rounded px-2.5 py-1.5 text-[10px] text-red-700">
+                  <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" /> {aiError}
+                </div>
+              )}
+            </div>
+
             <div>
               <label className={secretLabelCls}><Lock className="w-3 h-3" /> AI Scoring Guidance</label>
               <RichContentEditor
                 value={q.aiScoringGuidance ?? ""}
-                onChange={(val) => patch({ aiScoringGuidance: val })}
+                onChange={(val) => { patch({ aiScoringGuidance: val }); setAiDraftActive(false); }}
                 mode="compact"
                 placeholder="Key points the AI grader should look for and how to weight them."
                 documentKey={`qscoring-${q.id || "new"}`}
@@ -344,7 +638,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
       </div>
 
       {/* ===== ZONE 4: Points + Validation ===== */}
-      <div className="p-4 flex flex-wrap items-center gap-6">
+      <div className="p-4 flex flex-wrap items-start gap-6">
         <div className="w-36">
           <label className={labelCls}>Points {graded ? "(graded)" : "(practice)"}</label>
           <input
@@ -356,7 +650,7 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
           />
         </div>
 
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 space-y-1.5">
           {errors.length > 0 ? (
             <div className="bg-red-50 border border-red-200 rounded p-2.5 text-[11px] text-red-700 space-y-0.5">
               {errors.map((e, i) => (
@@ -368,6 +662,16 @@ export default function QuestionEditor({ question, type, graded, onChange }: Que
           ) : (
             <div className="text-[11px] text-emerald-700 flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5" /> Question looks valid.
+            </div>
+          )}
+
+          {readinessWarns.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded p-2.5 text-[11px] text-amber-700 space-y-0.5">
+              {readinessWarns.map((w, i) => (
+                <div key={i} className="flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {w}
+                </div>
+              ))}
             </div>
           )}
         </div>
