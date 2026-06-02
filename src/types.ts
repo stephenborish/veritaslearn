@@ -175,10 +175,18 @@ export interface StudentResponse {
   teacherOverrideFeedback?: string | null;
   aiGrading?: {
     score: number;
+    /** Student-facing explanation — safe to display. Never contains model answer or scoring guidance. */
+    feedback?: string;
+    /** Teacher-facing justification — must not be shown to students. */
     rationale: string;
     confidence: number;
     status: 'pending' | 'success' | 'failed' | 'needs_review';
-    rubricBreakdown: { [category: string]: { score: number; feedback: string } };
+    rubricBreakdown: { [category: string]: { score: number; maxScore?: number; feedback: string } };
+    misconceptions?: string[];
+    /** Teacher-only flag — must not be shown to students. */
+    needsTeacherReview?: boolean;
+    /** Teacher-only notes — must not be shown to students. */
+    teacherNotes?: string;
     gradedAt: string;
   };
   teacherOverride?: {
@@ -205,8 +213,16 @@ export interface AIGradingRecord {
   rawOutput?: unknown;
   parsedScore: number;
   confidence: number;
+  /** Teacher-facing justification. Never shown to students. */
   rationale: string;
-  rubricBreakdown: { [category: string]: { score: number; feedback: string } };
+  /** Student-facing explanation. Safe to display. */
+  feedback?: string;
+  rubricBreakdown: { [category: string]: { score: number; maxScore?: number; feedback: string } };
+  misconceptions?: string[];
+  /** True when the AI flags this for teacher review. Teacher-only. */
+  needsTeacherReview?: boolean;
+  /** Internal grading notes for teacher review. Never shown to students. */
+  teacherNotes?: string;
   status: 'pending' | 'success' | 'failed' | 'needs_review';
   errorMessage?: string;
   gradedAt?: string;

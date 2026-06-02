@@ -17,6 +17,15 @@ interface FocusedPlayerProps {
 
 type AutosaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type ViolationLevel = "none" | "low" | "medium";
+type SaGradingState = "unsent" | "submitting" | "submitted" | "pending_ai" | "feedback_ready" | "grading_failed";
+
+interface SaFeedbackData {
+  score?: number;
+  maxPoints?: number;
+  feedback?: string;
+  rubricBreakdown?: { [category: string]: { score: number; maxScore?: number; feedback: string } };
+  misconceptions?: string[];
+}
 
 // Banner shown for non-lockout violations
 interface ViolationBanner {
@@ -54,6 +63,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // SA autosave state per question
   const [saAutosave, setSaAutosave] = useState<{ [qId: string]: AutosaveState }>({});
+  // SA grading lifecycle state per question
+  const [saGradingState, setSaGradingState] = useState<{ [qId: string]: SaGradingState }>({});
+  // SA AI feedback data per question (practice only, after grading completes)
+  const [saFeedback, setSaFeedback] = useState<{ [qId: string]: SaFeedbackData }>({});
   const draftSaveTimers = useRef<{ [qId: string]: ReturnType<typeof setTimeout> }>({});
 
   const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>("");
@@ -102,6 +115,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       // Restore existing submissions
       const localSub: any = {};
       const localFeed: any = {};
+      const localSaGrading: { [qId: string]: SaGradingState } = {};
+      const localSaFeedback: { [qId: string]: SaFeedbackData } = {};
+
       data.responses.forEach((r: any) => {
         localSub[r.questionId] = true;
         if (r.type === "mc") {
@@ -109,10 +125,36 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           localFeed[r.questionId] = { correct: r.isCorrect };
         } else {
           setSaText((prev: any) => ({ ...prev, [r.questionId]: r.responseValue }));
+
+          const gradingMode = r.gradingMode || r.gradebookCategory || "assessment";
+          const isPractice = gradingMode === "practice";
+
+          if (!isPractice) {
+            localSaGrading[r.questionId] = "submitted";
+          } else {
+            const aiStatus = r.aiGrading?.status;
+            if (aiStatus === "success" && r.feedbackVisibility === "student_visible") {
+              localSaGrading[r.questionId] = "feedback_ready";
+              localSaFeedback[r.questionId] = {
+                score: r.score,
+                maxPoints: r.maxPoints,
+                feedback: r.aiGrading?.feedback,
+                rubricBreakdown: r.aiGrading?.rubricBreakdown,
+                misconceptions: r.aiGrading?.misconceptions,
+              };
+            } else if (aiStatus === "needs_review" || aiStatus === "failed") {
+              localSaGrading[r.questionId] = "grading_failed";
+            } else {
+              // pending or no aiGrading yet
+              localSaGrading[r.questionId] = "pending_ai";
+            }
+          }
         }
       });
       setSubmittedLocal(localSub);
       setFeedbackState(localFeed);
+      setSaGradingState(localSaGrading);
+      setSaFeedback(localSaFeedback);
 
       // Restore SA drafts — prefer server-persisted drafts (cross-device), fall back to localStorage.
       const serverDrafts: Record<string, string> = data.attempt.draftResponses || {};
@@ -525,6 +567,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   // Keep references updated for the interval
   const saTextRef = useRef(saText);
   const saAutosaveRef = useRef(saAutosave);
+  const saGradingStateRef = useRef(saGradingState);
   const persistDraftResponseRef = useRef(persistDraftResponse);
 
   useEffect(() => {
@@ -536,8 +579,71 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   }, [saAutosave]);
 
   useEffect(() => {
+    saGradingStateRef.current = saGradingState;
+  }, [saGradingState]);
+
+  useEffect(() => {
     persistDraftResponseRef.current = persistDraftResponse;
   }, [persistDraftResponse]);
+
+  // Poll for practice SA AI grading results every 8 seconds.
+  // Stops automatically when no "pending_ai" questions remain. Cleans up on unmount.
+  useEffect(() => {
+    if (loading || !attemptId) return;
+
+    let errorCount = 0;
+
+    const poll = async () => {
+      const states = saGradingStateRef.current;
+      const pendingIds = Object.entries(states)
+        .filter(([, s]) => s === "pending_ai")
+        .map(([qId]) => qId);
+
+      if (pendingIds.length === 0) return;
+
+      try {
+        const authHeader = await getAuthHeader();
+        const res = await fetch(`/api/attempts/${attemptId}/sa-feedback`, { headers: authHeader });
+        if (!res.ok) throw new Error("sa-feedback poll failed");
+        const data = await res.json();
+        errorCount = 0;
+
+        (data.responses || []).forEach((r: any) => {
+          if (!pendingIds.includes(r.questionId)) return;
+          const aiStatus = r.aiGrading?.status;
+          if (aiStatus === "success") {
+            setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "feedback_ready" }));
+            setSaFeedback((prev: any) => ({
+              ...prev,
+              [r.questionId]: {
+                score: r.score,
+                maxPoints: r.maxPoints,
+                feedback: r.aiGrading?.feedback,
+                rubricBreakdown: r.aiGrading?.rubricBreakdown,
+                misconceptions: r.aiGrading?.misconceptions,
+              },
+            }));
+          } else if (aiStatus === "needs_review" || aiStatus === "failed") {
+            setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "grading_failed" }));
+          }
+          // "pending" — keep polling on next tick
+        });
+      } catch {
+        errorCount++;
+        // After 5 consecutive errors, stop polling silently to avoid hammering a down server
+        if (errorCount >= 5) {
+          Object.keys(saGradingStateRef.current).forEach((qId) => {
+            if (saGradingStateRef.current[qId] === "pending_ai") {
+              setSaGradingState((prev: any) => ({ ...prev, [qId]: "grading_failed" }));
+            }
+          });
+        }
+      }
+    };
+
+    const pollInterval = setInterval(poll, 8000);
+    return () => clearInterval(pollInterval);
+  }, [loading, attemptId]);
 
   // Dedicated 15 seconds autosave interval for short-answer responses
   useEffect(() => {
@@ -606,6 +712,18 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         setFeedbackState((prev: any) => ({
           ...prev,
           [questionId]: { correct: data.isCorrect, desc: data.explanation },
+        }));
+      } else {
+        // SA response: determine practice vs assessment from the block to set initial grading state
+        const block = blocks.find((b: any) => b.id === blockId);
+        let isPracticeBlock = block?.isPractice ?? false;
+        if (cpId && Array.isArray(block?.videoCheckpoints)) {
+          const cp = block.videoCheckpoints.find((c: any) => c.id === cpId);
+          if (cp) isPracticeBlock = cp.isPractice ?? isPracticeBlock;
+        }
+        setSaGradingState((prev: any) => ({
+          ...prev,
+          [questionId]: isPracticeBlock ? "pending_ai" : "submitted",
         }));
       }
     } catch {
@@ -815,6 +933,101 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         <Icon className="w-3 h-3" />
         {label}
       </span>
+    );
+  };
+
+  // SA grading status display for submitted short-answer questions
+  const SaFeedbackDisplay = ({
+    state,
+    feedback,
+    maxPoints,
+    isPractice,
+  }: {
+    state: SaGradingState;
+    feedback?: SaFeedbackData;
+    maxPoints: number;
+    isPractice: boolean;
+  }) => {
+    if (!isPractice) {
+      return (
+        <div className="flex items-center gap-2 text-slate-600 font-semibold text-sm">
+          <Check className="w-4 h-4 text-emerald-600" />
+          <span>Response submitted</span>
+          <span className="text-xs text-slate-400 font-normal ml-1">— pending teacher review</span>
+        </div>
+      );
+    }
+
+    if (state === "pending_ai" || state === "submitted") {
+      return (
+        <div className="flex items-center gap-2 text-amber-700 font-semibold text-sm">
+          <RefreshCw className="w-4 h-4 animate-spin text-amber-500" />
+          <span>AI feedback pending…</span>
+        </div>
+      );
+    }
+
+    if (state === "grading_failed") {
+      return (
+        <div className="flex items-center gap-2 text-slate-600 font-semibold text-sm">
+          <AlertCircle className="w-4 h-4 text-amber-500" />
+          <span>Response submitted</span>
+          <span className="text-xs text-slate-400 font-normal ml-1">— pending teacher review</span>
+        </div>
+      );
+    }
+
+    if (state === "feedback_ready" && feedback) {
+      const score = feedback.score;
+      const scoreDisplay = score !== undefined ? `${score} / ${maxPoints} pts` : null;
+      return (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-emerald-700 font-semibold text-sm">
+            <Check className="w-4 h-4" />
+            <span>Feedback ready</span>
+            {scoreDisplay && (
+              <span className="ml-2 text-xs bg-emerald-100 text-emerald-800 rounded-full px-2.5 py-0.5 font-bold">
+                {scoreDisplay}
+              </span>
+            )}
+          </div>
+          {feedback.feedback && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-900 space-y-1">
+              <p className="font-semibold text-xs uppercase tracking-wide text-blue-600 mb-1.5">AI Feedback</p>
+              <p className="leading-relaxed">{feedback.feedback}</p>
+            </div>
+          )}
+          {feedback.rubricBreakdown && Object.keys(feedback.rubricBreakdown).length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Rubric breakdown</p>
+              {Object.entries(feedback.rubricBreakdown).map(([cat, data]) => (
+                <div key={cat} className="flex items-start gap-2 text-xs text-slate-600 bg-slate-50 rounded p-2 border border-slate-100">
+                  <span className="font-semibold shrink-0">{cat}:</span>
+                  <span className="text-slate-500">{data.score}{data.maxScore !== undefined ? `/${data.maxScore}` : ""} pts — {data.feedback}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {feedback.misconceptions && feedback.misconceptions.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+              <p className="font-semibold mb-1">Areas to review:</p>
+              <ul className="list-disc list-inside space-y-0.5">
+                {feedback.misconceptions.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Default: unsent or unknown state
+    return (
+      <div className="flex items-center gap-2 text-emerald-700 font-semibold text-sm">
+        <Check className="w-4 h-4" />
+        Response submitted
+      </div>
     );
   };
 
@@ -1192,6 +1405,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           {activeCheckpoint.questions.map((q: any) => {
                             const isSubmitted = submittedLocal[q.id];
                             const feedback = feedbackState[q.id];
+                            const isCpPractice = !!activeCheckpoint.isPractice;
+                            const cpSaState = saGradingState[q.id] ?? (isSubmitted ? (isCpPractice ? "pending_ai" : "submitted") : "unsent");
+                            const cpSaFeedback = saFeedback[q.id];
 
                             return (
                               <div key={q.id} className="space-y-3">
@@ -1262,13 +1478,22 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                   >
                                     Submit answer
                                   </button>
-                                ) : (
+                                ) : q.choices ? (
                                   <div className="flex items-center gap-1.5 text-emerald-400 text-xs font-bold">
                                     <Check className="w-3.5 h-3.5" /> Answered
                                   </div>
+                                ) : (
+                                  <div className="text-xs">
+                                    <SaFeedbackDisplay
+                                      state={cpSaState}
+                                      feedback={cpSaFeedback}
+                                      maxPoints={q.points || 0}
+                                      isPractice={isCpPractice}
+                                    />
+                                  </div>
                                 )}
 
-                                {feedback && (
+                                {feedback && q.choices && (
                                   <div
                                     className={`p-3 rounded text-xs space-y-1.5 ${
                                       feedback.correct
@@ -1320,6 +1545,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   const feedback = feedbackState[q.id];
                   const isSaving = savingResponse[q.id];
                   const choicesMaybe = asg.scrambledChoices || q.choices;
+                  const isPracticeBlock = !!activeBlock.isPractice;
+                  const saState = saGradingState[q.id] ?? (isSubmitted ? (isPracticeBlock ? "pending_ai" : "submitted") : "unsent");
+                  const saFeedbackData = saFeedback[q.id];
 
                   return (
                     <div key={asg.id} className="space-y-4">
@@ -1421,18 +1649,22 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                             "Submit response"
                           )}
                         </button>
-                      ) : (
+                      ) : choicesMaybe ? (
                         <div className="flex items-center gap-2 text-emerald-700 font-semibold text-sm">
                           <Check className="w-4 h-4" />
                           Response submitted
-                          {!choicesMaybe && (
-                            <span className="text-xs text-slate-400 font-normal ml-1">— your teacher will review it</span>
-                          )}
                         </div>
+                      ) : (
+                        <SaFeedbackDisplay
+                          state={saState}
+                          feedback={saFeedbackData}
+                          maxPoints={q.points || 0}
+                          isPractice={isPracticeBlock}
+                        />
                       )}
 
-                      {/* Practice feedback */}
-                      {feedback && (
+                      {/* MC practice feedback (immediate correct/incorrect) */}
+                      {feedback && choicesMaybe && (
                         <div
                           className={`p-4 rounded-lg text-sm space-y-1.5 border ${
                             feedback.correct

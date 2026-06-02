@@ -16,6 +16,8 @@ import {
   sanitizeLessonBlocksForStudent,
   sanitizeQuestionForStudent,
   sanitizeResponseForStudent,
+  sanitizeAiGradingForStudent,
+  sanitizeAttemptForStudent,
   sanitizeGradebookEntryForStudent,
   gradeMc,
   choiceTextById,
@@ -333,10 +335,14 @@ function mergeResponsesWithAiGrading(responses: any[], db: any) {
         ...r,
         aiGrading: {
           score: record.parsedScore,
-          rationale: record.rationale,
+          feedback: record.feedback,             // student-facing explanation
+          rationale: record.rationale,           // teacher-facing explanation
           confidence: record.confidence,
           status: record.status,
           rubricBreakdown: record.rubricBreakdown,
+          misconceptions: record.misconceptions,
+          needsTeacherReview: record.needsTeacherReview,
+          teacherNotes: record.teacherNotes,     // teacher-only
           gradedAt: record.gradedAt
         }
       };
@@ -870,12 +876,27 @@ function simpleHash(s: string): string {
   return "h" + h.toString(16);
 }
 
+/**
+ * Safely parse a JSON string returned by an AI model.
+ * Strips markdown code fences (``` or ```json) if present before parsing.
+ * Throws SyntaxError if the content cannot be parsed.
+ */
+function parseAiGradingJson(rawText: string): any {
+  let text = rawText.trim();
+  const fenceMatch = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fenceMatch) {
+    text = fenceMatch[1].trim();
+  }
+  return JSON.parse(text);
+}
+
 // Build the short-answer grading prompt from the teacher-authored rubric + guidance.
 function buildShortAnswerPrompt(lesson: any, q: any, responseValue: any, maxPoints: number): string {
   const rubricLines = (q.rubricCategories || [])
     .map((c: any, i: number) => {
+      const catMax = Number(c.maxPoints) || 0;
       const parts = [
-        `  ${i + 1}. ${asPlainText(c.name)} (max ${c.maxPoints} pts): ${asPlainText(c.description)}`,
+        `  ${i + 1}. "${asPlainText(c.name)}" (max ${catMax} pts): ${asPlainText(c.description)}`,
       ];
       if (c.fullCreditExample) parts.push(`     Full-credit example: ${asPlainText(c.fullCreditExample)}`);
       if (c.partialCreditExample) parts.push(`     Partial-credit example: ${asPlainText(c.partialCreditExample)}`);
@@ -884,25 +905,34 @@ function buildShortAnswerPrompt(lesson: any, q: any, responseValue: any, maxPoin
     })
     .join("\n");
 
-  const optional = (label: string, val: any) => (val ? `\n${label}:\n${asPlainText(val)}\n` : "");
+  const internalOnly = (label: string, val: any) =>
+    val ? `\n[INTERNAL — DO NOT REPRODUCE IN student-facing feedback]\n${label}:\n${asPlainText(val)}\n` : "";
 
   return [
-    `You are assisting a teacher in grading a written response for "${asPlainText(lesson.title)}" at Malvern Prep.`,
-    `Use ONLY the teacher-authored rubric and guidance below. Your score is a suggestion for teacher review.`,
+    `You are Veritas AI, an academic grading assistant for "${asPlainText(lesson.title)}" at Malvern Prep.`,
+    `Grade the student's short-answer response strictly using the teacher-authored rubric and guidance below.`,
+    `Your score is a suggested grade for teacher review, not a final grade.`,
+    ``,
+    `GRADING PRINCIPLES:`,
+    `- Award credit for correct concepts expressed in different wording; do not penalize synonyms or paraphrase when the underlying knowledge is clearly demonstrated.`,
+    `- Do NOT award credit for vague, unsupported, or generic statements that do not demonstrate specific understanding of the subject matter.`,
+    `- Clamp the total score to exactly 0..${maxPoints}. Each rubric category score must not exceed that category's maximum.`,
+    `- Set needsTeacherReview=true if: confidence < 0.75, the response shows partial understanding with significant errors, the answer is ambiguous, or the grading requires nuanced human judgment.`,
+    `- The "feedback" field is student-visible. It must explain what was done well and what was missing WITHOUT revealing the model answer, answer key, or any teacher-only guidance.`,
+    `- The "teacherNotes" field is teacher-only. Use it to flag grading edge cases, ambiguities, or concerns about the response.`,
+    `- The "misconceptions" array should list specific, concrete misconceptions identified in the response (empty array if none).`,
     ``,
     `Question / prompt:`,
     `"${asPlainText(q.stem)}"`,
-    optional("Model / expected answer", q.modelAnswer),
-    optional("Answer key", q.answerKey),
-    optional("AI scoring guidance", q.aiScoringGuidance),
+    internalOnly("Model / expected answer", q.modelAnswer),
+    internalOnly("Answer key", q.answerKey),
+    internalOnly("Scoring guidance", q.aiScoringGuidance),
+    ``,
     `Rubric categories (total max ${maxPoints} points):`,
-    rubricLines || "  (no rubric categories provided)",
+    rubricLines || `  (no rubric categories provided — use holistic judgment based on the question and any guidance above)`,
     ``,
     `Student's submission:`,
     `"${asPlainText(responseValue)}"`,
-    ``,
-    `Grade against the rubric. Return a total score between 0 and ${maxPoints}, a confidence in [0,1],`,
-    `a brief rationale, and per-category feedback. Do not exceed the maximum points.`,
   ].join("\n");
 }
 
@@ -2854,74 +2884,114 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           contents: promptContent,
           config: {
             systemInstruction:
-              "You are Veritas AI, an assistive rubric grader. Your score is a suggestion for a teacher to review, not a final grade. Assess if the student's response is extremely low-effort, gibberish, a keyboard smash, or lacks structure, and output strictly the requested JSON.",
+              "You are Veritas AI, an academic grading assistant. Output strictly valid JSON matching the provided schema. Never include model answers, answer keys, or teacher-only scoring guidance in the student-facing feedback field.",
             responseMimeType: "application/json",
             responseSchema: {
               type: Type.OBJECT,
               properties: {
-                score: { type: Type.NUMBER, description: "Total points earned; must not exceed the maximum." },
-                confidence: { type: Type.NUMBER, description: "0..1 confidence in this assessment." },
-                rationale: { type: Type.STRING, description: "Brief justification grounded in the rubric and guidance." },
-                lowEffort: { type: Type.BOOLEAN, description: "True if safety/relevance check fails; the response is extremely low-effort, is a keyboard smash, consists of repeated characters, is irrelevant nonsense, or has no coherent semantic structure indicating a genuine academic attempt." },
+                score: { type: Type.NUMBER, description: "Total points earned, clamped to 0..maxScore." },
+                maxScore: { type: Type.NUMBER, description: "Maximum possible points (equals question max points)." },
+                feedback: { type: Type.STRING, description: "Student-visible explanation: what was correct, what was missing. Must NOT reproduce the model answer, answer key, or teacher-only guidance." },
+                rationale: { type: Type.STRING, description: "Teacher-facing justification grounded in the rubric. May reference internal guidance." },
                 rubricBreakdown: {
                   type: Type.ARRAY,
+                  description: "Per-rubric-category scores and feedback.",
                   items: {
                     type: Type.OBJECT,
                     properties: {
                       category: { type: Type.STRING },
                       score: { type: Type.NUMBER },
+                      maxScore: { type: Type.NUMBER },
                       feedback: { type: Type.STRING }
                     },
                     required: ["category", "score", "feedback"]
                   }
-                }
+                },
+                misconceptions: {
+                  type: Type.ARRAY,
+                  description: "Specific misconceptions identified in the response. Empty array if none.",
+                  items: { type: Type.STRING }
+                },
+                confidence: { type: Type.NUMBER, description: "0.0..1.0 grading confidence." },
+                needsTeacherReview: { type: Type.BOOLEAN, description: "True if confidence < 0.75, the answer is ambiguous, or human judgment is needed." },
+                teacherNotes: { type: Type.STRING, description: "Internal teacher-only notes about grading edge cases or concerns." },
+                lowEffort: { type: Type.BOOLEAN, description: "True if the response is gibberish, a keyboard smash, extremely short, or makes no genuine academic attempt." }
               },
-              required: ["score", "confidence", "rationale", "lowEffort", "rubricBreakdown"]
+              required: ["score", "maxScore", "feedback", "rubricBreakdown", "misconceptions", "confidence", "needsTeacherReview", "teacherNotes", "lowEffort"]
             }
           }
         });
 
         const rawJsonText = (response.text || "").trim();
-        const geminiResult = JSON.parse(rawJsonText);
+        const geminiResult = parseAiGradingJson(rawJsonText);
 
+        // Build rubric breakdown object keyed by category name
         const rubricObject: any = {};
         if (Array.isArray(geminiResult.rubricBreakdown)) {
           geminiResult.rubricBreakdown.forEach((item: any) => {
-            rubricObject[item.category] = { score: item.score, feedback: item.feedback };
+            if (item && typeof item.category === "string") {
+              rubricObject[item.category] = {
+                score: Number(item.score) || 0,
+                maxScore: item.maxScore !== undefined ? Number(item.maxScore) : undefined,
+                feedback: item.feedback || ""
+              };
+            }
           });
         }
 
-        // Rules-based detection combined with Gemini AI-based detection
+        // Rules-based detection combined with AI-based detection
         const rulesCheck = checkLowEffortRules(responseValue);
         const isLowEffort = rulesCheck.lowEffort || !!geminiResult.lowEffort;
-        const lowEffortReason = rulesCheck.lowEffort 
-          ? rulesCheck.reason 
+        const lowEffortReason = rulesCheck.lowEffort
+          ? rulesCheck.reason
           : (geminiResult.lowEffort ? "AI assessed submission as extremely low-effort or lacking meaningful structure." : null);
 
-        // Clamp the suggested score into the valid range. Forces score to 0 if low effort is flagged.
+        // Clamp the suggested score. Force 0 if low effort flagged.
         const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
-        const confidence = isLowEffort ? 0 : (Number(geminiResult.confidence) || 0);
-        const finalStatus = isLowEffort || confidence < 0.75 ? "needs_review" : "success";
+        const confidence = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.confidence) || 0, 1));
+        const aiNeedsReview = !!geminiResult.needsTeacherReview;
+        const finalStatus = isLowEffort || confidence < 0.75 || aiNeedsReview ? "needs_review" : "success";
+
+        // Student-facing feedback must never expose internal guidance
+        const studentFeedback = isLowEffort
+          ? "Your response did not meet the minimum length or structure requirements for grading. Please resubmit with a complete written answer."
+          : (geminiResult.feedback || "");
+
+        // Teacher-facing rationale (may reference internal guidance)
+        const teacherRationale = isLowEffort
+          ? `[VERITAS INTEGRITY REVIEW — low-effort or lacking structure]: ${lowEffortReason}. ${geminiResult.rationale || ""}`
+          : (geminiResult.rationale || "");
+
+        const teacherNotes = geminiResult.teacherNotes || "";
+        const misconceptions = Array.isArray(geminiResult.misconceptions) ? geminiResult.misconceptions : [];
 
         const freshDb = readDb();
         const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
         const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === newResponse.id);
 
         if (freshRespIdx !== -1) {
-          // The AI suggested score becomes the working score, but the raw response is never overwritten.
           freshDb.responses[freshRespIdx].score = clampedScore;
           freshDb.responses[freshRespIdx].pointsEarned = clampedScore;
           freshDb.responses[freshRespIdx].isLowEffort = isLowEffort;
-          if (lowEffortReason) {
-            freshDb.responses[freshRespIdx].lowEffortReason = lowEffortReason;
+          if (lowEffortReason) freshDb.responses[freshRespIdx].lowEffortReason = lowEffortReason;
+
+          // For practice responses with a clean grade, release feedback to the student
+          if (isPracticeQuestion && finalStatus === "success") {
+            freshDb.responses[freshRespIdx].aiFeedbackReleasedAt = new Date().toISOString();
+            // feedbackVisibility is already "student_visible" from submission; ensure it stays set
+            freshDb.responses[freshRespIdx].feedbackVisibility = "student_visible";
           }
-          
+
           if (freshGradIdx !== -1) {
             freshDb.aiGradingRecords[freshGradIdx] = {
               ...freshDb.aiGradingRecords[freshGradIdx],
               rawOutput: rawJsonText,
               parsedScore: clampedScore,
-              rationale: isLowEffort ? `[VERITAS INTEGRITY REVIEW - low-effort or lacking structure]: ${lowEffortReason}. ${geminiResult.rationale}` : geminiResult.rationale,
+              feedback: studentFeedback,
+              rationale: teacherRationale,
+              teacherNotes,
+              misconceptions,
+              needsTeacherReview: isLowEffort || aiNeedsReview || confidence < 0.75,
               confidence,
               status: finalStatus,
               rubricBreakdown: rubricObject,
@@ -2929,7 +2999,10 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
             };
           }
 
-          // Write/update the response-level GradebookEntry!
+          // For assessment responses, feedback goes to teacher only (not student-visible)
+          // For practice responses, feedback is student-visible when finalStatus === "success"
+          const gradebookFeedback = isPracticeQuestion ? studentFeedback : teacherRationale;
+
           const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
           if (freshAttempt) {
             upsertResponseGradebookEntry(
@@ -2937,29 +3010,35 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
               freshAttempt,
               finalStatus === "needs_review" ? "needs_teacher_review" : "ai_scored",
               "ai_short_answer",
-              isLowEffort ? `[VERITAS INTEGRITY REVIEW - low-effort or lacking structure]: ${lowEffortReason}. ${geminiResult.rationale}` : geminiResult.rationale,
+              gradebookFeedback,
               freshDb
             );
           }
 
           recalculateAttemptScore(id, freshDb);
           await commitDb(freshDb);
-          console.log(`VERITAS Learn - AI grade stored (status=${finalStatus}, score=${clampedScore}/${maxPoints}, lowEffort=${isLowEffort}).`);
+          console.log(`VERITAS Learn - AI grade stored (status=${finalStatus}, score=${clampedScore}/${maxPoints}, lowEffort=${isLowEffort}, practice=${isPracticeQuestion}).`);
         }
       } catch (error: any) {
         console.error("VERITAS Learn - AI Grading failed:", error);
         const freshDb = readDb();
         const rulesCheck = checkLowEffortRules(responseValue);
         const isLowEffort = rulesCheck.lowEffort;
-        
+
+        const errorRationale = isLowEffort
+          ? `AI grading failed, but response was flagged as low-effort: ${rulesCheck.reason}`
+          : "AI grading could not complete. Response queued for manual teacher review.";
+
         const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === newResponse.id);
         if (freshGradIdx !== -1) {
           freshDb.aiGradingRecords[freshGradIdx] = {
             ...freshDb.aiGradingRecords[freshGradIdx],
             parsedScore: 0,
-            rationale: isLowEffort 
-            ? `AI grading failed, but response was flagged as low-effort: ${rulesCheck.reason}`
-            : "AI grading could not complete. Sent to the review queue for manual grading.",
+            feedback: "",
+            rationale: errorRationale,
+            teacherNotes: `AI grading error: ${error instanceof Error ? error.message : String(error)}`,
+            misconceptions: [],
+            needsTeacherReview: true,
             confidence: 0,
             status: "needs_review",
             errorMessage: error instanceof Error ? error.message : String(error),
@@ -2976,7 +3055,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
             }
           }
 
-          // Write/update failed response-level GradebookEntry!
+          // Write/update failed response-level GradebookEntry
           const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
           const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
           if (freshRespIdx !== -1 && freshAttempt) {
@@ -3174,6 +3253,35 @@ app.post("/api/attempts/:id/draft", requireAuth, (req, res) => {
 
   writeDb(db);
   res.json({ success: true });
+});
+
+// Lightweight endpoint for polling practice SA grading status.
+// Returns only SA responses for the given attempt, sanitized for the requesting user.
+// Students may only see their own attempt. Teachers get unsanitized data.
+app.get("/api/attempts/:id/sa-feedback", requireAuth, (req, res) => {
+  const { id } = req.params;
+  const user = (req as any).user;
+  const db = readDb();
+
+  const attempt = db.attempts.find((a: any) => a.id === id);
+  if (!attempt) {
+    res.status(404).json({ error: "Attempt not found." });
+    return;
+  }
+
+  if (user.role === "student" && attempt.studentId !== user.id) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
+  const rawResponses = (db.responses || []).filter((r: any) => r.attemptId === id && r.type === "sa");
+  let responses = mergeResponsesWithAiGrading(rawResponses, db);
+
+  if (user.role === "student") {
+    responses = responses.map(sanitizeResponseForStudent);
+  }
+
+  res.json({ responses });
 });
 
 // Teacher: Unlock a locked student attempt
