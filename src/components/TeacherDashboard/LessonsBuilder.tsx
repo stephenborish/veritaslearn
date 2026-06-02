@@ -1104,6 +1104,7 @@ export default function LessonsBuilder({
                   convertQuestionType={convertQuestionType}
                   newQuestionTemplate={newQuestionTemplate}
                   selectedLessonId={selectedLesson?.id}
+                  lessonTitle={title}
                 />
               ) : (
                 <div className="bg-white border border-slate-200 rounded-lg p-16 text-center text-slate-400 text-sm">
@@ -1246,9 +1247,10 @@ interface BlockEditorProps {
   convertQuestionType: (existing: any, nextType: "mc" | "sa") => any;
   newQuestionTemplate: (type: "mc" | "sa") => any;
   selectedLessonId: string | undefined;
+  lessonTitle?: string;
 }
 
-function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMultipleChanges, addCheckpoint, updateCheckpoint, updateCheckpointQuestion, deleteCheckpoint, convertQuestionType, newQuestionTemplate }: BlockEditorProps) {
+function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMultipleChanges, addCheckpoint, updateCheckpoint, updateCheckpointQuestion, deleteCheckpoint, convertQuestionType, newQuestionTemplate, lessonTitle }: BlockEditorProps) {
   const typeLabel = block.type === "video" ? "Video" : block.type === "reading" ? "Reading Passage" : "Question";
 
   return (
@@ -1378,6 +1380,7 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                       type={(cp.questionType || "mc") as "mc" | "sa"}
                       graded={!cp.isPractice}
                       onChange={(uq) => updateCheckpointQuestion(index, cp.id, uq)}
+                      lessonContext={{ lessonTitle, blockTitle: block.title }}
                     />
                   ) : (
                     <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
@@ -1442,6 +1445,7 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                 type={(block.questionType || "mc") as "mc" | "sa"}
                 graded={!block.isPractice}
                 onChange={(uq) => onBlockChange(index, "singleQuestion", uq)}
+                lessonContext={{ lessonTitle, blockTitle: block.title }}
               />
             ) : (
               <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
