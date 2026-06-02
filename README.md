@@ -148,6 +148,63 @@ The pending code cannot bypass authentication. It is only used after the student
 
 ---
 
+## Grading Model
+
+### Practice vs Assessment
+
+Every question block and video checkpoint is authored as either **Practice** or **Graded** (Assessment). This is set by `LessonBlock.isPractice` or `VideoCheckpoint.isPractice` in the lesson definition.
+
+| | Practice | Graded (Assessment) |
+|---|---|---|
+| Feedback shown to student | Yes — immediately after AI grades | No — teacher-only |
+| MC correctness shown | Yes | No |
+| Score shown to student | Yes (after AI grades) | No |
+| Counts toward lesson score | No | Yes |
+| Teacher can see score | Yes | Yes |
+
+### AI Grading Lifecycle (Short Answer)
+
+1. Student submits SA response → `AIGradingRecord` created with `status: "pending"`.
+2. Gemini grades asynchronously (student is not blocked).
+3. On success: score and `feedback` (student-safe) are stored. For practice responses, feedback is released to the student immediately. For assessment responses, feedback is stored but hidden from the student.
+4. When `confidence < 0.75`, `needsTeacherReview: true`, or the response is flagged as low-effort: status becomes `"needs_review"` and the teacher must grade manually.
+5. On error: status → `"needs_review"`, teacher grades via the AI Review queue.
+
+### AI Rubric Generation
+
+Teachers can generate a rubric for a short-answer question via the Question Editor. The AI suggests rubric categories, point values, and a model answer. Teachers review and edit before saving. Iterative revision is supported.
+
+### Gradebook Entries
+
+Two types of `GradebookEntry` records are created per submission:
+- **Response-level**: one per submitted response (tracks per-question scoring status).
+- **Attempt-level summary**: one per attempt/assignment (tracks overall score, percent, and rollup status).
+
+The `Gradebook.tsx` view reads the attempt-level summary entry.
+
+---
+
+## Security: Student-Visible vs Teacher-Only Data
+
+Server-side sanitizers in `server/data/sanitize.ts` enforce this boundary:
+
+**Never sent to students:**
+- MC correct answer (`correctChoiceId`, `correctAnswerIndex`)
+- MC explanation (except for practice after correct submission)
+- SA rubric categories, model answer, answer key, AI scoring guidance
+- AI grading rationale and teacher notes
+- Assessment response scores and feedback
+- Internal integrity review flags on attempts
+
+**Sanitizers used at every student-facing API endpoint:**
+- `sanitizeQuestionForStudent` — strips answer keys from questions
+- `sanitizeResponseForStudent` — hides assessment scores; shows practice feedback only when released
+- `sanitizeAiGradingForStudent` — exposes student-safe AI feedback only
+- `sanitizeAttemptForStudent` — strips security review flags
+- `sanitizeGradebookEntryForStudent` — hides scores unless explicitly released
+
+---
+
 ## AI Studio
 
 This app was originally created in Google AI Studio:

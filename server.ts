@@ -56,6 +56,13 @@ const TEACHER_EMAILS: Set<string> = new Set(
     .filter(Boolean)
 );
 
+if (!process.env.GOOGLE_ALLOWED_DOMAIN) {
+  console.warn("VERITAS Learn - GOOGLE_ALLOWED_DOMAIN not set; defaulting to 'malvernprep.org'. Set this env var before deploying to production.");
+}
+if (!process.env.TEACHER_EMAILS) {
+  console.warn("VERITAS Learn - TEACHER_EMAILS not set; using built-in default. Set this env var before deploying to production.");
+}
+
 if (fs.existsSync(CONFIG_FILE)) {
   try {
     const firebaseConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
@@ -461,6 +468,9 @@ function upsertGradebookEntryForAttempt(attemptId: string, db: any): void {
   const attemptResponses = (db.responses || []).filter((r: any) => r.attemptId === attemptId);
   const assessmentResponses = attemptResponses.filter((r: any) => {
     const cat = r.gradebookCategory ?? r.gradingMode;
+    // Legacy safety: responses created before gradingMode was tracked have no category.
+    // Count them toward the assessment score to avoid silently dropping old data.
+    // All new responses set gradebookCategory explicitly at submission time.
     if (cat === undefined) return true;
     return cat === "assessment";
   });
@@ -583,10 +593,12 @@ function recalculateAttemptScore(attemptId: string, db: any): number {
   const attemptResponses = (db.responses || []).filter((r: any) => r.attemptId === attemptId);
   const assessmentResponses = attemptResponses.filter((r: any) => {
     const cat = r.gradebookCategory ?? r.gradingMode;
+    // Legacy safety: responses without a category are counted as assessment.
+    // All new responses set gradebookCategory explicitly at submission time.
     if (cat === undefined) return true;
     return cat === "assessment";
   });
-  
+
   const score = assessmentResponses.reduce((sum: number, r: any) => sum + (r.score || 0), 0);
   
   db.attempts[attemptIdx].score = score;
@@ -2283,7 +2295,9 @@ app.get("/api/attempts", requireAuth, (req, res) => {
   if (user.role === "teacher") {
     attempts = db.attempts.filter((a: any) => !a.isPreviewAttempt);
   } else {
-    attempts = db.attempts.filter((a: any) => a.studentId === user.id && !a.isPreviewAttempt);
+    attempts = db.attempts
+      .filter((a: any) => a.studentId === user.id && !a.isPreviewAttempt)
+      .map(sanitizeAttemptForStudent);
   }
   res.json({ attempts });
 });
@@ -2470,7 +2484,7 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
     const activeAttempt = existingAttempts.find((a: any) => a.status === "started");
 
     if (activeAttempt) {
-      res.json({ attempt: activeAttempt });
+      res.json({ attempt: user.role === "student" ? sanitizeAttemptForStudent(activeAttempt) : activeAttempt });
       return;
     }
 
@@ -2541,7 +2555,7 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
     }
 
     await commitDb(db);
-    res.status(201).json({ attempt: newAttempt });
+    res.status(201).json({ attempt: user.role === "student" ? sanitizeAttemptForStudent(newAttempt) : newAttempt });
   } catch (err) {
     sendAppError(res, err);
   }
@@ -2587,15 +2601,18 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
     responses = responses.map(sanitizeResponseForStudent);
   }
 
+  const safeAttempt = user.role === "student" ? sanitizeAttemptForStudent(attempt) : attempt;
+
   res.json({
-    attempt,
+    attempt: safeAttempt,
     lesson,
     // `questionAssignments` is the canonical key; `assignments` retained as a
     // deprecated alias for backward compatibility with older clients.
     questionAssignments,
     assignments: questionAssignments,
     responses,
-    signals
+    // Security signals are internal; only included for teacher role.
+    signals: user.role === "student" ? [] : signals
   });
 });
 
@@ -3277,7 +3294,8 @@ app.post("/api/attempts/:id/complete", requireAuth, async (req, res) => {
     return;
   }
 
-  res.json({ success: true, attempt: db.attempts[attemptIdx] });
+  const completedAttempt = db.attempts[attemptIdx];
+  res.json({ success: true, attempt: completeUser?.role === "student" ? sanitizeAttemptForStudent(completedAttempt) : completedAttempt });
 });
 
 // Post Integrity Signals

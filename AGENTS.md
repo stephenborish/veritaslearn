@@ -2834,3 +2834,165 @@ FILES CHANGED:
 VERIFICATION:
 - `npm run lint`: PASS (Linter fully clean and green)
 - `npm run build`: PASS (Production bundle compiled successfully)
+- `npm run build`: PASS (Production bundle compiled successfully)
+
+---
+
+## 25. Integration Audit & Cleanup — Grading/Security Reference
+
+Date: 2026-06-02
+Agent: Claude Code (claude-sonnet-4-6)
+Task: Full integration audit and cleanup — confirm the end-to-end workflow is coherent, safe, and production-ready.
+
+### 25.1 Grading Model
+
+`StudentResponse.score` is the canonical score for a response. `pointsEarned` mirrors the same value and exists as a display alias for gradebook UI components. Both fields are always set together on submission.
+
+`GradebookEntry` has two conceptually distinct sets of score fields:
+- **Response-level** (`score`, `maxScore`): written by `upsertResponseGradebookEntry`, one entry per submitted response.
+- **Attempt-level summary** (`rawScore`, `finalScore`, `maxPoints`, `percent`): written by `upsertGradebookEntryForAttempt`, one entry per attempt/assignment.
+
+The `Gradebook.tsx` component reads `entry.finalScore` and `entry.maxPoints` for display (attempt-level summary).
+
+### 25.2 Practice vs Assessment
+
+Determined by `VideoCheckpoint.isPractice` or `LessonBlock.isPractice` (source of truth set by the teacher). At submission time, the server derives three fields on `StudentResponse`:
+- `gradingMode`: `"practice"` or `"assessment"`
+- `gradebookCategory`: `"practice"` or `"assessment"` (canonical; `gradingMode` is secondary)
+- `feedbackVisibility`: `"student_visible"` (practice) or `"teacher_only"` (assessment)
+
+**Practice**: AI feedback is released to the student immediately when the AI grade reaches `"success"` status. The `aiFeedbackReleasedAt` timestamp is set on the response.
+**Assessment**: All scoring, correctness, and AI feedback is hidden from the student at all times. Only the teacher sees assessment scores and rationale.
+
+**Score aggregation**: Only responses where `gradebookCategory === "assessment"` (or `gradingMode === "assessment"`) are summed for the attempt score. Responses with no category set (legacy data) are counted as assessment for backward compatibility — logged but not an error.
+
+### 25.3 AI Grading Lifecycle
+
+1. Student submits SA response → server creates `StudentResponse` (score=0, status pending) and an `AIGradingRecord` (status=`"pending"`).
+2. Both are committed to the database immediately.
+3. Gemini is called asynchronously — the student is not blocked.
+4. On success: `AIGradingRecord` updated (status=`"success"` or `"needs_review"`), response score/feedback set, `GradebookEntry` updated.
+5. On error: `AIGradingRecord` status → `"needs_review"`, teacher must manually grade via `/api/responses/:id/override`.
+6. `"needs_review"` triggers when: AI confidence < 0.75, `needsTeacherReview: true` from Gemini, or `isLowEffort: true`.
+7. For practice responses with `finalStatus === "success"`, `feedbackVisibility` is set to `"student_visible"` and `aiFeedbackReleasedAt` is stamped — releasing the feedback to the student immediately.
+
+The AI system instruction enforces: `"Never include model answers, answer keys, or teacher-only scoring guidance in the student-facing feedback field."` The `rationale` field (teacher-facing) may reference internal guidance; `feedback` (student-facing) must not.
+
+### 25.4 AI Rubric Generation
+
+Teacher can request an AI-generated rubric via `POST /api/ai/generate-short-answer-rubric` with:
+- `questionStem`, `lessonTitle`, `gradeLevel`, `desiredDifficulty`, optional existing notes
+- Returns suggested `rubricCategories[]` with point values and `modelAnswer` suggestion
+
+Teacher then edits the rubric via `POST /api/ai/revise-rubric` (iterative, instruction-driven) or manually in the QuestionEditor. The final rubric is saved as part of the lesson block.
+
+### 25.5 Gradebook Entry Lifecycle
+
+```
+Student submits response
+  └─► upsertResponseGradebookEntry (per-response entry)
+        status: "auto_scored" (MC) | "pending_ai" (SA) | "ai_scored" | "needs_teacher_review" | "error"
+
+AI grading completes
+  └─► upsertResponseGradebookEntry updated (status: "ai_scored" or "needs_teacher_review")
+      recalculateAttemptScore
+        └─► upsertGradebookEntryForAttempt (attempt-level summary)
+              status: "in_progress" | "submitted" (AI pending) | "graded" | "needs_grading" | "excused" | "missing"
+
+Teacher override: POST /api/responses/:id/override
+  └─► upsertResponseGradebookEntry (status: "teacher_overridden")
+      recalculateAttemptScore + upsertGradebookEntryForAttempt
+```
+
+`gradebookStatusOverride` on the `LessonAttempt` lets a teacher set `"excused"`, `"missing"`, or `"pending"` — this overrides the calculated status in `upsertGradebookEntryForAttempt`.
+
+### 25.6 Draft Autosave / Recovery
+
+**SA in-progress drafts**: The student player auto-saves in-flight SA text to the server every 15 seconds via `POST /api/attempts/:id/draft`. Draft text is stored in `LessonAttempt.draftResponses` (keyed by `questionId`). On resume, drafts are restored to the text fields before the student continues.
+
+**Lesson drafts (teacher)**: Teacher lesson edits are auto-saved as a `LessonDraft` record. Draft lifecycle:
+- `POST /api/lessons/:lessonId/draft` — create or update the active draft
+- `GET /api/lessons/:lessonId/draft` — fetch the active draft on lesson open
+- `POST /api/lessons/:lessonId/draft/restore` — restore draft content (marks draft `"restored"`)
+- `DELETE /api/lessons/:lessonId/draft` — discard draft (marks `"discarded"`)
+- Status values: `"active"` | `"restored"` | `"discarded"` | `"published"`
+
+The server checks for conflicts: if the published lesson was updated after the draft was created (`lesson.updatedAt > draft.baseLessonUpdatedAt`), the teacher is warned and must choose to keep their draft or use the latest published version.
+
+### 25.7 Landing Page / Course-Code Join Flow
+
+```
+Student visits app
+  └─► LandingPage renders (public, no auth required)
+        Student enters course join code
+          └─► Code stored in sessionStorage[PENDING_COURSE_CODE_KEY]
+              Student clicks "Continue with Google"
+                └─► Google OAuth popup
+                    Login succeeds → App.tsx post-login hook
+                      └─► Reads PENDING_COURSE_CODE_KEY from sessionStorage
+                          Clears sessionStorage
+                          Calls POST /api/enrollments/join { joinCode }
+                            └─► Enrollment created, student added to course
+```
+
+The course code join can also be triggered from the student dashboard (`PracticeDashboard.tsx`) after the student is already authenticated.
+
+### 25.8 Domain & Environment Configuration
+
+Production domain: `https://learn.veritas.courses` (Firebase Hosting).
+
+Required environment variables:
+| Variable | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | Yes | Gemini AI API key for grading and rubric generation |
+| `GOOGLE_ALLOWED_DOMAIN` | Recommended | Email domain students must match (e.g. `malvernprep.org`). Falls back to `malvernprep.org` with a startup warning if not set. |
+| `TEACHER_EMAILS` | Recommended | Comma-separated list of teacher email addresses. Falls back to a built-in default with a startup warning if not set. |
+| `AI_GRADING_MODEL` | Optional | Gemini model for grading. Defaults to `gemini-2.0-flash`. |
+
+The server emits `console.warn` at startup when `GOOGLE_ALLOWED_DOMAIN` or `TEACHER_EMAILS` is not set, making misconfigured deployments visible in logs.
+
+### 25.9 Security: Student-Visible vs Teacher-Only Data
+
+**Never send to students:**
+- `correctChoiceId`, `correctAnswerIndex` — MC correct answer
+- `explanation` — MC explanation (unless practice `feedbackVisibility === "student_visible"`)
+- `rubricCategories`, `modelAnswer`, `answerKey`, `aiScoringGuidance` — SA grading guidance
+- `teacherNotes` — teacher-only question notes
+- `aiGrading.rationale` — teacher-facing AI grading justification
+- `aiGrading.needsTeacherReview`, `aiGrading.teacherNotes` — teacher-only AI flags
+- `aiGrading.guidanceSnapshot` — snapshots of secret guidance used during grading
+- `AIGradingRecord` in full — only sanitized fields exposed via embedded `aiGrading` on responses
+- Assessment `StudentResponse.score`, `.isCorrect`, `.aiGrading` — hidden until teacher releases
+- `LessonAttempt.securityReviewRequired/Reason/At` — internal integrity flags
+- `LessonAttempt.gradebookStatusOverride` — teacher-set override status
+- `SecuritySignal[]` — internal integrity events (not returned on student attempt fetch)
+
+**Canonical sanitizers** (all in `server/data/sanitize.ts`):
+- `sanitizeQuestionForStudent(q)` — strips all `SECRET_QUESTION_FIELDS`
+- `sanitizeLessonBlocksForStudent(blocks)` — sanitizes all embedded questions
+- `sanitizeResponseForStudent(r)` — context-aware (practice vs assessment, feedback visibility)
+- `sanitizeAiGradingForStudent(aiGrading)` — strips rationale/teacherNotes/needsTeacherReview
+- `sanitizeAttemptForStudent(attempt)` — strips security review flags and gradebook override
+- `sanitizeGradebookEntryForStudent(e)` — only exposes score/feedback when `feedbackVisibleToStudent: true`
+- `findLeakedSecretFields(payload)` — defensive assertion, used after sanitization to audit payloads
+
+All six sanitizers are imported and called in `server.ts` at their respective API endpoints. Student-facing endpoints checked during integration audit (2026-06-02):
+- `GET /api/attempts` — `sanitizeAttemptForStudent` applied ✅
+- `GET /api/attempts/:id` — `sanitizeAttemptForStudent` + `sanitizeQuestionForStudent` + `sanitizeResponseForStudent` applied; signals suppressed ✅
+- `POST /api/attempts` — `sanitizeAttemptForStudent` applied on new and resumed attempts ✅
+- `POST /api/attempts/:id/complete` — `sanitizeAttemptForStudent` applied ✅
+- `GET /api/attempts/:id/sa-feedback` — `sanitizeResponseForStudent` applied ✅
+- `GET /api/lessons/:id` (student role) — `sanitizeLessonBlocksForStudent` applied ✅
+
+### 25.10 Files Changed in This Audit
+
+- `src/types.ts` — Added `isLowEffort?`, `lowEffortReason?` to `StudentResponse`; added `gradebookStatusOverride?` to `LessonAttempt`; added clarifying doc comments on `GradebookEntry` dual score fields and `StudentResponse.score`/`pointsEarned`.
+- `server.ts` — Added startup warnings for missing env vars; added legacy-compat comments on `gradingMode=undefined` default; applied `sanitizeAttemptForStudent` to all student-facing attempt responses; suppressed security signals from student attempt fetch.
+- `src/components/StudentPortal/FocusedPlayer.tsx` — Replaced hardcoded Firebase project ID in Storage fallback URL with `firebaseConfig.storageBucket` derived from the app config.
+- `AGENTS.md` — Added this section (25).
+- `README.md` — Added grading model and security sections.
+
+VERIFICATION:
+- `npm run lint`: PASS
+- `npm run build`: PASS
+- `npm run verify:slice`: 20/20 PASS
