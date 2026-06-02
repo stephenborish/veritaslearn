@@ -1,0 +1,244 @@
+{
+  "entities": {
+    "Course": {
+      "title": "Course",
+      "description": "Represents an academic course with multiple blocks/classes.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the course (e.g., AP Biology)." },
+        "blocks": { "type": "array", "items": { "type": "string" }, "description": "List of block identifiers (e.g., ['A', 'B', '1', '2'])." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "teacherId": { "type": "string", "description": "UID of the teacher who owns this course." }
+      },
+      "required": ["name", "blocks", "teacherId"]
+    },
+    "QSet": {
+      "title": "Question Set",
+      "description": "A collection of questions and stimuli for an assessment.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "courseId": { "type": "string" },
+        "questions": { "type": "array", "description": "Serialized questions array." },
+        "stimuli": { "type": "array", "description": "Serialized stimuli array." },
+        "categories": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "teacherId": { "type": "string" }
+      },
+      "required": ["name", "courseId", "teacherId"]
+    },
+    "Roster": {
+      "title": "Roster",
+      "description": "Student list for a specific course block.",
+      "type": "object",
+      "properties": {
+        "block": { "type": "string" },
+        "courseId": { "type": "string" },
+        "students": { "type": "array", "description": "Array of student objects (name, email, etc)." },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "teacherId": { "type": "string" }
+      },
+      "required": ["block", "courseId", "teacherId"]
+    },
+    "Session": {
+      "title": "Exam Session",
+      "description": "An active or archived assessment session.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "6-character join code." },
+        "setId": { "type": "string" },
+        "setName": { "type": "string" },
+        "courseId": { "type": "string" },
+        "block": { "type": "string" },
+        "status": { "type": "string", "enum": ["waiting", "live", "active", "ended"] },
+        "mode": { "type": "string", "enum": ["self-paced", "lockstep", "randomized"] },
+        "currentQ": { "type": "integer" },
+        "revealedQs": { "type": "array", "items": { "type": "string" } },
+        "revealedMode": { "type": "string" },
+        "lockedQs": { "type": "array", "items": { "type": "string" } },
+        "snapshotQuestions": { "type": "array" },
+        "snapshotStimuli": { "type": "array" },
+        "snapshotCategories": { "type": "array" },
+        "config": { "type": "object" },
+        "summaryConfig": { "type": "object" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "teacherId": { "type": "string" },
+        "calcEnabled": { "type": "boolean" },
+        "fullscreenRequired": { "type": "boolean" },
+        "disableCopyPaste": { "type": "boolean" }
+      },
+      "required": ["code", "setId", "status", "teacherId"]
+    },
+    "StudentSession": {
+      "title": "Student Exam Session",
+      "description": "Per-student state for an active session.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "email": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "finished", "absent", "not-joined"] },
+        "joinedAt": { "type": "string", "format": "date-time" },
+        "finishedAt": { "type": "string", "format": "date-time" },
+        "violationCount": { "type": "integer" },
+        "lockedOut": { "type": "boolean" },
+        "needsFullscreen": { "type": "boolean" },
+        "clientToken": { "type": "string" },
+        "identityKey": { "type": "string" },
+        "qOrder": { "type": "array", "items": { "type": "integer" } },
+        "choiceOrders": { "type": "object" },
+        "flaggedQs": { "type": "array", "items": { "type": "string" } },
+        "currentQIndex": { "type": "integer" },
+        "timerExtensionMs": { "type": "number" },
+        "eliminatedChoices": { "type": "object" },
+        "markedAbsentAt": { "type": "string", "format": "date-time" },
+        "teacherFlags": { "type": "object", "description": "Flags added by teachers per questionId." },
+        "realTimeStatus": { "type": "string", "description": "Granular real-time activity status." }
+      },
+      "required": ["sessionId", "studentId"]
+    },
+    "Response": {
+      "title": "Student Response",
+      "description": "A single answer to a question in a session.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "questionId": { "type": "string" },
+        "qIndex": { "type": "integer" },
+        "answer": { "type": "string" },
+        "isCorrect": { "type": "boolean" },
+        "points": { "type": "number" },
+        "maxPoints": { "type": "number" },
+        "aiSuggestedPoints": { "type": "number", "description": "Score suggested by AI evaluator." },
+        "aiSuggestedFeedback": { "type": "string", "description": "Feedback suggested by AI evaluator." },
+        "aiConcepts": { "type": "array", "items": { "type": "string" }, "description": "Identified pedagogical concepts." },
+        "partialCredit": { "type": "boolean" },
+        "teacherFlag": { "type": "boolean" },
+        "teacherFlagLabel": { "type": "string" },
+        "reflection": { 
+          "type": "object",
+          "properties": {
+            "confidence": { "type": "integer" },
+            "challenge": { "type": "integer" },
+            "experience": { "type": "integer" },
+            "explanation": { "type": "string" }
+          }
+        },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sessionId", "studentId", "questionId", "submittedAt"]
+    },
+    "Metacognition": {
+      "title": "Metacognition",
+      "description": "Student confidence rating for a response.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "questionId": { "type": "string" },
+        "confidence": { "type": "integer", "description": "1-4 scale." },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sessionId", "studentId", "questionId", "confidence", "submittedAt"]
+    },
+    "Violation": {
+      "title": "Proctoring Violation",
+      "description": "Logged integrity event.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "type": { "type": "string" },
+        "details": { "type": "string", "description": "Contextual details about the violation." },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "resolved": { "type": "boolean" }
+      },
+      "required": ["sessionId", "studentId", "type", "timestamp"]
+    },
+    "ApprovedTeacher": {
+      "title": "Approved Teacher",
+      "description": "Whitelist of teachers allowed to use the system.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "approvedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email"]
+    },
+    "ActionLog": {
+      "title": "Action Log",
+      "description": "Granular log of student/teacher actions.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "type": { "type": "string" },
+        "questionId": { "type": "string" },
+        "value": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sessionId", "type", "timestamp"]
+    },
+    "TimerEvent": {
+      "title": "Timer Event",
+      "description": "Log of timer starts, pauses, resumes, and expirations.",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "eventType": { "type": "string" },
+        "timerType": { "type": "string", "enum": ["session", "question"] },
+        "remainingSeconds": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sessionId", "studentId", "eventType", "timestamp"]
+    },
+    "WeeklySnapshot": {
+      "title": "Weekly AI Digest",
+      "description": "Stored AI-generated analysis of the week's performance.",
+      "type": "object",
+      "properties": {
+        "teacherId": { "type": "string" },
+        "digest": { "type": "object" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "sessionIds": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["teacherId", "digest", "createdAt"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "System administrators who have elevated privileges beyond teacher level.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID of the admin." },
+        "email": { "type": "string", "description": "Email of the admin." },
+        "grantedAt": { "type": "string", "format": "date-time" },
+        "grantedBy": { "type": "string", "description": "UID of the user who granted admin status." }
+      },
+      "required": ["uid", "email", "grantedAt"]
+    }
+  },
+  "firestore": {
+    "courses/{courseId}": { "schema": "Course", "description": "Academic courses." },
+    "qsets/{setId}": { "schema": "QSet", "description": "Question set banks." },
+    "rosters/{rosterId}": { "schema": "Roster", "description": "Class rosters." },
+    "sessions/{sessionId}": { "schema": "Session", "description": "Exam session instances." },
+    "student_sessions/{stuSessId}": { "schema": "StudentSession", "description": "Per-student session data." },
+    "responses/{responseId}": { "schema": "Response", "description": "Student submitted answers." },
+    "metacognition/{metaId}": { "schema": "Metacognition", "description": "Metacognitive data." },
+    "violations/{violId}": { "schema": "Violation", "description": "Integrity event logs." },
+    "action_logs/{logId}": { "schema": "ActionLog", "description": "Fine-grained audit trail." },
+    "timer_events/{eventId}": { "schema": "TimerEvent", "description": "Logs for timer state changes." },
+    "approved_teachers/{teacherId}": { "schema": "ApprovedTeacher", "description": "Whitelist of approved teachers." },
+    "weekly_digests/{digestId}": { "schema": "WeeklySnapshot", "description": "Cached AI digests for teachers." },
+    "admins/{adminId}": { "schema": "Admin", "description": "System administrators (write-only via Admin SDK)." }
+  }
+}

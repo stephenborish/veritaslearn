@@ -1,0 +1,266 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { 
+      return isSignedIn() && (request.auth.token.email_verified == true || isAdmin()); 
+    }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    function isTeacherOfSession(sessId) {
+      return sessId is string && exists(/databases/$(database)/documents/sessions/$(sessId)) && get(/databases/$(database)/documents/sessions/$(sessId)).data.teacherId == request.auth.uid;
+    }
+    function isLockstepSession(sessId) {
+      return sessId is string &&
+        exists(/databases/$(database)/documents/sessions/$(sessId)) &&
+        get(/databases/$(database)/documents/sessions/$(sessId)).data.config.mode == 'lockstep';
+    }
+    
+    // Admin check - bootstrapped with user email from runtime
+    function isAdmin() { 
+      return isSignedIn() && (
+        request.auth.token.email == 'stephenborish@gmail.com' || 
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidCourse(data) {
+      return data.keys().hasAll(['name', 'blocks', 'teacherId', 'createdAt']) &&
+             data.keys().size() >= 4 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
+             data.blocks is list && data.blocks.size() <= 50 &&
+             data.teacherId == request.auth.uid &&
+             data.createdAt == request.time;
+    }
+
+    function isValidQSet(data) {
+      return data.keys().hasAll(['name', 'courseId', 'teacherId', 'createdAt', 'updatedAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
+             data.courseId is string && (data.courseId == '' || isValidId(data.courseId)) &&
+             data.teacherId == request.auth.uid &&
+             data.createdAt == request.time &&
+             data.updatedAt == request.time;
+    }
+
+    function isValidSession(data) {
+      return data.keys().hasAll(['code', 'setId', 'status', 'teacherId', 'startedAt', 'createdAt']) &&
+             data.code is string && data.code.size() == 6 &&
+             data.status in ['waiting', 'live', 'active', 'ended'] &&
+             data.setId is string && isValidId(data.setId) &&
+             data.teacherId == request.auth.uid &&
+             (data.startedAt == request.time || data.startedAt is string) &&
+             data.createdAt == request.time;
+    }
+
+    function isValidStudentSession(data) {
+      return data.keys().hasAll(['sessionId', 'studentId', 'status']) &&
+             data.sessionId is string && isValidId(data.sessionId) &&
+             data.studentId is string &&
+             data.status in ['active', 'finished', 'absent', 'not-joined'];
+    }
+
+    function isValidResponse(data) {
+      return data.keys().hasAll(['sessionId', 'studentId', 'questionId', 'submittedAt', 'answer']) &&
+             data.sessionId is string && isValidId(data.sessionId) &&
+             data.studentId is string &&
+             data.questionId is string && isValidId(data.questionId) &&
+             data.submittedAt is string;
+    }
+
+    function isValidViolation(data) {
+      return data.keys().hasAll(['sessionId', 'studentId', 'type', 'timestamp']) &&
+             data.sessionId is string && isValidId(data.sessionId) &&
+             data.studentId is string &&
+             data.type is string &&
+             data.timestamp is string;
+    }
+
+    // --- Collections ---
+
+    match /courses/{courseId} {
+      allow get: if isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin());
+      allow create: if isVerified() && (incoming().teacherId == request.auth.uid || isAdmin()) && isValidCourse(incoming());
+      allow update: if isVerified() && (isAdmin() || (
+                       existing().teacherId == request.auth.uid &&
+                       incoming().teacherId == existing().teacherId &&
+                       incoming().get('createdAt', null) == existing().get('createdAt', null) &&
+                       (incoming().diff(existing()).affectedKeys().hasOnly(['name', 'blocks', 'updatedAt']))
+                     ));
+      allow delete: if isVerified() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /qsets/{setId} {
+      allow get: if isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin());
+      allow create: if isVerified() && (incoming().teacherId == request.auth.uid || isAdmin()) && isValidQSet(incoming());
+      allow update: if isVerified() && (isAdmin() || (
+                       existing().teacherId == request.auth.uid &&
+                       incoming().teacherId == existing().teacherId &&
+                       incoming().get('createdAt', null) == existing().get('createdAt', null) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['name', 'questions', 'stimuli', 'courseId', 'version', 'status', 'usageCount', 'tags', 'authorName', 'categories', 'updatedAt']) &&
+                       incoming().updatedAt == request.time
+                     ));
+      allow delete: if isVerified() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /rosters/{rosterId} {
+      allow get: if isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin() || (request.auth.token.email.lower() in existing().get('studentEmails', []) || request.auth.token.get('email', '').lower() in existing().get('studentEmails', []) || request.auth.token.email in existing().get('studentEmails', [])));
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin() || (request.auth.token.email.lower() in resource.data.get('studentEmails', []) || request.auth.token.get('email', '').lower() in resource.data.get('studentEmails', []) || request.auth.token.email in resource.data.get('studentEmails', [])));
+      allow create: if isVerified() && (incoming().teacherId == request.auth.uid || isAdmin());
+      allow update: if isVerified() && (isAdmin() || (
+                       existing().teacherId == request.auth.uid &&
+                       incoming().teacherId == existing().teacherId &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['students', 'studentEmails', 'updatedAt']) &&
+                       (incoming().updatedAt == request.time || !incoming().keys().contains('updatedAt'))
+                     ));
+      allow delete: if isVerified() && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /sessions/{sessionId} {
+      allow get: if isSignedIn() && (resource.data.teacherId == request.auth.uid || resource.data.status in ['live', 'active', 'waiting', 'ended', 'archived'] || isAdmin());
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || resource.data.status in ['active', 'live', 'waiting', 'ended', 'archived'] || isAdmin());
+      allow create: if isVerified() && isValidSession(incoming());
+      allow update: if isVerified() && (resource.data.teacherId == request.auth.uid || isAdmin()) && (
+                       isAdmin() || (
+                         incoming().teacherId == existing().teacherId &&
+                         incoming().setId == existing().setId &&
+                         (!incoming().diff(existing()).affectedKeys().hasAny(['code']) || (incoming().code is string && incoming().code.size() == 6)) &&
+                         incoming().get('createdAt', null) == existing().get('createdAt', null) &&
+                         !incoming().diff(existing()).affectedKeys().hasAny(['snapshotQuestions', 'snapshotStimuli', 'snapshotCategories'])
+                       )
+                     );
+      allow delete: if isVerified() && (resource.data.teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /student_sessions/{stuSessId} {
+      allow get: if isSignedIn() && (existing().studentId == request.auth.uid ||
+                    isTeacherOfSession(existing().sessionId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.studentId == request.auth.uid ||
+                    isTeacherOfSession(resource.data.sessionId) || isAdmin());
+      allow create: if isSignedIn() && isValidStudentSession(incoming()) && (
+        (incoming().studentId == request.auth.uid &&
+         (!incoming().keys().contains('joinedAt') || incoming().joinedAt is string) &&
+         exists(/databases/$(database)/documents/sessions/$(incoming().sessionId)) &&
+         get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.status in ['live', 'waiting', 'active']) ||
+        isTeacherOfSession(incoming().sessionId) ||
+        isAdmin()
+      );
+      allow update: if isSignedIn() && (
+        (existing().studentId == request.auth.uid && (
+          (!isLockstepSession(existing().sessionId) &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'finishedAt', 'needsFullscreen', 'violationCount', 'currentQIndex', 'realTimeStatus', 'flaggedQs', 'flagLabels', 'eliminatedChoices', 'reentryRequested', 'reentryRequestedAt', 'reentryMessage', 'lockedOut', 'lockoutReason', 'reentryApproved', 'totalPausedMs', 'lastPausedAt', 'isPaused', 'enteredAt'])) ||
+          (isLockstepSession(existing().sessionId) &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'finishedAt', 'needsFullscreen', 'violationCount', 'realTimeStatus', 'flaggedQs', 'flagLabels', 'eliminatedChoices', 'reentryRequested', 'reentryRequestedAt', 'reentryMessage', 'lockedOut', 'lockoutReason', 'reentryApproved', 'totalPausedMs', 'lastPausedAt', 'isPaused', 'enteredAt']))
+        ) && (
+          (!incoming().diff(existing()).affectedKeys().hasAny(['lockedOut']) || incoming().lockedOut == true) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['reentryApproved']) || incoming().reentryApproved == false) &&
+          (!incoming().diff(existing()).affectedKeys().hasAny(['enteredAt']) || !existing().keys().contains('enteredAt'))
+        )) ||
+        ((existing().get('email', '').lower() == request.auth.token.email.lower() || existing().get('email', '').lower() == request.auth.token.get('email', '').lower()) &&
+         existing().status in ['not-joined', 'absent'] &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'studentId', 'joinedAt', 'realTimeStatus'])) ||
+        isTeacherOfSession(existing().sessionId) ||
+        isAdmin()
+      );
+    }
+
+    match /responses/{responseId} {
+      allow get: if isSignedIn() && (existing().studentId == request.auth.uid || 
+                    isTeacherOfSession(existing().sessionId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.studentId == request.auth.uid || 
+                    isTeacherOfSession(resource.data.sessionId) || isAdmin());
+      allow create: if isSignedIn() && (
+        (incoming().studentId == request.auth.uid &&
+         get(/databases/$(database)/documents/sessions/$(incoming().sessionId)).data.status in ['active', 'live'] &&
+         !incoming().keys().hasAny(['manuallyGraded', 'feedback'])) ||
+        isTeacherOfSession(incoming().sessionId)
+      );
+      allow update: if isSignedIn() && (
+        (existing().studentId == request.auth.uid && 
+         (get(/databases/$(database)/documents/sessions/$(existing().sessionId)).data.status in ['active', 'live']) && 
+         incoming().diff(existing()).affectedKeys().hasOnly(['answer', 'submittedAt', 'reflection', 'history', 'isCorrect', 'points'])) ||
+        (isTeacherOfSession(existing().sessionId) && 
+         incoming().diff(existing()).affectedKeys().hasOnly(['points', 'isCorrect', 'feedback', 'teacherFlag', 'teacherFlagLabel', 'aiConcepts', 'updatedAt', 'manuallyGraded'])) ||
+        isAdmin()
+      );
+    }
+
+    match /metacognition/{metaId} {
+      allow get: if isSignedIn() && (existing().studentId == request.auth.uid || 
+                    isTeacherOfSession(existing().sessionId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.studentId == request.auth.uid || 
+                    isTeacherOfSession(resource.data.sessionId) || isAdmin());
+      allow create: if isSignedIn() && (
+        incoming().studentId == request.auth.uid ||
+        (incoming().keys().contains('sessionId') && isTeacherOfSession(incoming().sessionId)) ||
+        isAdmin()
+      );
+    }
+
+    match /violations/{violId} {
+      allow get: if isSignedIn() && (existing().studentId == request.auth.uid || 
+                    isTeacherOfSession(existing().sessionId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.studentId == request.auth.uid || 
+                    isTeacherOfSession(resource.data.sessionId) || isAdmin());
+      allow create: if isSignedIn() &&
+        isValidViolation(incoming()) && (
+          incoming().studentId == request.auth.uid ||
+          isTeacherOfSession(incoming().sessionId) ||
+          isAdmin()
+        );
+      allow update: if isTeacherOfSession(existing().sessionId) || isAdmin();
+    }
+
+    match /action_logs/{logId} {
+      allow get: if isSignedIn() && (existing().studentId == request.auth.uid || 
+                    isTeacherOfSession(existing().sessionId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.studentId == request.auth.uid || 
+                    isTeacherOfSession(resource.data.sessionId) || isAdmin());
+      allow create: if isSignedIn() && (
+        (incoming().studentId == request.auth.uid && incoming().sessionId is string) || 
+        isTeacherOfSession(incoming().sessionId)
+      ) && (incoming().timestamp == request.time || !incoming().keys().contains('timestamp'));
+    }
+
+    match /timer_events/{eventId} {
+      allow get: if isSignedIn() && (existing().studentId == request.auth.uid || 
+                    isTeacherOfSession(existing().sessionId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.studentId == request.auth.uid || 
+                    isTeacherOfSession(resource.data.sessionId) || isAdmin());
+      allow create: if isSignedIn() && (
+        (incoming().studentId == request.auth.uid && incoming().sessionId is string) || 
+        isTeacherOfSession(incoming().sessionId)
+      ) && (incoming().timestamp == request.time || !incoming().keys().contains('timestamp'));
+    }
+
+    match /approved_teachers/{teacherId} {
+      allow get: if isSignedIn() && (request.auth.token.email.lower() == teacherId || request.auth.token.get('email', '').lower() == teacherId || request.auth.token.email == teacherId || isAdmin());
+      allow list: if isSignedIn() && isAdmin();
+      allow write: if isAdmin();
+    }
+    
+    match /weekly_digests/{digestId} {
+      allow get: if isSignedIn() && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.teacherId == request.auth.uid || isAdmin());
+      allow create: if isAdmin();
+    }
+
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && (request.auth.token.email == 'stephenborish@gmail.com' || request.auth.uid == adminId);
+      allow list: if isSignedIn() && (request.auth.token.email == 'stephenborish@gmail.com' || request.auth.uid == adminId);
+      // Writes to this collection must go through Firebase Admin SDK (server-side only).
+      allow write: if false;
+    }
+  }
+}
