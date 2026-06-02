@@ -38,6 +38,7 @@ interface LessonsBuilderProps {
   onLaunchPreviewAttempt?: (lessonId: string) => Promise<void>;
   courses?: any[];
   onEditingDirtyChange?: (isDirty: boolean) => void;
+  idToken?: string | null;
 }
 
 export default function LessonsBuilder({
@@ -51,6 +52,7 @@ export default function LessonsBuilder({
   onLaunchPreviewAttempt,
   courses = [],
   onEditingDirtyChange,
+  idToken,
 }: LessonsBuilderProps) {
   const [selectedLesson, setSelectedLesson] = useState<any>(null);
   const [title, setTitle] = useState("");
@@ -93,6 +95,14 @@ export default function LessonsBuilder({
   const [recoveryDraft, setRecoveryDraft] = useState<any>(null);
   // The localStorage key for the current editing session's draft
   const activeDraftKeyRef = useRef<string>("");
+
+  // Server-backed draft state
+  const [serverDraft, setServerDraft] = useState<any>(null);
+  const [serverDraftConflict, setServerDraftConflict] = useState(false);
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  // Track whether server data was updated while we're actively editing
+  const [serverDataUpdated, setServerDataUpdated] = useState(false);
+  const editingStartedAtRef = useRef<string>("");
 
   const [saveStatus, setSaveStatus] = useState<"clean" | "saving" | "saved" | "error">("clean");
   const [isDirty, setIsDirty] = useState(false);
@@ -200,6 +210,11 @@ export default function LessonsBuilder({
     setActiveWorkspace("setup");
     setSaveStatus("clean");
     setSaveError(null);
+    setServerDraft(null);
+    setServerDraftConflict(false);
+    setAutosaveStatus("idle");
+    setServerDataUpdated(false);
+    editingStartedAtRef.current = new Date().toISOString();
 
     const snap = JSON.stringify({
       title: lesson.title,
@@ -215,7 +230,7 @@ export default function LessonsBuilder({
     });
     setInitialSnapshotStr(snap);
 
-    // Check for a local recovery draft
+    // Check for a local recovery draft (kept as fallback)
     const storageKey = `veritas_recovery_draft_${lesson.id}`;
     activeDraftKeyRef.current = storageKey;
     try {
@@ -231,6 +246,7 @@ export default function LessonsBuilder({
     } catch {
       setRecoveryDraft(null);
     }
+    // Server draft is fetched asynchronously via useEffect watching selectedLesson.id
   };
 
   const startNewLesson = () => {
@@ -248,6 +264,11 @@ export default function LessonsBuilder({
     setActiveWorkspace("setup");
     setSaveStatus("clean");
     setSaveError(null);
+    setServerDraft(null);
+    setServerDraftConflict(false);
+    setAutosaveStatus("idle");
+    setServerDataUpdated(false);
+    editingStartedAtRef.current = new Date().toISOString();
 
     const snap = JSON.stringify({
       title: "", description: "", estimatedMinutes: 25, isPublished: false,
@@ -408,6 +429,106 @@ export default function LessonsBuilder({
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isDirty]);
 
+  // ---- Server draft: fetch when a lesson is opened ----
+  useEffect(() => {
+    if (!selectedLesson || selectedLesson.id === "new" || !idToken) return;
+    const lessonId = selectedLesson.id;
+    let cancelled = false;
+
+    const fetchDraft = async () => {
+      try {
+        const res = await fetch(`/api/lessons/${lessonId}/draft`, {
+          headers: { Authorization: `Bearer ${idToken}` }
+        });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.draft && data.draft.status === "active") {
+          const lessonUpdatedAt = selectedLesson?.updatedAt || selectedLesson?.createdAt;
+          const draftBaseAt = data.draft.baseLessonUpdatedAt;
+          const hasConflict = !!(lessonUpdatedAt && draftBaseAt &&
+            new Date(lessonUpdatedAt) > new Date(draftBaseAt));
+          setServerDraft(data.draft);
+          setServerDraftConflict(hasConflict);
+          // Server draft supersedes localStorage draft
+          setRecoveryDraft(null);
+        }
+      } catch {
+        // Silently fail; localStorage recovery remains as fallback
+      }
+    };
+
+    fetchDraft();
+    return () => { cancelled = true; };
+  }, [selectedLesson?.id, idToken]);
+
+  // ---- Server draft: autosave on meaningful changes ----
+  useEffect(() => {
+    if (!selectedLesson || selectedLesson.id === "new" || !idToken) return;
+
+    const currentStr = getSnapshot();
+    if (!initialSnapshotStr || currentStr === initialSnapshotStr) return;
+
+    const lessonId = selectedLesson.id;
+    const baseLessonUpdatedAt = selectedLesson?.updatedAt || selectedLesson?.createdAt || new Date().toISOString();
+    const capturedTitle = title;
+    const capturedDescription = description;
+    const capturedEstimatedMinutes = estimatedMinutes;
+    const capturedIsPublished = isPublished;
+    const capturedSettings = { restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback };
+    const capturedBlocks = currentBlocks;
+    const capturedToken = idToken;
+
+    const timer = setTimeout(async () => {
+      setAutosaveStatus("saving");
+      try {
+        const res = await fetch(`/api/lessons/${lessonId}/draft`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${capturedToken}`
+          },
+          body: JSON.stringify({
+            draftPayload: {
+              title: capturedTitle,
+              description: capturedDescription,
+              estimatedMinutes: capturedEstimatedMinutes,
+              isPublished: capturedIsPublished,
+              settings: capturedSettings,
+              blocks: capturedBlocks
+            },
+            baseLessonUpdatedAt
+          })
+        });
+        if (res.ok) {
+          setAutosaveStatus("saved");
+          setTimeout(() => setAutosaveStatus((s: "idle" | "saving" | "saved" | "failed") => s === "saved" ? "idle" : s), 3000);
+        } else {
+          setAutosaveStatus("failed");
+        }
+      } catch {
+        setAutosaveStatus("failed");
+      }
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [
+    title, description, estimatedMinutes, isPublished,
+    restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback,
+    currentBlocks, selectedLesson?.id, idToken, initialSnapshotStr
+  ]);
+
+  // ---- Background refetch detection ----
+  // If the parent re-fetches lessons while we're actively editing, note it but don't overwrite.
+  useEffect(() => {
+    if (!selectedLesson || selectedLesson.id === "new" || !isDirty) return;
+    const serverLesson = lessons.find((l: any) => l.id === selectedLesson.id);
+    if (!serverLesson?.updatedAt || !editingStartedAtRef.current) return;
+    if (new Date(serverLesson.updatedAt) > new Date(editingStartedAtRef.current)) {
+      setServerDataUpdated(true);
+    }
+  }, [lessons, selectedLesson?.id, isDirty]);
+
   // ---- Draft recovery handlers ----
   const handleRestoreDraft = () => {
     if (!recoveryDraft) return;
@@ -434,6 +555,42 @@ export default function LessonsBuilder({
       localStorage.removeItem(activeDraftKeyRef.current);
     }
     setRecoveryDraft(null);
+  };
+
+  // ---- Server draft handlers ----
+  const handleRestoreServerDraft = () => {
+    if (!serverDraft?.draftPayload) return;
+    const p = serverDraft.draftPayload;
+    setTitle(p.title ?? "");
+    setDescription(p.description ?? "");
+    setEstimatedMinutes(p.estimatedMinutes ?? 25);
+    setIsPublished(p.isPublished ?? false);
+    setRestrictSeeking(p.settings?.restrictSeeking ?? true);
+    setRequireFullscreen(p.settings?.requireFullscreen ?? true);
+    setAllowRetakes(p.settings?.allowRetakes ?? false);
+    setRandomizeChoices(p.settings?.randomizeChoices ?? true);
+    setImmediateFeedback(p.settings?.immediateFeedback ?? false);
+    const restoredBlocks = normalizeBlocksForEditor(p.blocks || []);
+    setCurrentBlocks(restoredBlocks);
+    setServerDraft(null);
+    setServerDraftConflict(false);
+    setSaveStatus("clean");
+  };
+
+  const handleDiscardServerDraft = async () => {
+    const lessonId = selectedLesson?.id;
+    setServerDraft(null);
+    setServerDraftConflict(false);
+    if (idToken && lessonId && lessonId !== "new") {
+      try {
+        await fetch(`/api/lessons/${lessonId}/draft`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${idToken}` }
+        });
+      } catch {
+        // Best-effort; ignore failures
+      }
+    }
   };
 
   // ---- Save logic ----
@@ -483,14 +640,28 @@ export default function LessonsBuilder({
       setLastSavedAt(new Date());
       setTimeout(() => setSaveStatus("clean"), 3000);
 
-      // Clear the old draft key
+      // Clear the localStorage draft
       if (activeDraftKeyRef.current) {
         localStorage.removeItem(activeDraftKeyRef.current);
       }
 
+      // Discard server draft (best-effort, non-blocking)
+      const savedLessonId = savedResult?.id || (selectedLesson?.id !== "new" ? selectedLesson?.id : null);
+      if (idToken && savedLessonId) {
+        fetch(`/api/lessons/${savedLessonId}/draft`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${idToken}` }
+        }).catch(() => {});
+      }
+      setServerDraft(null);
+      setServerDraftConflict(false);
+      setAutosaveStatus("idle");
+      setServerDataUpdated(false);
+
       if (savedResult && savedResult.id) {
         // Update state with canonical saved data
         setSelectedLesson(savedResult);
+        editingStartedAtRef.current = savedResult.updatedAt || new Date().toISOString();
         // Switch draft key to the real lesson ID
         const newKey = `veritas_recovery_draft_${savedResult.id}`;
         activeDraftKeyRef.current = newKey;
@@ -530,11 +701,23 @@ export default function LessonsBuilder({
 
   const handleReturnToLibrary = () => {
     if (isDirty) {
-      if (window.confirm("You have unsaved changes. Discard and return to library? A local draft has been saved.")) {
+      const hasDraft = !!(serverDraft || activeDraftKeyRef.current);
+      const draftNote = hasDraft
+        ? "Your draft has been saved and can be recovered when you return."
+        : "Unsaved changes will be lost.";
+      if (window.confirm(`You have unsaved changes. Return to library? ${draftNote}`)) {
         setSelectedLesson(null);
+        setServerDraft(null);
+        setServerDraftConflict(false);
+        setAutosaveStatus("idle");
+        setServerDataUpdated(false);
       }
     } else {
       setSelectedLesson(null);
+      setServerDraft(null);
+      setServerDraftConflict(false);
+      setAutosaveStatus("idle");
+      setServerDataUpdated(false);
     }
   };
 
@@ -897,8 +1080,52 @@ export default function LessonsBuilder({
         // ======================== CANVAS VIEW ========================
         <div className="flex flex-col" style={{ minHeight: "calc(100vh - 120px)" }}>
 
-          {/* Recovery banner */}
-          {recoveryDraft && (
+          {/* Server draft recovery banner — conflict */}
+          {serverDraft && serverDraftConflict && (
+            <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 text-xs text-orange-900 flex items-center justify-between mb-3 shadow-xs">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-orange-500 shrink-0" />
+                <div>
+                  <span className="font-bold">Draft conflict — lesson was updated after this draft was saved</span>
+                  <span className="text-orange-700 ml-1">
+                    Draft from {new Date(serverDraft.updatedAt).toLocaleString()}. The published lesson changed since then — restoring may overwrite newer content.
+                  </span>
+                </div>
+              </div>
+              <div className="flex gap-2 ml-4 shrink-0">
+                <button onClick={handleRestoreServerDraft} className="bg-orange-600 hover:bg-orange-700 text-white font-bold px-3 py-1 rounded text-[11px] cursor-pointer">
+                  Restore Draft Anyway
+                </button>
+                <button onClick={handleDiscardServerDraft} className="bg-white hover:bg-slate-100 border border-orange-300 text-orange-800 font-bold px-3 py-1 rounded text-[11px] cursor-pointer">
+                  Discard Draft
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Server draft recovery banner — no conflict */}
+          {serverDraft && !serverDraftConflict && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-center justify-between mb-3 shadow-xs">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <div>
+                  <span className="font-bold">Recovered draft available</span>
+                  <span className="text-amber-700 ml-1">from {new Date(serverDraft.updatedAt).toLocaleString()} — restore to continue where you left off.</span>
+                </div>
+              </div>
+              <div className="flex gap-2 ml-4 shrink-0">
+                <button onClick={handleRestoreServerDraft} className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1 rounded text-[11px] cursor-pointer">
+                  Restore Draft
+                </button>
+                <button onClick={handleDiscardServerDraft} className="bg-white hover:bg-slate-100 border border-amber-300 text-amber-800 font-bold px-3 py-1 rounded text-[11px] cursor-pointer">
+                  Discard
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* localStorage fallback recovery banner (shown only when no server draft) */}
+          {recoveryDraft && !serverDraft && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 flex items-center justify-between mb-3 shadow-xs">
               <div className="flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -915,6 +1142,17 @@ export default function LessonsBuilder({
                   Discard
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Background server data update warning */}
+          {serverDataUpdated && isDirty && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-800 flex items-center justify-between mb-3 shadow-xs">
+              <div className="flex items-center gap-2">
+                <Info className="w-4 h-4 text-blue-500 shrink-0" />
+                <span>The lesson on the server was updated while you were editing. Your current edits are preserved — save to overwrite or reload to get the latest version.</span>
+              </div>
+              <button onClick={() => setServerDataUpdated(false)} className="ml-4 text-blue-600 hover:text-blue-800 font-bold text-[11px] shrink-0 cursor-pointer">Dismiss</button>
             </div>
           )}
 
@@ -948,7 +1186,10 @@ export default function LessonsBuilder({
                 {saveStatus === "saving" && <span className="text-blue-600 flex items-center gap-1"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving…</span>}
                 {saveStatus === "saved" && <span className="text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Saved</span>}
                 {saveStatus === "error" && <span className="text-red-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Save failed</span>}
-                {saveStatus === "clean" && isDirty && <span className="text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5 animate-pulse" /> Unsaved changes</span>}
+                {saveStatus === "clean" && isDirty && autosaveStatus === "saving" && <span className="text-slate-500 flex items-center gap-1"><Clock className="w-3 h-3 animate-spin" /> Autosaving…</span>}
+                {saveStatus === "clean" && isDirty && autosaveStatus === "saved" && <span className="text-slate-400 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> Draft saved</span>}
+                {saveStatus === "clean" && isDirty && autosaveStatus === "failed" && <span className="text-red-500 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> Draft save failed</span>}
+                {saveStatus === "clean" && isDirty && (autosaveStatus === "idle") && <span className="text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5 animate-pulse" /> Unsaved changes</span>}
                 {saveStatus === "clean" && !isDirty && lastSavedAt && (
                   <span className="text-slate-400 flex items-center gap-1">
                     <CheckCircle className="w-3.5 h-3.5" />

@@ -137,6 +137,7 @@ const DB_COLLECTIONS = [
   "aiGradingRecords",
   "lessonAssignments",
   "gradebookEntries",
+  "lessonDrafts",
 ] as const;
 
 function emptyDb(): any {
@@ -1266,6 +1267,7 @@ app.post("/api/lessons", requireTeacher, async (req, res) => {
       estimatedMinutes: Number(estimatedMinutes) || 30,
       isPublished: willPublish,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       settings: {
         restrictSeeking: settings?.restrictSeeking ?? true,
         requireFullscreen: settings?.requireFullscreen ?? true,
@@ -1334,6 +1336,7 @@ app.put("/api/lessons/:id", requireTeacher, async (req, res) => {
       description: description ?? currentLesson.description,
       estimatedMinutes: estimatedMinutes !== undefined ? Number(estimatedMinutes) : currentLesson.estimatedMinutes,
       isPublished: willPublish,
+      updatedAt: new Date().toISOString(),
       settings: {
         restrictSeeking: settings?.restrictSeeking ?? currentLesson.settings.restrictSeeking,
         requireFullscreen: settings?.requireFullscreen ?? currentLesson.settings.requireFullscreen,
@@ -1423,10 +1426,173 @@ app.delete("/api/lessons/:id", requireTeacher, (req, res) => {
   if (db.lessonAssignments) {
     db.lessonAssignments = db.lessonAssignments.filter((asg: any) => asg.lessonId !== id);
   }
+  // Discard associated drafts
+  if (db.lessonDrafts) {
+    const now = new Date().toISOString();
+    db.lessonDrafts = db.lessonDrafts.map((d: any) =>
+      d.lessonId === id && d.status === "active"
+        ? { ...d, status: "discarded", updatedAt: now }
+        : d
+    );
+  }
   // Keep attempts for record consistency unless necessary to delete
   writeDb(db);
 
   res.json({ success: true });
+});
+
+// ==========================================
+// Lesson Draft APIs
+// Teacher-only. Drafts may contain answer keys & rubric data — treat like answer keys.
+// ==========================================
+
+// GET /api/lessons/:lessonId/draft — retrieve active draft for the authenticated teacher
+app.get("/api/lessons/:lessonId/draft", requireTeacher, (req, res) => {
+  const { lessonId } = req.params;
+  const user = (req as any).user;
+  const db = readDb();
+
+  const drafts: any[] = db.lessonDrafts || [];
+  const draft = drafts.find((d: any) =>
+    d.lessonId === lessonId &&
+    d.teacherId === user.id &&
+    d.status === "active"
+  );
+
+  res.json({ draft: draft || null });
+});
+
+// POST /api/lessons/:lessonId/draft — upsert the teacher's draft for a lesson
+app.post("/api/lessons/:lessonId/draft", requireTeacher, async (req, res) => {
+  try {
+    const { lessonId } = req.params;
+    const user = (req as any).user;
+    const { draftPayload, baseLessonUpdatedAt } = req.body;
+
+    if (!draftPayload || typeof draftPayload !== "object") {
+      res.status(400).json({ error: "draftPayload is required." });
+      return;
+    }
+
+    // For existing lessons, verify the lesson exists before accepting a draft
+    if (lessonId !== "new") {
+      const db = readDb();
+      const lesson = db.lessons.find((l: any) => l.id === lessonId);
+      if (!lesson) {
+        res.status(404).json({ error: "Lesson not found." });
+        return;
+      }
+    }
+
+    const db = readDb();
+    if (!db.lessonDrafts) db.lessonDrafts = [];
+
+    const now = new Date().toISOString();
+    const existingIdx = db.lessonDrafts.findIndex((d: any) =>
+      d.lessonId === lessonId &&
+      d.teacherId === user.id &&
+      d.status === "active"
+    );
+
+    if (existingIdx !== -1) {
+      db.lessonDrafts[existingIdx] = {
+        ...db.lessonDrafts[existingIdx],
+        draftPayload,
+        baseLessonUpdatedAt: baseLessonUpdatedAt || db.lessonDrafts[existingIdx].baseLessonUpdatedAt,
+        updatedAt: now
+      };
+      await commitDb(db);
+      res.json({ success: true, draft: db.lessonDrafts[existingIdx] });
+    } else {
+      const newDraft = {
+        id: "draft_" + Math.random().toString(36).substring(2, 9),
+        lessonId,
+        teacherId: user.id,
+        draftPayload,
+        baseLessonUpdatedAt: baseLessonUpdatedAt || now,
+        createdAt: now,
+        updatedAt: now,
+        status: "active"
+      };
+      db.lessonDrafts.push(newDraft);
+      await commitDb(db);
+      res.json({ success: true, draft: newDraft });
+    }
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// DELETE /api/lessons/:lessonId/draft — discard the teacher's active draft
+app.delete("/api/lessons/:lessonId/draft", requireTeacher, async (req, res) => {
+  try {
+    const { lessonId } = req.params;
+    const user = (req as any).user;
+    const db = readDb();
+
+    if (!db.lessonDrafts) {
+      res.json({ success: true });
+      return;
+    }
+
+    const draftIdx = db.lessonDrafts.findIndex((d: any) =>
+      d.lessonId === lessonId &&
+      d.teacherId === user.id &&
+      d.status === "active"
+    );
+
+    if (draftIdx === -1) {
+      res.json({ success: true });
+      return;
+    }
+
+    db.lessonDrafts[draftIdx] = {
+      ...db.lessonDrafts[draftIdx],
+      status: "discarded",
+      updatedAt: new Date().toISOString()
+    };
+
+    await commitDb(db);
+    res.json({ success: true });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// POST /api/lessons/:lessonId/draft/restore — mark draft as restored and return payload
+app.post("/api/lessons/:lessonId/draft/restore", requireTeacher, async (req, res) => {
+  try {
+    const { lessonId } = req.params;
+    const user = (req as any).user;
+    const db = readDb();
+
+    if (!db.lessonDrafts) {
+      res.status(404).json({ error: "No draft found." });
+      return;
+    }
+
+    const draftIdx = db.lessonDrafts.findIndex((d: any) =>
+      d.lessonId === lessonId &&
+      d.teacherId === user.id &&
+      d.status === "active"
+    );
+
+    if (draftIdx === -1) {
+      res.status(404).json({ error: "No active draft found." });
+      return;
+    }
+
+    db.lessonDrafts[draftIdx] = {
+      ...db.lessonDrafts[draftIdx],
+      status: "restored",
+      updatedAt: new Date().toISOString()
+    };
+
+    await commitDb(db);
+    res.json({ success: true, draftPayload: db.lessonDrafts[draftIdx].draftPayload });
+  } catch (err) {
+    sendAppError(res, err);
+  }
 });
 
 // ==========================================
