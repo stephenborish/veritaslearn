@@ -9,9 +9,10 @@ interface VideoUploaderProps {
   storagePath?: string | undefined;
   duration?: number | undefined;
   onVideoUploaded: (url: string, thumbnail?: string, duration?: number, storagePath?: string) => void;
+  onThumbnailSelected?: (thumbnailUrl: string) => void;
 }
 
-export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, duration, onVideoUploaded }: VideoUploaderProps) {
+export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, duration, onVideoUploaded, onThumbnailSelected }: VideoUploaderProps) {
   const [isDragActive, setIsDragActive] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -78,7 +79,11 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
           setExtractedThumbnail(dataUrl);
-          onVideoUploaded(displayedVideoUrl, dataUrl, video.duration || videoDuration, storagePath);
+          if (onThumbnailSelected) {
+            onThumbnailSelected(dataUrl);
+          } else {
+            onVideoUploaded(displayedVideoUrl, dataUrl, video.duration || videoDuration, storagePath);
+          }
         }
       } catch (err) {
         console.warn("Failed manual frame selection:", err);
