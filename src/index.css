@@ -22,3 +22,19 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/*
+ * Respect the user's reduced-motion preference everywhere. Motion components also
+ * honor this via useReducedMotion(); this is a CSS belt-and-suspenders for any
+ * transitions/animations not driven by the motion library.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
