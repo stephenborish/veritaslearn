@@ -185,7 +185,11 @@ console.log("\n=== UI: collapsible timeline ===");
 
 check("timeline collapse state exists", focusedPlayer.includes("timelineCollapsed"));
 check("collapse preference is remembered per attempt", focusedPlayer.includes("veritas_timeline_collapsed_${attemptId}"));
-check("collapse control has an accessible label", focusedPlayer.includes('aria-label={timelineCollapsed ?'));
+// Sidebar header has "Collapse lesson timeline" and collapsed rail has "Expand lesson timeline"
+check(
+  "collapse control has an accessible label",
+  focusedPlayer.includes('"Collapse lesson timeline"') && focusedPlayer.includes('"Expand lesson timeline"'),
+);
 
 // ============================================================================
 console.log("\n=== UI: reduced motion + accessibility ===");
@@ -194,6 +198,120 @@ check("index.css honors prefers-reduced-motion", css.includes("prefers-reduced-m
 check("components use useReducedMotion()", card.includes("useReducedMotion") && mc.includes("useReducedMotion") && sa.includes("useReducedMotion"));
 check("FocusedPlayer respects reduced motion", focusedPlayer.includes("useReducedMotion") && focusedPlayer.includes("reduceMotion"));
 check("answer choices keep visible focus states", mc.includes("focus-visible:ring"));
+
+// ============================================================================
+console.log("\n=== G: video checkpoint resume behavior ===");
+
+const renderer = read("src/components/RichContent/RichContentRenderer.tsx");
+
+check(
+  "checkpointResumeTimestampRef exists in FocusedPlayer",
+  focusedPlayer.includes("checkpointResumeTimestampRef"),
+);
+check(
+  "checkpoint open saves currentTime to resume ref",
+  focusedPlayer.includes("checkpointResumeTimestampRef.current = video.currentTime"),
+);
+check(
+  "Continue button seeks to resume timestamp before play",
+  focusedPlayer.includes("videoRef.current.currentTime = checkpointResumeTimestampRef.current"),
+);
+check(
+  "onLoadedMetadata restores checkpoint position on metadata reload",
+  focusedPlayer.includes("activeCheckpoint && checkpointResumeTimestampRef.current > 0"),
+);
+check(
+  "checkpoint re-trigger guard: hasSubmittedAll prevents reopen",
+  focusedPlayer.includes("hasSubmittedAll") && focusedPlayer.includes("!hasSubmittedAll"),
+);
+
+// ============================================================================
+console.log("\n=== H: image click-to-zoom ===");
+
+check("RichContentRenderer has zoom state", renderer.includes("zoom") && renderer.includes("setZoom"));
+check("RichContentRenderer click handler checks for IMG tag", renderer.includes('tagName === "IMG"'));
+check("zoom modal has accessible role=dialog", renderer.includes('role="dialog"'));
+check("zoom modal has Close button with aria-label", renderer.includes('aria-label="Close image zoom"'));
+check("zoom modal closes on Escape key", renderer.includes('"Escape"') && renderer.includes("setZoom(null)"));
+check("zoom modal is light-mode (white close button, dark overlay)", renderer.includes("bg-white") && renderer.includes("bg-slate-900"));
+check("image renders with zoom-in cursor", renderer.includes("cursor-zoom-in"));
+check("zoomed image preserves alt text", renderer.includes("zoom.alt"));
+check("clicking backdrop closes zoom", renderer.includes('onClick={() => setZoom(null)}'));
+check("clicking zoomed image does not propagate to backdrop", renderer.includes("stopPropagation"));
+
+// ============================================================================
+console.log("\n=== I: single sidebar collapse control ===");
+
+// The top-bar section is everything between the header comment and the progress bar comment.
+const topBarStart = focusedPlayer.indexOf("Student top bar");
+const topBarEnd = focusedPlayer.indexOf("Progress bar", topBarStart);
+const topBarSection = topBarStart >= 0 && topBarEnd > topBarStart
+  ? focusedPlayer.slice(topBarStart, topBarEnd)
+  : "";
+
+check("top bar section was found", topBarSection.length > 0);
+check(
+  "top bar no longer contains desktop collapse button (toggleTimelineCollapsed removed from top bar)",
+  !topBarSection.includes("toggleTimelineCollapsed"),
+);
+check(
+  "sidebar header still has collapse button",
+  focusedPlayer.includes("Collapse lesson timeline"),
+);
+check(
+  "collapsed rail still has expand button",
+  focusedPlayer.includes("Expand lesson timeline"),
+);
+// Mobile drawer toggle is still present in top bar
+check(
+  "mobile drawer toggle is still present (md:hidden)",
+  topBarSection.includes("md:hidden") && topBarSection.includes("Open lesson timeline"),
+);
+
+// ============================================================================
+console.log("\n=== J: fullscreen exit overlay + telemetry ===");
+
+check(
+  "FocusedPlayer fires fullscreen_exit (canonical event name)",
+  focusedPlayer.includes('"fullscreen_exit"'),
+);
+check(
+  "FocusedPlayer no longer fires old fullscreen_exited",
+  !focusedPlayer.includes('"fullscreen_exited"'),
+);
+check(
+  "fullscreen exit overlay uses calm language",
+  focusedPlayer.includes("Please return to fullscreen to continue."),
+);
+check(
+  "re-entering fullscreen dismisses overlay (setIsFullscreenLocked(false) on isFull=true)",
+  /setIsFullscreenLocked\(false\)[\s\S]{0,60}attemptResumePlayback/.test(focusedPlayer) ||
+  /else\s*\{[\s\S]{0,120}setIsFullscreenLocked\(false\)/.test(focusedPlayer),
+);
+check(
+  "fullscreen_exit telemetry includes lessonId",
+  focusedPlayer.includes("lessonId: attemptData?.lessonId"),
+);
+check(
+  "fullscreen_exit telemetry includes assignmentId",
+  focusedPlayer.includes("assignmentId: attemptData?.assignmentId"),
+);
+
+const liveMonitor = read("src/components/TeacherDashboard/LiveMonitor.tsx");
+check(
+  "LiveMonitor counts both fullscreen_exit and fullscreen_exited",
+  liveMonitor.includes('"fullscreen_exit"') && liveMonitor.includes('"fullscreen_exited"'),
+);
+check(
+  "LiveMonitor has label for fullscreen_exit",
+  liveMonitor.includes("fullscreen_exit: \"Fullscreen exit\""),
+);
+
+const dossier = read("src/components/TeacherDashboard/StudentDossierModal.tsx");
+check(
+  "StudentDossierModal counts both fullscreen_exit and fullscreen_exited",
+  dossier.includes('"fullscreen_exit"') && dossier.includes('"fullscreen_exited"'),
+);
 
 console.log(`\n=== RESULT: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

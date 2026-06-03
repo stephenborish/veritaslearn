@@ -305,6 +305,7 @@ export interface SecuritySignal {
     | 'paste_blocked'
     | 'blur_focus_lost'
     | 'visibility_hidden'
+    | 'fullscreen_exit'
     | 'fullscreen_exited'
     | 'seek_attempt_blocked'
     | 'rapid_navigation'

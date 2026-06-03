@@ -4187,10 +4187,13 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
       const BLUR_REVIEW_THRESHOLD = policy.reviewThreshold + 1;
 
       // --- Fullscreen exit: tiered response (only if fullscreen is enforced by policy or lesson settings) ---
+      // Accepts both canonical "fullscreen_exit" and legacy "fullscreen_exited" for backward compat.
       const fullscreenRequired = policy.requireFullscreen || lesson?.settings?.requireFullscreen;
-      if (eventType === "fullscreen_exited" && fullscreenRequired) {
+      const isFullscreenExitEvent = eventType === "fullscreen_exit" || eventType === "fullscreen_exited";
+      if (isFullscreenExitEvent && fullscreenRequired) {
         const exitCount = db.securitySignals.filter(
-          (s: any) => s.attemptId === attemptId && s.eventType === "fullscreen_exited"
+          (s: any) => s.attemptId === attemptId &&
+            (s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited")
         ).length;
 
         if (attempt.lockState !== "locked_awaiting_teacher") {

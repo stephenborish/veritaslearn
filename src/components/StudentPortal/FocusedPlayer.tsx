@@ -104,6 +104,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   // Video
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const wasPlayingRef = useRef(false);
+  const checkpointResumeTimestampRef = useRef<number>(0);
   const [furthestMaxTimestamp, setFurthestMaxTimestamp] = useState(0);
   const [currentSpeed, setCurrentSpeed] = useState<number>(1);
   const [activeCheckpoint, setActiveCheckpoint] = useState<any>(null);
@@ -384,16 +385,22 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         }
       }
       if (!isFull && requireFullscreenOpt) {
-        const result = await logIntegritySignal("fullscreen_exited", "high", { detail: "User exited fullscreen." });
+        const result = await logIntegritySignal("fullscreen_exit", "high", {
+          detail: "User exited fullscreen.",
+          lessonId: attemptData?.lessonId,
+          assignmentId: attemptData?.assignmentId,
+          lessonVersionId: attemptData?.lessonVersionId,
+        });
         if (result?.lockState === "locked_awaiting_teacher") {
           setIsTeacherLocked(true);
           isTeacherLockedRef.current = true;
           setIsFullscreenLocked(false);
         } else {
           setIsFullscreenLocked(true);
-          setLockMessage("This assignment requires fullscreen. Re-enter fullscreen to continue.");
+          setLockMessage("Please return to fullscreen to continue.");
         }
       } else {
+        setIsFullscreenLocked(false);
         attemptResumePlayback();
       }
     };
@@ -610,6 +617,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       });
       if (checkpoint && !activeCheckpoint) {
         video.pause();
+        checkpointResumeTimestampRef.current = video.currentTime;
         setActiveCheckpoint(checkpoint);
         logIntegritySignal("checkpoint_triggered", "medium", {
           detail: `Checkpoint triggered: ${checkpoint.title}`,
@@ -1210,16 +1218,6 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             >
               <List className="w-5 h-5" />
             </button>
-            <button
-              onClick={toggleTimelineCollapsed}
-              className="learn-focusable hidden md:inline-flex items-center justify-center w-9 h-9 rounded-lg text-slate-500 hover:bg-slate-100 transition cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-              aria-label={timelineCollapsed ? "Expand lesson timeline" : "Collapse lesson timeline"}
-              aria-pressed={timelineCollapsed}
-              title={timelineCollapsed ? "Expand timeline" : "Collapse timeline"}
-            >
-              {timelineCollapsed ? <PanelLeftOpen className="w-5 h-5" /> : <PanelLeftClose className="w-5 h-5" />}
-            </button>
-
             <div className="flex items-center gap-2 min-w-0">
               <img src="/favicon.svg" alt="" aria-hidden="true" className="w-7 h-7 rounded-lg shrink-0" />
               <div className="leading-tight min-w-0">
@@ -1509,6 +1507,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   onLoadedMetadata={() => {
                     if (videoRef.current) {
                       videoRef.current.playbackRate = currentSpeed;
+                      if (activeCheckpoint && checkpointResumeTimestampRef.current > 0) {
+                        videoRef.current.currentTime = checkpointResumeTimestampRef.current;
+                      }
                     }
                   }}
                   className="w-full object-contain bg-black"
@@ -1641,7 +1642,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                 <button
                                   onClick={() => {
                                     setActiveCheckpoint(null);
-                                    videoRef.current?.play().catch(() => {});
+                                    if (videoRef.current) {
+                                      videoRef.current.currentTime = checkpointResumeTimestampRef.current;
+                                      videoRef.current.play().catch(() => {});
+                                    }
                                   }}
                                   className="learn-focusable inline-flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm px-6 py-2.5 transition cursor-pointer outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/30"
                                 >
