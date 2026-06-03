@@ -135,7 +135,7 @@ function runTests() {
     // 5. HTML Export validation (compliant alignment wrapper & class mappings)
     console.log("\nStep 5: Inspecting exportDOM HTML structure...");
     const docExport = deserializedNode.exportDOM();
-    const wrapper = docExport.element;
+    const wrapper = docExport.element as any;
     assert.strictEqual(wrapper.tagName.toLowerCase(), "p");
     assert.match(wrapper.getAttribute("style") || "", /text-align:\s*left/);
     assert.match(wrapper.getAttribute("class") || "", /text-left/);

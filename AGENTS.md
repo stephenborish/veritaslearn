@@ -301,6 +301,118 @@ The student experience should be simple, focused, and calm.
 
 ---
 
+## 6.1 Student Lesson Experience (Learn Player UI)
+
+The student lesson player (`src/components/StudentPortal/FocusedPlayer.tsx`) was
+overhauled to feel like a premium, calm, bright educational product rather than a
+developer dashboard or a test-proctoring screen. The rules below are binding for any
+future change to the student-facing lesson surface.
+
+### Shared Learn question components
+
+All student-facing questions — **both video checkpoint questions and normal
+question blocks** — render through one shared, polished system so they feel
+identical:
+
+- `src/components/StudentPortal/LearnQuestionCard.tsx` — the orchestrating card.
+  Owns the header (Practice/Assessment label + helper + "Question X of Y"), the
+  stem, the answer area, the submit button, and the submitted/feedback state.
+- `src/components/StudentPortal/LearnMCQuestion.tsx` — multiple-choice answer rows
+  with fixed A/B/C/D letter markers, large clickable rows, polished selected state.
+- `src/components/StudentPortal/LearnSAQuestion.tsx` — a large, calm writing area
+  with a live "Saved" status and a comfortable read-only view after submission.
+- `src/lib/utils.ts` — `cn()` className combiner (no new dependency added).
+
+These were adapted **visually** from the VERITASAssess reference files
+(`AssessmentQuestionCard.tsx`, `MCStudent.tsx`, `SAStudent.tsx`, `HtmlRenderer.tsx`,
+`design.md`) — used as a formatting/visual reference only. VERITASAssess code is
+**not** imported, and its types are **not** assumed to match VERITAS Learn. The
+Learn components are typed against Learn's own model (`q.stem`, `q.choices`,
+`choice.id`, `choice.text`, `RichContentRenderer`, practice/assessment mode,
+submitted/feedback/pending-AI states).
+
+### Light mode only
+
+The entire student lesson surface is **light mode, always**. Never introduce dark
+mode. Use bright white / soft off-white surfaces (`bg-white`, `bg-slate-50`),
+highly legible dark text (`text-slate-900` / `text-slate-700`), and tasteful color
+accents (indigo for selection/primary, emerald for success/completion, amber for
+gentle "not quite" / warnings). There are **no dark full-screen checkpoint
+overlays**. The checkpoint, focus-mode, and teacher-pause overlays are all bright,
+calm panels (`bg-slate-50/95 backdrop-blur-sm` + a white card).
+
+### Checkpoint experience
+
+- A bright, centered panel over the video (not a dark modal), max width ~1000px on
+  large screens, near full width with safe padding on small screens.
+- Title is "Practice Check" or "Assessment Check" with a short instruction
+  ("Answer the check question to continue.").
+- Multiple checkpoint questions are stepped through one at a time with clear
+  "Question X of Y" progress and a "Next" / "Continue" action.
+- Graceful transition back to the video after Continue.
+
+### Student top bar
+
+Bright, compact, useful — not overloaded:
+
+- VERITAS Learn wordmark + favicon logo, student name.
+- Center: lesson title + current position ("Step 3 of 8 · block title").
+- Animated, satisfying progress bar (indigo gradient).
+- Live save/submit status chip ("Saving…", "Saved", "Submitting…").
+- Timeline collapse/expand control (desktop) and drawer toggle (mobile).
+- "Save & exit" action. No developer/debug wording, no proctoring language.
+
+### Collapsible timeline
+
+- The lesson timeline/sidebar can be collapsed on desktop to a narrow progress
+  rail (numbered dots + restore button); expanded it shows the full outline with
+  the current block highlighted and completed blocks gently marked.
+- The collapsed preference is remembered per attempt via `localStorage`, keyed
+  `veritas_timeline_collapsed_<attemptId>`.
+- On mobile it behaves as an animated drawer. All controls keep accessible labels.
+
+### Animation & microinteraction principles
+
+- Subtle, performant, classroom-appropriate. Use the existing `motion/react`
+  (Motion) library — do **not** add a heavy animation dependency.
+- Allowed moments of delight: soft progress-bar fill, gentle card entrance,
+  selected-answer transition, a brief scale-in checkmark on submit, a calm
+  "saved/submitted" transition, and a quiet completion moment.
+- **No** confetti, bouncing, looping, childish, loud, or game-like effects.
+- Respect `prefers-reduced-motion`: components call `useReducedMotion()` and
+  `src/index.css` disables animations/transitions under the media query.
+
+### Concise student language
+
+Use calm, friendly, concise copy. Approved labels: "Practice Check",
+"Assessment Check", "Submit", "Submitted", "Saved", "Saving…", "Submitting…",
+"Feedback pending", "Submitted for teacher review.", "Continue", "Next", "Back",
+"You're ready to continue", "Nice work", "Finish the video to continue",
+"Answer the check question to continue", "Saving your progress…".
+
+Banned from the student UI: "formal course evaluation", "recorded securely",
+"feedback is hidden until released by your teacher", "portfolio", and any raw
+developer terms (checkpoint payload, gradingMode, response object, AI record,
+security event, backend sync, student response object).
+
+### Feedback-hiding rules (UNCHANGED — still enforced server-side)
+
+The UI overhaul did **not** change the security model. The server
+(`server/data/sanitize.ts`) remains the single source of truth for what a student
+receives. For **assessment** responses the student UI never shows score,
+correctness, answer key, `correctChoiceId`, model answer, rubric, AI scoring
+guidance, AI rationale, teacher notes, or teacher-only feedback — assessment
+submit/reload simply shows "Submitted for teacher review." **Practice** feedback is
+shown only when the server allows it (released / immediate). The Learn components
+additionally guard on `mode` so they cannot render assessment correctness even if
+passed. Video checkpoint requirements and AI practice-grading behavior are
+preserved.
+
+Verification: `npm run verify:student-ui` (UI contract + security), alongside the
+existing `verify:slice`, `verify:workflow`, and `verify:hardening`.
+
+---
+
 ## 7. Authentication and Access Rules
 
 ### 7.1 Google Authentication
