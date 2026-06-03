@@ -5,6 +5,7 @@ import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 import { auth } from "../../lib/firebase";
 
 type AnyQuestion = any;
+type QuestionChange = AnyQuestion | ((latestQuestion: AnyQuestion) => AnyQuestion);
 
 function uid(prefix: string): string {
   return prefix + "_" + Math.random().toString(36).slice(2, 9);
@@ -123,7 +124,7 @@ interface QuestionEditorProps {
   question: AnyQuestion;
   type: "mc" | "sa";
   graded: boolean;
-  onChange: (q: AnyQuestion) => void;
+  onChange: (q: QuestionChange) => void;
   lessonContext?: LessonContext;
   lessonId?: string;
   blockId?: string;
@@ -153,7 +154,10 @@ export default function QuestionEditor({
   const [revisionInstruction, setRevisionInstruction] = useState("");
 
   const q = question || {};
-  const patch = (partial: any) => onChange({ ...q, ...partial });
+  const patch = (partial: any) => onChange((latestQuestion: AnyQuestion) => ({ ...(latestQuestion || {}), ...partial }));
+  const patchWith = (updater: (latestQuestion: AnyQuestion) => AnyQuestion) => {
+    onChange((latestQuestion: AnyQuestion) => updater(latestQuestion || {}));
+  };
 
   const lessonPart = lessonId ? `${lessonId}_` : "";
   const blockPart = blockId ? `${blockId}_` : "";
@@ -162,31 +166,50 @@ export default function QuestionEditor({
 
   // ---- MC choice helpers ----
   const choices: any[] = Array.isArray(q.choices) ? q.choices : [];
-  const setChoices = (next: any[], correctChoiceId = q.correctChoiceId) =>
-    patch({ choices: next, correctChoiceId });
-
-  const addChoice = () => setChoices([...choices, { id: uid("choice"), text: "" }]);
-  const updateChoiceContent = (id: string, content: any) =>
-    setChoices(choices.map((c) => (c.id === id ? { ...c, text: content } : c)));
-  const deleteChoice = (id: string) =>
-    setChoices(
-      choices.filter((c) => c.id !== id),
-      q.correctChoiceId === id ? undefined : q.correctChoiceId
-    );
-  const moveChoice = (idx: number, dir: -1 | 1) => {
-    const next = [...choices];
+  const addChoice = () => patchWith((latest) => {
+    const latestChoices = Array.isArray(latest.choices) ? latest.choices : [];
+    return { ...latest, choices: [...latestChoices, { id: uid("choice"), text: "" }] };
+  });
+  const updateChoiceContent = (id: string, content: any) => patchWith((latest) => {
+    const latestChoices = Array.isArray(latest.choices) ? latest.choices : [];
+    return {
+      ...latest,
+      choices: latestChoices.map((c: any) => (c.id === id ? { ...c, text: content } : c))
+    };
+  });
+  const deleteChoice = (id: string) => patchWith((latest) => {
+    const latestChoices = Array.isArray(latest.choices) ? latest.choices : [];
+    return {
+      ...latest,
+      choices: latestChoices.filter((c: any) => c.id !== id),
+      correctChoiceId: latest.correctChoiceId === id ? undefined : latest.correctChoiceId
+    };
+  });
+  const moveChoice = (idx: number, dir: -1 | 1) => patchWith((latest) => {
+    const next = [...(Array.isArray(latest.choices) ? latest.choices : [])];
     const target = idx + dir;
-    if (target < 0 || target >= next.length) return;
+    if (target < 0 || target >= next.length) return latest;
     [next[idx], next[target]] = [next[target], next[idx]];
-    setChoices(next);
-  };
+    return { ...latest, choices: next };
+  });
 
   // ---- Rubric helpers ----
   const rubric: any[] = Array.isArray(q.rubricCategories) ? q.rubricCategories : [];
-  const setRubric = (next: any[]) => patch({ rubricCategories: next });
-  const addRubric = () => setRubric([...rubric, { id: uid("rub"), name: "", maxPoints: 1, description: "" }]);
-  const updateRubric = (id: string, partial: any) => setRubric(rubric.map((r) => (r.id === id ? { ...r, ...partial } : r)));
-  const deleteRubric = (id: string) => setRubric(rubric.filter((r) => r.id !== id));
+  const addRubric = () => patchWith((latest) => {
+    const latestRubric = Array.isArray(latest.rubricCategories) ? latest.rubricCategories : [];
+    return { ...latest, rubricCategories: [...latestRubric, { id: uid("rub"), name: "", maxPoints: 1, description: "" }] };
+  });
+  const updateRubric = (id: string, partial: any) => patchWith((latest) => {
+    const latestRubric = Array.isArray(latest.rubricCategories) ? latest.rubricCategories : [];
+    return {
+      ...latest,
+      rubricCategories: latestRubric.map((r: any) => (r.id === id ? { ...r, ...partial } : r))
+    };
+  });
+  const deleteRubric = (id: string) => patchWith((latest) => {
+    const latestRubric = Array.isArray(latest.rubricCategories) ? latest.rubricCategories : [];
+    return { ...latest, rubricCategories: latestRubric.filter((r: any) => r.id !== id) };
+  });
   const rubricTotal = rubric.reduce((s, r) => s + (Number(r.maxPoints) || 0), 0);
 
   // ---- AI helpers ----
@@ -366,7 +389,7 @@ export default function QuestionEditor({
             onChange={(val) => patch({ stem: val })}
             mode="compact"
             placeholder="Enter the question students will see..."
-            documentKey={`${lessonPart}${blockPart}${cpPart}qstem-${qIdStr}`}
+            documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-stem`}
           />
         </div>
 
@@ -378,7 +401,7 @@ export default function QuestionEditor({
               onChange={(val) => patch({ studentInstructions: val })}
               mode="compact"
               placeholder="e.g. Respond in 3–5 complete sentences."
-              documentKey={`${lessonPart}${blockPart}${cpPart}qinst-${qIdStr}`}
+              documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-studentInstructions`}
             />
           </div>
         )}
@@ -518,7 +541,7 @@ export default function QuestionEditor({
                         allowMath={true}
                         allowChemistry={true}
                         placeholder={`Choice ${CHOICE_LETTERS[idx] ?? idx + 1} — supports bold, subscript, images, math…`}
-                        documentKey={`${lessonPart}${blockPart}${cpPart}choice-${c.id}`}
+                        documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-choice-${c.id}-text`}
                       />
                     ) : (
                       <input
@@ -548,7 +571,7 @@ export default function QuestionEditor({
               onChange={(val) => { patch({ modelAnswer: val }); setAiDraftActive(false); }}
               mode="compact"
               placeholder="A strong, full-credit answer."
-              documentKey={`${lessonPart}${blockPart}${cpPart}qmodel-${qIdStr}`}
+              documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-modelAnswer`}
             />
           </div>
         )}
@@ -570,7 +593,7 @@ export default function QuestionEditor({
               onChange={(val) => patch({ explanation: val })}
               mode="compact"
               placeholder="Why is the correct answer correct? Shown as practice feedback if enabled."
-              documentKey={`${lessonPart}${blockPart}${cpPart}qexp-${qIdStr}`}
+              documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-explanation`}
             />
           </div>
         )}
@@ -696,7 +719,7 @@ export default function QuestionEditor({
                 onChange={(val) => { patch({ aiScoringGuidance: val }); setAiDraftActive(false); }}
                 mode="compact"
                 placeholder="Key points the AI grader should look for and how to weight them."
-                documentKey={`${lessonPart}${blockPart}${cpPart}qscoring-${qIdStr}`}
+                documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-aiScoringGuidance`}
               />
             </div>
 
@@ -739,7 +762,7 @@ export default function QuestionEditor({
                       onChange={(val) => updateRubric(r.id, { description: val })}
                       mode="compact"
                       placeholder="What earns credit in this category?"
-                      documentKey={`${lessonPart}${blockPart}${cpPart}qrub-${r.id}`}
+                      documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-rubric-${r.id}-description`}
                     />
                     <div className="grid grid-cols-1 gap-1">
                       <input type="text" value={textOf(r.fullCreditExample)} onChange={(e) => updateRubric(r.id, { fullCreditExample: e.target.value })} placeholder="Full-credit example (optional)" className={inputCls} />
@@ -763,7 +786,7 @@ export default function QuestionEditor({
                 onChange={(val) => patch({ teacherNotes: val })}
                 mode="compact"
                 placeholder="Private notes for graders — not sent to AI or students."
-                documentKey={`${lessonPart}${blockPart}${cpPart}qnotes-${qIdStr}`}
+                documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-teacherNotes`}
               />
             </div>
           </>
