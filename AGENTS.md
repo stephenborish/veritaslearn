@@ -3725,4 +3725,211 @@ VERIFICATION:
 - `npm run lint`: PASS (No runtime source errors)
 - `npm run build`: PASS (Vite bundles successfully, esbuild completes, standalone development servers boot)
 
+---
+
+### Step 38: Server-Certified Completion, Assignment-Centered Gradebook, AI Review Queue, Teacher-Controlled Feedback Release
+
+Date: 2026-06-03
+Agent: Claude Code (Sonnet 4.6)
+Task: Implement four major structural improvements:
+  1. Server-certified completion validation — server decides if attempt completion is valid, not the client
+  2. Assignment-centered gradebook lifecycle — canonical key is assignmentId + studentId (not lessonId + studentId)
+  3. AI Review workflow as a real operational queue — teachers see prioritized review queue, can approve/override/release
+  4. Teacher-controlled feedback release — assessment feedback stays hidden until explicitly released
+
+WHAT CHANGED:
+
+src/types.ts:
+  - Extended GradebookEntry.status to full lifecycle union:
+      'not_started' | 'in_progress' | 'submitted' | 'completed' | 'pending_ai' |
+      'needs_teacher_review' | 'reviewed' | 'feedback_released' | 'missing' | 'excused' |
+      'late' | 'extended' | 'reopened' | 'error' | 'needs_grading' | 'graded'
+  - Added GradebookEntry fields: practiceScore, practiceMaxScore, practiceSummary,
+      assessmentScore, assessmentMaxScore, lessonId, lessonVersionId, attemptId,
+      extendedUntil, excusedAt, excusedBy, reopenedAt, reopenedBy, feedbackReleasedAt,
+      feedbackReleasedBy, lastStatusChangedAt, lastStatusChangedBy, teacherNotes
+  - Extended GradebookResponseEntry with: lessonVersionId, blockId, checkpointId, questionId,
+      studentFacingFeedback, teacherOnlyNotes, originalAiScore, feedbackReleasedAt,
+      feedbackReleasedBy, reviewedAt, reviewedBy, feedback_released status
+  - Added exported types: AssignmentLifecycleStatus, CompletionMissingCode,
+      CompletionRequirementMissing, CompletionValidationResult
+
+server/data/completion.ts (NEW FILE):
+  - Pure completion validation engine (no side effects, fully testable without a running server)
+  - validateAttemptCompletion(attemptId, requestingUserId, isTeacherOrAdmin, db, now):
+      Returns CompletionValidationResult { canComplete, missing[], assessmentScore, practiceSummary }
+      Checks: attempt existence, ownership, already-completed, active enrollment,
+      assignment availability (opensAt/closesAt), extension/reopen override,
+      version mismatch, video completion (85% threshold), checkpoint completion,
+      question block completion (assessment blocks only gate completion)
+      Resolves blocks from LessonVersion.blocksSnapshot first, falls back to db.blocks for legacy
+  - validateVideoCompletion(block, attempt, options): checks furthestVideoTimestamps >= 85%
+  - validateCheckpointCompletion(block, checkpoint, attempt, responses, qAsgs): required checkpoints gate
+  - validateQuestionBlockCompletion(block, attempt, responses, qAsgs): assessment (non-practice) blocks gate
+  - studentSafeMessage(code): maps internal error codes to student-safe human-readable strings
+      (never reveals internal code names or technical implementation details)
+
+server/data/sanitize.ts (modified):
+  - sanitizeResponseForStudent(): now checks feedbackReleasedAt && feedbackVisibleToStudent === true
+      for teacher-released feedback pathway. Always strips: teacherReviewedBy, teacherOverride,
+      teacherOnlyFeedback, originalAiScore, isLowEffort, lowEffortReason.
+      Assessment SA without release: hides all score/feedback.
+  - sanitizeGradebookEntryForStudent(): exposes new lifecycle fields safely
+  - Added mapGradebookStatusForStudent(): maps internal statuses to student-safe display values
+      (e.g., needs_teacher_review → 'submitted', feedback_released → 'feedback_available')
+
+server.ts (major modifications):
+  - Import: validateAttemptCompletion, studentSafeMessage from ./server/data/completion
+  - Added ensureGradebookEntryForAssignment(studentId, assignmentId, db): creates minimal
+      'not_started' entry if none exists, preserving all teacher lifecycle fields
+  - Updated upsertGradebookEntryForAttempt():
+      Maps statuses: submitted → pending_ai, needs_grading → needs_teacher_review, graded → reviewed
+      Preserves teacher-set lifecycle overrides (excused, missing, extended, reopened)
+      Stores practiceScore, practiceMaxScore, practiceSummary separately from assessment scores
+      Stores courseId, lessonId, lessonVersionId, attemptId, preserves all teacher timestamps
+  - Updated POST /api/attempts/:id/complete:
+      Calls validateAttemptCompletion() server-side before marking attempt done
+      Returns 422 with structured missing[] list if invalid
+      Students receive student-safe messages; teachers receive full structured list
+  - Updated POST /api/lessons/:lessonId/students/:studentId/gradebook-status:
+      No longer creates fake attempts. Updates GradebookEntry directly.
+  - Added assignment lifecycle endpoints (all require requireTeacher + course ownership check):
+      POST /api/assignments/:assignmentId/students/:studentId/excuse
+      POST /api/assignments/:assignmentId/students/:studentId/mark-missing
+      POST /api/assignments/:assignmentId/students/:studentId/extend (requires extendedUntil in body)
+      POST /api/assignments/:assignmentId/students/:studentId/reopen (reopens completed attempt)
+      POST /api/assignments/:assignmentId/students/:studentId/status
+  - Added GET /api/ai-review/queue:
+      Returns prioritized review queue with counts by status (pending_ai, error,
+      needs_teacher_review, ai_scored_awaiting_review, reviewed_not_released, feedback_released)
+      Respects teacher course ownership — only shows responses the teacher can manage
+      Resolves question text from LessonVersion.blocksSnapshot (not mutable blocks)
+  - Added POST /api/ai-review/:responseId/approve — teacher accepts AI score as-is
+  - Added POST /api/ai-review/:responseId/override — overrides score, preserves originalAiScore
+  - Added POST /api/ai-review/:responseId/mark-reviewed — marks reviewed without score change
+  - Added POST /api/ai-review/:responseId/release-feedback — releases student-facing feedback
+  - Added POST /api/assignments/:assignmentId/release-reviewed-feedback — bulk release
+  - Added resolveAssignmentForLifecycle() helper for auth/enrollment checks on lifecycle endpoints
+  - Updated GET /api/analytics to include gradebookResponseEntries
+  - Updated POST /api/responses/:id/override to preserve originalAiScore and set reviewedAt/reviewedBy
+
+src/components/TeacherDashboard/AIReview.tsx (complete rewrite):
+  - Now API-driven: loads from GET /api/ai-review/queue
+  - Filter tabs by review status: pending_ai, error, needs_teacher_review,
+      ai_scored_awaiting_review, reviewed_not_released, feedback_released + integrity + anomalies
+  - Refinement filters: assignment, category (assessment/practice)
+  - Expandable cards: question text (from LessonVersion), student response,
+      AI score/confidence/rationale (teacher-only), student-facing feedback, rubric breakdown
+  - Teacher action buttons: Approve AI Score, Override Score, Mark Reviewed, Release Feedback
+  - Props: added assignments, idToken, onRefresh
+
+src/components/TeacherDashboard/Gradebook.tsx (modified):
+  - Added statusLabel() mapping all lifecycle status codes to human-readable labels
+  - Added renderStatusBadge() with icons/colors for all lifecycle states
+      (pending_ai=spinner, needs_teacher_review=amber, reviewed=thumbs-up,
+       feedback_released=eye, missing=x-circle, excused=check-circle, etc.)
+  - Updated status override dropdown to use new assignment-level endpoints
+  - Entry lookup canonical key: assignmentId + studentId (not lessonId + studentId)
+  - Added feedbackReleased indicator
+
+src/App.tsx (modified):
+  - Added gradebookResponseEntries state variable
+  - Captures analyticsRaw.gradebookResponseEntries from analytics endpoint
+  - Passes assignments, idToken, onRefresh to AIReview component
+
+scripts/verify-completion.ts (NEW FILE):
+  - 12-section pure function test suite for completion validation
+  - 47 checks covering: attempt not found, ownership, already completed, enrollment,
+      assignment availability (not_open/closed/extended bypass), version mismatch,
+      video completion (50% fails, 87% passes, no duration passes), checkpoint completion
+      (required unanswered fails, answered passes, optional passes), question block
+      (assessment unsubmitted fails, practice passes), full completion success,
+      practice vs assessment score separation, student-safe messages (9 codes)
+
+package.json:
+  - Added: "verify:completion": "tsx scripts/verify-completion.ts"
+
+SERVER-CERTIFIED COMPLETION MODEL:
+  The client submits POST /api/attempts/:id/complete. The server validates all requirements:
+  1. Attempt exists and belongs to the requesting student (or teacher bypasses ownership)
+  2. Attempt is not already completed
+  3. Student has an active enrollment in the course
+  4. Assignment is currently open (opensAt <= now <= closesAt), with extension/reopen bypass
+  5. Attempt's lessonVersionId matches the assignment's lessonVersionId (no version mismatch)
+  6. All video blocks watched to at least 85% (using furthestVideoTimestamps)
+  7. All required checkpoints answered (matching responses exist for this attempt)
+  8. All assessment (non-practice) question blocks have submitted responses
+  If any check fails, server returns HTTP 422 with structured missing[] array.
+  Students receive student-safe messages; teachers receive full internal codes + details.
+
+ASSIGNMENT-CENTERED GRADEBOOK:
+  Canonical GradebookEntry key: assignmentId + studentId (not lessonId + studentId)
+  GradebookEntry is created when student starts an attempt (or teacher sets a lifecycle status).
+  ensureGradebookEntryForAssignment() creates a minimal 'not_started' entry if none exists.
+  Teacher lifecycle fields (excused, missing, extended, reopened) are preserved with higher
+  priority than attempt-driven status updates — a teacher-excused entry stays excused even if
+  an attempt is submitted.
+
+LIFECYCLE STATUS FLOW:
+  not_started → (attempt created) → in_progress → (attempt submitted) → pending_ai →
+  (AI grading done, no review needed) → reviewed → (teacher releases) → feedback_released
+  OR (AI needs review) → needs_teacher_review → (teacher approves/overrides) → reviewed
+  Teacher can override to: missing, excused, extended, reopened at any time.
+
+PRACTICE vs ASSESSMENT SCORE SEPARATION:
+  Responses with gradebookCategory === 'practice' or gradingMode === 'practice' contribute
+  to practiceSummary ONLY. They never inflate assessmentScore or assessmentMaxScore.
+  assessmentScore is the only value used for gradebook percent calculation.
+  Practice scores are stored separately in practiceScore/practiceMaxScore/practiceSummary.
+
+TEACHER-CONTROLLED FEEDBACK RELEASE:
+  Assessment responses: score, correctness, AI feedback, rubric, model answer — ALL hidden
+  from students until a teacher explicitly releases them via:
+    POST /api/ai-review/:responseId/release-feedback (per-response), or
+    POST /api/assignments/:assignmentId/release-reviewed-feedback (bulk, reviewed-only)
+  Release sets feedbackReleasedAt, feedbackReleasedBy, feedbackVisibleToStudent on the
+  GradebookResponseEntry. sanitize.ts checks both fields before exposing anything.
+
+NO FAKE ATTEMPT CREATION:
+  Teacher gradebook status overrides (missing, excused, extended) update GradebookEntry directly
+  via ensureGradebookEntryForAssignment(). No fake/ghost attempt records are created.
+  This preserves the integrity of attempt-based analytics and integrity signals.
+
+AI REVIEW QUEUE:
+  GET /api/ai-review/queue resolves question text from LessonVersion.blocksSnapshot (immutable),
+  not from mutable db.blocks. Teacher course ownership is verified before including responses.
+  Queue items carry teacher-only fields (AI rationale, confidence, rubric breakdown) that are
+  never included in student-facing responses.
+
+VERIFICATION:
+  Commands run:
+    npm run verify:completion  → 47 passed, 0 failed
+    npm run lint (tsc --noEmit) — pre-existing non-blocking errors in scripts/ and src/ (same
+      as prior PRs due to tsconfig not including Node types). My new files introduced zero new
+      TypeScript errors. One new TS18047 error from filter(Boolean) was fixed (typed predicate).
+
+Known issues:
+  - Gradebook.tsx and AIReview.tsx UI changes are not browser-tested (no dev server available).
+    The component logic and API-call patterns follow the established patterns in the codebase.
+  - POST /api/assignments/:assignmentId/students/:studentId/reopen currently closes the most
+    recent completed attempt (status = 'started') but does not create a new attempt. A real
+    reopen workflow may need to create a new attempt in a future PR.
+  - Bulk feedback release (release-reviewed-feedback) only releases entries with status
+    'reviewed' or 'teacher_reviewed'/'teacher_overridden'. Pending-AI responses require
+    per-response release after teacher review.
+
+Future-agent warning:
+  - NEVER mark completion on the client side. POST /api/attempts/:id/complete MUST go through
+    validateAttemptCompletion() which is the server-certified source of truth.
+  - NEVER use lessonId + studentId as the GradebookEntry key. The canonical key is
+    assignmentId + studentId. Assignments are the unit of gradebook record, not lessons.
+  - NEVER expose AI rationale, rubric breakdown, confidence, teacher notes, originalAiScore,
+    model answers, or scoring guidance to students. These are teacher-only fields.
+  - NEVER release feedback for assessment responses without an explicit teacher release action.
+    sanitize.ts enforces this via feedbackReleasedAt && feedbackVisibleToStudent === true check.
+  - NEVER include practice responses in assessmentScore. Check gradebookCategory === 'practice'
+    or gradingMode === 'practice' and route to practiceSummary instead.
+  - NEVER create fake attempt records to represent gradebook lifecycle states (missing, excused,
+    extended). Use GradebookEntry directly via ensureGradebookEntryForAssignment().
+
 

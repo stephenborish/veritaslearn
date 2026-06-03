@@ -230,7 +230,9 @@ export function sanitizeAttemptForStudent(attempt: any): any {
 /**
  * Sanitize a StudentResponse for student view.
  *
- * Assessment SA: hides all scoring, feedback, and grading data. Returns only responseValue and status "submitted".
+ * Assessment SA: hides all scoring, feedback, and grading data unless
+ * teacher has explicitly released feedback (feedbackReleasedAt is set and
+ * feedbackVisibleToStudent === true on the response or its gradebookResponseEntry).
  * Practice SA (feedback not yet released): hides score but exposes minimal aiGrading.status for pending state.
  * Practice SA (feedback released): exposes score and sanitized AI grading via sanitizeAiGradingForStudent.
  * MC: hides correctness and score unless feedbackAllowed.
@@ -243,40 +245,55 @@ export function sanitizeResponseForStudent(r: any): any {
   delete safe.teacherOverrideScore;
   delete safe.teacherOverrideFeedback;
   delete safe.teacherReviewedAt;
+  delete safe.teacherReviewedBy;
   delete safe.teacherOverride;
+  delete safe.teacherOnlyFeedback;
+  delete safe.originalAiScore;
+  // isLowEffort / lowEffortReason are teacher-only
+  delete safe.isLowEffort;
+  delete safe.lowEffortReason;
 
   const gradingMode = safe.gradingMode || safe.gradebookCategory || "assessment";
   const isPractice = gradingMode === "practice";
   const feedbackVis = safe.feedbackVisibility || "teacher_only";
-  const feedbackAllowed = isPractice && (feedbackVis === "student_visible" || feedbackVis === "immediate");
+
+  // Feedback is released when:
+  //  a) practice + feedbackVisibility is student_visible / immediate, OR
+  //  b) teacher explicitly released it (feedbackReleasedAt set + feedbackVisibleToStudent === true)
+  const teacherReleased = !!(safe.feedbackReleasedAt && safe.feedbackVisibleToStudent === true);
+  const feedbackAllowed =
+    teacherReleased ||
+    (isPractice && (feedbackVis === "student_visible" || feedbackVis === "immediate"));
 
   if (safe.type === "sa") {
     if (feedbackAllowed) {
-      // Practice response with released feedback: sanitize AI grading for student
+      // Released feedback: sanitize AI grading and expose student-facing content only
       if (safe.aiGrading) {
         safe.aiGrading = sanitizeAiGradingForStudent(safe.aiGrading);
       }
-      delete safe.isLowEffort;
-      delete safe.lowEffortReason;
+      // Prefer explicit studentFacingFeedback over raw feedback
+      if (safe.studentFacingFeedback !== undefined) {
+        safe.feedback = safe.studentFacingFeedback;
+      }
+      delete safe.studentFacingFeedback;
     } else if (isPractice) {
-      // Practice response with feedback not yet released: hide score but expose minimal status
+      // Practice response with feedback not yet released: hide score, expose minimal status
       delete safe.score;
       delete safe.pointsEarned;
       delete safe.isCorrect;
-      delete safe.isLowEffort;
-      delete safe.lowEffortReason;
-      // Expose only the grading status so the client can show "pending" or "grading_failed"
+      delete safe.feedback;
+      delete safe.studentFacingFeedback;
       const aiStatus = safe.aiGrading?.status;
       safe.aiGrading = aiStatus ? { status: aiStatus } : undefined;
     } else {
-      // Assessment SA: hide all scoring and grading information
+      // Assessment SA without release: hide all scoring and grading
       delete safe.score;
       delete safe.pointsEarned;
       delete safe.isCorrect;
       delete safe.aiGrading;
-      delete safe.isLowEffort;
-      delete safe.lowEffortReason;
       delete safe.aiFeedbackReleasedAt;
+      delete safe.feedback;
+      delete safe.studentFacingFeedback;
       safe.status = "submitted";
     }
   } else {
@@ -295,23 +312,61 @@ export function sanitizeResponseForStudent(r: any): any {
 
 /**
  * Sanitize a GradebookEntry for student view.
- * Only exposes non-sensitive status and category fields.
- * Score and feedback are only exposed when feedbackVisibleToStudent is explicitly true.
+ * Exposes non-sensitive status fields and, when feedback has been released, score and feedback.
+ * Never exposes teacher-only attribution fields (reviewedBy, releasedBy, etc.).
  */
 export function sanitizeGradebookEntryForStudent(e: any): any {
   if (!e || typeof e !== "object") return e;
+
+  // Map internal status to student-safe display status
+  const studentStatus = mapGradebookStatusForStudent(e.status);
+
   const safe: any = {
     id: e.id,
-    category: e.category,
-    status: e.status,
+    assignmentId: e.assignmentId,
+    status: studentStatus,
     attemptId: e.attemptId,
-    responseId: e.responseId,
     updatedAt: e.updatedAt,
+    feedbackReleasedAt: e.feedbackReleasedAt || null,
   };
-  if (e.feedbackVisibleToStudent) {
-    safe.score = e.score;
-    safe.maxScore = e.maxScore;
-    if (e.feedback) safe.feedback = e.feedback;
+
+  // Expose score/feedback only after teacher-controlled release
+  if (e.feedbackReleasedAt || e.feedbackVisibleToStudent) {
+    if (e.assessmentScore !== undefined) safe.assessmentScore = e.assessmentScore;
+    if (e.assessmentMaxScore !== undefined) safe.assessmentMaxScore = e.assessmentMaxScore;
+    if (e.finalScore !== undefined) safe.score = e.finalScore;
+    if (e.maxPoints !== undefined) safe.maxScore = e.maxPoints;
+    if (e.percent !== undefined) safe.percent = e.percent;
   }
+
+  // Practice summary is always safe to show (no model answers, etc.)
+  if (e.practiceSummary) safe.practiceSummary = e.practiceSummary;
+
   return safe;
+}
+
+/**
+ * Map internal GradebookEntry status codes to student-safe display strings.
+ * Students must not see teacher-workflow statuses like 'needs_teacher_review'.
+ */
+export function mapGradebookStatusForStudent(status: string): string {
+  switch (status) {
+    case 'not_started': return 'not_started';
+    case 'in_progress': return 'in_progress';
+    case 'submitted':   return 'submitted';
+    case 'completed':   return 'completed';
+    case 'pending_ai':  return 'submitted'; // "Submitted for teacher review."
+    case 'needs_teacher_review': return 'submitted';
+    case 'reviewed':    return 'submitted'; // no feedback yet
+    case 'feedback_released': return 'feedback_available';
+    case 'missing':     return 'missing';
+    case 'excused':     return 'excused';
+    case 'late':        return 'late';
+    case 'extended':    return 'in_progress'; // extension granted
+    case 'reopened':    return 'in_progress';
+    case 'error':       return 'submitted'; // fall-back
+    case 'needs_grading': return 'submitted'; // legacy
+    case 'graded':      return 'completed';    // legacy
+    default:            return status;
+  }
 }

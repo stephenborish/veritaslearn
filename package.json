@@ -19,7 +19,8 @@
     "verify:student-ui": "tsx scripts/verify-student-ui.ts",
     "verify:access-control": "tsx scripts/verify-access-control.ts",
     "verify:versioning": "tsx scripts/verify-versioning.ts",
-    "verify:api-only": "tsx scripts/verify-api-only.ts"
+    "verify:api-only": "tsx scripts/verify-api-only.ts",
+    "verify:completion": "tsx scripts/verify-completion.ts"
   },
   "dependencies": {
     "@ckeditor/ckeditor5-react": "^11.1.2",

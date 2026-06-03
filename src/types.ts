@@ -424,13 +424,28 @@ export interface GradebookResponseEntry {
   assignmentId?: string;
   courseId?: string;
   lessonId?: string;
+  lessonVersionId?: string;
   attemptId?: string;
   responseId?: string;
+  blockId?: string;
+  checkpointId?: string;
+  questionId?: string;
   category?: 'practice' | 'assessment';
-  score?: number;      // points earned for this specific response
-  maxScore?: number;   // max points for this specific response
+  score?: number;
+  maxScore?: number;
+  /** AI-produced or system-computed feedback (may be teacher-facing or student-facing depending on category). */
   feedback?: string;
+  /** Safe student-facing feedback — only exposed after release. */
+  studentFacingFeedback?: string;
+  /** Teacher-only notes — never shown to students. */
+  teacherOnlyNotes?: string;
+  /** Original AI score before teacher override (preserved for audit). */
+  originalAiScore?: number | null;
   feedbackVisibleToStudent?: boolean;
+  feedbackReleasedAt?: string | null;
+  feedbackReleasedBy?: string | null;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
   source?: 'multiple_choice' | 'ai_short_answer' | 'teacher_override' | 'manual';
   status:
     | 'pending_ai'
@@ -439,6 +454,7 @@ export interface GradebookResponseEntry {
     | 'needs_teacher_review'
     | 'teacher_reviewed'
     | 'teacher_overridden'
+    | 'feedback_released'
     | 'missing'
     | 'excused'
     | 'error';
@@ -449,27 +465,109 @@ export interface GradebookResponseEntry {
 export interface GradebookEntry {
   id: string;
   studentId: string;
+  /** Canonical key field: one entry per student per assignment. */
   assignmentId?: string;
   courseId?: string;
   lessonId?: string;
+  lessonVersionId?: string;
   attemptId?: string;
 
-  // Attempt-level summary fields — set by upsertGradebookEntryForAttempt (one entry per attempt).
-  rawScore?: number;   // sum of all assessment response scores
-  finalScore?: number; // = rawScore (no post-processing applied yet)
-  maxPoints?: number;  // sum of all assessment question maxPoints
-  percent?: number;    // Math.round(finalScore / maxPoints * 100)
+  /**
+   * Assignment-centered lifecycle status.
+   * Legacy values ('needs_grading', 'graded', 'submitted') are accepted for
+   * backward compatibility but new writes should use the canonical list.
+   */
   status:
     | 'not_started'
     | 'in_progress'
     | 'submitted'
-    | 'needs_grading'
-    | 'graded'
+    | 'completed'
+    | 'pending_ai'
+    | 'needs_teacher_review'
+    | 'reviewed'
+    | 'feedback_released'
     | 'missing'
-    | 'excused';
+    | 'excused'
+    | 'late'
+    | 'extended'
+    | 'reopened'
+    | 'error'
+    // legacy statuses — keep for backward compat
+    | 'needs_grading'
+    | 'graded';
+
+  // Scores — assessment only (practice is summarised in practiceSummary)
+  rawScore?: number;
+  finalScore?: number;
+  maxPoints?: number;
+  percent?: number;
+  score?: number | null;
+  maxScore?: number;
+  assessmentScore?: number | null;
+  assessmentMaxScore?: number;
+  practiceScore?: number | null;
+  practiceMaxScore?: number;
+  practiceSummary?: Record<string, unknown>;
+  assessmentSummary?: Record<string, unknown>;
+
+  // Timestamps / attribution for the teacher-review lifecycle
+  submittedAt?: string | null;
+  completedAt?: string | null;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  feedbackReleasedAt?: string | null;
+  feedbackReleasedBy?: string | null;
+
+  // Per-student lifecycle overrides (set by teacher, not by attempt flow)
+  extendedUntil?: string | null;
+  reopenedAt?: string | null;
+  reopenedBy?: string | null;
+  excusedAt?: string | null;
+  excusedBy?: string | null;
+  missingMarkedAt?: string | null;
+  missingMarkedBy?: string | null;
+
   aiPendingCount?: number;
   teacherReviewRequired?: boolean;
   lastCalculatedAt?: string;
+  updatedAt?: string;
+  createdAt?: string;
+}
+
+export type AssignmentLifecycleStatus =
+  | 'not_open'
+  | 'open'
+  | 'due_passed'
+  | 'closed'
+  | 'extended'
+  | 'reopened'
+  | 'unavailable';
+
+export type CompletionMissingCode =
+  | 'video_not_finished'
+  | 'checkpoint_unanswered'
+  | 'question_unsubmitted'
+  | 'assignment_not_open'
+  | 'assignment_closed'
+  | 'enrollment_inactive'
+  | 'invalid_attempt'
+  | 'version_mismatch'
+  | 'unknown';
+
+export interface CompletionRequirementMissing {
+  code: CompletionMissingCode;
+  blockId?: string;
+  checkpointId?: string;
+  questionId?: string;
+  message: string;
+}
+
+export interface CompletionValidationResult {
+  canComplete: boolean;
+  missing: CompletionRequirementMissing[];
+  assessmentScore?: number;
+  assessmentMaxScore?: number;
+  practiceSummary?: Record<string, unknown>;
 }
 
 export interface DatabaseSchema {

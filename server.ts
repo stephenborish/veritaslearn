@@ -24,6 +24,10 @@ import {
   findLeakedSecretFields,
 } from "./server/data/sanitize";
 import { validateLessonBlocks } from "./server/data/validation";
+import {
+  validateAttemptCompletion,
+  studentSafeMessage,
+} from "./server/data/completion";
 
 // Set default DNS resolution to ipv4 first to avoid localhost connections failing in dev
 dns.setDefaultResultOrder("ipv4first");
@@ -466,6 +470,42 @@ function upsertResponseGradebookEntry(
   }
 }
 
+/**
+ * Ensure a GradebookEntry exists for a student+assignment pair.
+ * Creates a minimal 'not_started' entry if none exists.
+ * Preserves any existing teacher-set lifecycle fields (extended, excused, etc.).
+ */
+function ensureGradebookEntryForAssignment(studentId: string, assignmentId: string, db: any): any {
+  if (!db.gradebookEntries) db.gradebookEntries = [];
+  const existing = db.gradebookEntries.find(
+    (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+  );
+  if (existing) return existing;
+
+  const assignment = (db.lessonAssignments || []).find((a: any) => a.id === assignmentId);
+  const now = new Date().toISOString();
+  const entry: any = {
+    id: 'ge_' + Math.random().toString(36).substring(2, 9),
+    studentId,
+    assignmentId,
+    courseId: assignment?.courseId || '',
+    lessonId: assignment?.lessonId || '',
+    lessonVersionId: assignment?.lessonVersionId || null,
+    status: 'not_started',
+    rawScore: 0,
+    finalScore: 0,
+    maxPoints: 0,
+    percent: 0,
+    aiPendingCount: 0,
+    teacherReviewRequired: false,
+    createdAt: now,
+    updatedAt: now,
+    lastCalculatedAt: now,
+  };
+  db.gradebookEntries.push(entry);
+  return entry;
+}
+
 // Calculate and write a durable GradebookEntry for a finished/updated attempt
 function upsertGradebookEntryForAttempt(attemptId: string, db: any): void {
   if (!db.gradebookEntries) {
@@ -475,8 +515,8 @@ function upsertGradebookEntryForAttempt(attemptId: string, db: any): void {
   if (!attempt) return;
 
   const studentId = attempt.studentId;
-  const assignmentId = attempt.assignmentId || 
-    (db.lessonAssignments || []).find((la: any) => la.lessonId === attempt.lessonId)?.id || 
+  const assignmentId = attempt.assignmentId ||
+    (db.lessonAssignments || []).find((la: any) => la.lessonId === attempt.lessonId)?.id ||
     `legacy_${attempt.lessonId}`;
 
   // Find all assessment responses for this attempt
@@ -489,12 +529,36 @@ function upsertGradebookEntryForAttempt(attemptId: string, db: any): void {
     if (cat === undefined) return true;
     return cat === "assessment";
   });
+  const practiceResponses = attemptResponses.filter((r: any) => {
+    const cat = r.gradebookCategory ?? r.gradingMode;
+    return cat === "practice";
+  });
 
   const rawScore = assessmentResponses.reduce((sum: number, r: any) => sum + (r.score || 0), 0);
   const finalScore = rawScore;
   const maxPoints = calcMaxPointsForAttempt(attempt, db);
 
-  let status: "not_started" | "in_progress" | "submitted" | "needs_grading" | "graded" | "missing" | "excused" = "in_progress";
+  const practiceScore = practiceResponses.reduce((sum: number, r: any) => sum + (r.score || 0), 0);
+  const practiceMaxScore = practiceResponses.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+
+  // Preserve teacher-set lifecycle overrides from any existing entry
+  const existingEntry = db.gradebookEntries.find(
+    (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+  );
+  // If teacher has marked excused/missing, preserve those
+  const teacherOverriddenStatus: string | null =
+    existingEntry?.status === 'excused' || existingEntry?.status === 'missing' ||
+    existingEntry?.status === 'extended' || existingEntry?.status === 'reopened'
+      ? existingEntry.status
+      : null;
+
+  type GradebookStatus =
+    | "not_started" | "in_progress" | "submitted" | "completed"
+    | "pending_ai" | "needs_teacher_review" | "reviewed" | "feedback_released"
+    | "missing" | "excused" | "late" | "extended" | "reopened" | "error"
+    | "needs_grading" | "graded";
+
+  let status: GradebookStatus = "in_progress";
   if (attempt.status !== 'completed') {
     status = 'in_progress';
   } else {
@@ -532,21 +596,25 @@ function upsertGradebookEntryForAttempt(attemptId: string, db: any): void {
     });
 
     if (aiPendingCount > 0) {
-      status = 'submitted';
+      status = 'pending_ai';
     } else if (needsTeacherGrading) {
-      status = 'needs_grading';
+      status = 'needs_teacher_review';
     } else {
-      status = 'graded';
+      status = 'reviewed';
     }
   }
 
-  const override = attempt.gradebookStatusOverride;
-  if (override === "excused") {
+  // Attempt-level legacy override (still honoured for compatibility)
+  const attemptOverride = attempt.gradebookStatusOverride;
+  if (attemptOverride === "excused") {
     status = "excused";
-  } else if (override === "missing") {
+  } else if (attemptOverride === "missing") {
     status = "missing";
-  } else if (override === "pending") {
-    status = "needs_grading";
+  }
+
+  // Teacher-set entry-level override takes final precedence
+  if (teacherOverriddenStatus) {
+    status = teacherOverriddenStatus as GradebookStatus;
   }
 
   let aiPendingCount = 0;
@@ -577,19 +645,56 @@ function upsertGradebookEntryForAttempt(attemptId: string, db: any): void {
   );
 
   const percent = maxPoints > 0 ? Math.round((finalScore / maxPoints) * 100) : 100;
+  const now = new Date().toISOString();
+
+  // Preserve teacher-set lifecycle fields from existing entry
+  const preserved: any = entryIdx !== -1 ? {
+    excusedAt: db.gradebookEntries[entryIdx].excusedAt,
+    excusedBy: db.gradebookEntries[entryIdx].excusedBy,
+    missingMarkedAt: db.gradebookEntries[entryIdx].missingMarkedAt,
+    missingMarkedBy: db.gradebookEntries[entryIdx].missingMarkedBy,
+    extendedUntil: db.gradebookEntries[entryIdx].extendedUntil,
+    reopenedAt: db.gradebookEntries[entryIdx].reopenedAt,
+    reopenedBy: db.gradebookEntries[entryIdx].reopenedBy,
+    reviewedAt: db.gradebookEntries[entryIdx].reviewedAt,
+    reviewedBy: db.gradebookEntries[entryIdx].reviewedBy,
+    feedbackReleasedAt: db.gradebookEntries[entryIdx].feedbackReleasedAt,
+    feedbackReleasedBy: db.gradebookEntries[entryIdx].feedbackReleasedBy,
+    createdAt: db.gradebookEntries[entryIdx].createdAt,
+  } : {};
 
   const entryData: any = {
     id: entryIdx !== -1 ? db.gradebookEntries[entryIdx].id : "ge_" + Math.random().toString(36).substring(2, 9),
     assignmentId,
     studentId,
+    courseId: attempt.assignmentId
+      ? (db.lessonAssignments || []).find((a: any) => a.id === attempt.assignmentId)?.courseId || ''
+      : '',
+    lessonId: attempt.lessonId || '',
+    lessonVersionId: attempt.lessonVersionId || null,
+    attemptId: attemptId,
     rawScore,
     finalScore,
     maxPoints,
     percent,
+    assessmentScore: rawScore,
+    assessmentMaxScore: maxPoints,
+    practiceScore,
+    practiceMaxScore,
+    practiceSummary: {
+      responseCount: practiceResponses.length,
+      totalScore: practiceScore,
+      maxScore: practiceMaxScore,
+    },
     status,
     aiPendingCount,
     teacherReviewRequired,
-    lastCalculatedAt: new Date().toISOString()
+    completedAt: attempt.completedAt || null,
+    submittedAt: attempt.completedAt || attempt.startedAt || null,
+    lastCalculatedAt: now,
+    updatedAt: now,
+    createdAt: preserved.createdAt || now,
+    ...preserved,
   };
 
   if (entryIdx !== -1) {
@@ -3960,24 +4065,57 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
 // Complete Attempt
 app.post("/api/attempts/:id/complete", requireAuth, async (req, res) => {
   const { id } = req.params;
+  const completeUser = (req as any).user;
+  const isTeacherOrAdmin = completeUser?.role === "teacher" || !!completeUser?.isSuperAdmin;
   const db = readDb();
+  const now = new Date();
+
+  // Server-certified completion validation — client cannot bypass this.
+  const validation = validateAttemptCompletion(id, completeUser?.id, isTeacherOrAdmin, db, now);
+
+  if (!validation.canComplete) {
+    // Return the first missing requirement as a student-safe message.
+    const first = validation.missing[0];
+    const studentMsg = first ? studentSafeMessage(first.code) : "Cannot complete this attempt.";
+    res.status(422).json({
+      error: studentMsg,
+      code: first?.code || "unknown",
+      missing: isTeacherOrAdmin
+        ? validation.missing  // Teachers see the full structured list
+        : validation.missing.map((m) => ({ code: m.code, message: studentSafeMessage(m.code), blockId: m.blockId, checkpointId: m.checkpointId })),
+    });
+    return;
+  }
 
   const attemptIdx = db.attempts.findIndex((a: any) => a.id === id);
-  if (attemptIdx === -1) {
-    res.status(404).json({ error: "Attempt not found." });
-    return;
-  }
-
-  const completeUser = (req as any).user;
-  const completingAttempt = db.attempts[attemptIdx];
-  if (completeUser?.role === "student" && completingAttempt.studentId !== completeUser?.id) {
-    res.status(403).json({ error: "Access denied." });
-    return;
-  }
-
-  db.attempts[attemptIdx].completedAt = new Date().toISOString();
+  const completedAt = now.toISOString();
+  db.attempts[attemptIdx].completedAt = completedAt;
   db.attempts[attemptIdx].status = "completed";
   recalculateAttemptScore(id, db);
+
+  // Update GradebookEntry status to 'completed' (unless AI still pending)
+  const attempt = db.attempts[attemptIdx];
+  const assignmentId = attempt.assignmentId ||
+    (db.lessonAssignments || []).find((la: any) => la.lessonId === attempt.lessonId)?.id;
+  if (assignmentId) {
+    const gbIdx = (db.gradebookEntries || []).findIndex(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === attempt.studentId
+    );
+    if (gbIdx !== -1) {
+      const hasPendingAi = (db.gradebookEntries[gbIdx].aiPendingCount || 0) > 0;
+      const needsReview = db.gradebookEntries[gbIdx].teacherReviewRequired;
+      if (!hasPendingAi && !needsReview) {
+        db.gradebookEntries[gbIdx].status = 'completed';
+      } else if (hasPendingAi) {
+        db.gradebookEntries[gbIdx].status = 'pending_ai';
+      } else {
+        db.gradebookEntries[gbIdx].status = 'needs_teacher_review';
+      }
+      db.gradebookEntries[gbIdx].completedAt = completedAt;
+      db.gradebookEntries[gbIdx].updatedAt = completedAt;
+    }
+  }
+
   try {
     await commitDb(db);
   } catch (err) {
@@ -3986,7 +4124,21 @@ app.post("/api/attempts/:id/complete", requireAuth, async (req, res) => {
   }
 
   const completedAttempt = db.attempts[attemptIdx];
-  res.json({ success: true, attempt: completeUser?.role === "student" ? sanitizeAttemptForStudent(completedAttempt) : completedAttempt });
+  const safeResult: any = {
+    success: true,
+    attempt: isTeacherOrAdmin ? completedAttempt : sanitizeAttemptForStudent(completedAttempt),
+    assessmentScore: validation.assessmentScore,
+    assessmentMaxScore: validation.assessmentMaxScore,
+    practiceSummary: validation.practiceSummary,
+  };
+
+  // Students receive a student-safe completion message, not raw scores (unless released)
+  if (!isTeacherOrAdmin) {
+    delete safeResult.assessmentScore;
+    delete safeResult.assessmentMaxScore;
+  }
+
+  res.json(safeResult);
 });
 
 // Post Integrity Signals
@@ -4215,6 +4367,7 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
   const responses = mergeResponsesWithAiGrading(db.responses, db);
   const signals = db.securitySignals;
   const gradebookEntries = db.gradebookEntries || [];
+  const gradebookResponseEntries = db.gradebookResponseEntries || [];
 
   res.json({
     students,
@@ -4222,7 +4375,8 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
     attempts,
     responses,
     signals,
-    gradebookEntries
+    gradebookEntries,
+    gradebookResponseEntries,
   });
 });
 
@@ -4250,10 +4404,12 @@ app.post("/api/assignments/:id/recalculate", requireTeacher, async (req, res) =>
 });
 
 // Teacher: Gradebook Score Overrides (teacher override is the final authority).
+// Delegates to /api/ai-review/:responseId/override for full lifecycle tracking.
 app.post("/api/responses/:id/override", requireTeacher, async (req, res) => {
   try {
     const { id } = req.params;
     const { score, notes } = req.body;
+    const teacher = (req as any).user;
     const db = readDb();
 
     const responseIdx = db.responses.findIndex((r: any) => r.id === id);
@@ -4263,15 +4419,22 @@ app.post("/api/responses/:id/override", requireTeacher, async (req, res) => {
     }
 
     const response = db.responses[responseIdx];
+    const now = new Date().toISOString();
+
+    // Preserve original AI score before override
+    const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === id);
+    const originalAiScore = aiRecord?.parsedScore ?? response.score ?? null;
+
     response.score = Number(score);
     response.pointsEarned = Number(score);
-    response.teacherReviewedAt = new Date().toISOString();
+    response.teacherReviewedAt = now;
+    response.teacherReviewedBy = teacher.id;
     response.teacherOverrideScore = Number(score);
     response.teacherOverrideFeedback = notes || "Manual grade modification applied.";
     response.teacherOverride = {
       score: Number(score),
       notes: notes || "Manual grade modification applied.",
-      gradedAt: new Date().toISOString()
+      gradedAt: now,
     };
 
     const attemptId = response.attemptId;
@@ -4279,13 +4442,16 @@ app.post("/api/responses/:id/override", requireTeacher, async (req, res) => {
       const attempt = db.attempts.find((a: any) => a.id === attemptId);
       if (attempt) {
         upsertResponseGradebookEntry(
-          response,
-          attempt,
-          "teacher_overridden",
-          "teacher_override",
-          notes || "Manual grade modification applied.",
-          db
+          response, attempt, "teacher_overridden", "teacher_override",
+          notes || "Manual grade modification applied.", db
         );
+        // Preserve originalAiScore on the GRE
+        const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === id);
+        if (greIdx !== -1) {
+          db.gradebookResponseEntries[greIdx].originalAiScore = originalAiScore;
+          db.gradebookResponseEntries[greIdx].reviewedAt = now;
+          db.gradebookResponseEntries[greIdx].reviewedBy = teacher.id;
+        }
       }
       recalculateAttemptScore(attemptId, db);
     }
@@ -4298,39 +4464,610 @@ app.post("/api/responses/:id/override", requireTeacher, async (req, res) => {
   }
 });
 
-// Teacher: Gradebook Status Overrides (mark cell as 'excused' | 'missing' | 'pending' | null)
+// Teacher: Gradebook Status Overrides (mark cell as 'excused' | 'missing' | null)
+// NOTE: No fake attempts are created — GradebookEntry is updated directly.
 app.post("/api/lessons/:lessonId/students/:studentId/gradebook-status", requireTeacher, async (req, res) => {
   try {
     const { lessonId, studentId } = req.params;
-    const { statusOverride } = req.body; // 'excused' | 'missing' | 'pending' | null
+    const { statusOverride } = req.body; // 'excused' | 'missing' | null
+    const teacher = (req as any).user;
     const db = readDb();
-    
-    let attempt = db.attempts.find((a: any) => a.studentId === studentId && a.lessonId === lessonId);
-    if (!attempt) {
-      attempt = {
-        id: "attempt_" + Math.random().toString(36).substring(2, 9),
-        lessonId,
-        studentId,
-        seed: 123456,
-        startedAt: new Date().toISOString(),
-        status: "started",
-        currentBlockIndex: 0,
-        furthestVideoTimestamps: {},
-        activeTimeSpent: 0,
-        inactiveTimeSpent: 0,
-        gradebookStatusOverride: statusOverride
-      };
-      db.attempts.push(attempt);
-    } else {
-      attempt.gradebookStatusOverride = statusOverride;
+
+    // Find the assignment for this lesson (use first open or any assignment)
+    const assignment = (db.lessonAssignments || []).find((a: any) => a.lessonId === lessonId);
+    const assignmentId = assignment?.id || `legacy_${lessonId}`;
+
+    // Verify teacher can manage the course
+    if (assignment) {
+      const course = (db.courses || []).find((c: any) => c.id === assignment.courseId);
+      if (course && !teacherCanManageCourse(teacher.id, course, !!teacher.isSuperAdmin)) {
+        fail(res, "FORBIDDEN", "You do not have access to this course.");
+        return;
+      }
     }
-    
-    recalculateAttemptScore(attempt.id, db);
+
+    // Ensure GradebookEntry exists
+    ensureGradebookEntryForAssignment(studentId, assignmentId, db);
+
+    const entryIdx = db.gradebookEntries.findIndex(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+    );
+    const now = new Date().toISOString();
+
+    if (statusOverride === 'excused') {
+      db.gradebookEntries[entryIdx].status = 'excused';
+      db.gradebookEntries[entryIdx].excusedAt = now;
+      db.gradebookEntries[entryIdx].excusedBy = teacher.id;
+    } else if (statusOverride === 'missing') {
+      db.gradebookEntries[entryIdx].status = 'missing';
+      db.gradebookEntries[entryIdx].missingMarkedAt = now;
+      db.gradebookEntries[entryIdx].missingMarkedBy = teacher.id;
+    } else {
+      // null / default — revert to calculated status from attempt if any
+      const attempt = (db.attempts || []).find(
+        (a: any) => a.studentId === studentId && (a.assignmentId === assignmentId || a.lessonId === lessonId)
+      );
+      if (attempt) {
+        recalculateAttemptScore(attempt.id, db);
+      } else {
+        db.gradebookEntries[entryIdx].status = 'not_started';
+      }
+    }
+    db.gradebookEntries[entryIdx].updatedAt = now;
+
     await commitDb(db);
-    res.json({ success: true, attempt });
+    res.json({ success: true, gradebookEntry: db.gradebookEntries[entryIdx] });
   } catch (err) {
     sendAppError(res, err);
   }
+});
+
+// ====================================================
+// Assignment Lifecycle: per-student status management (teacher-only)
+// ====================================================
+
+/** Shared helper: resolve + auth-check assignment for per-student lifecycle endpoints. */
+function resolveAssignmentForLifecycle(
+  assignmentId: string,
+  studentId: string,
+  teacher: any,
+  db: any
+): { assignment: any; course: any; error?: string } {
+  const assignment = (db.lessonAssignments || []).find((a: any) => a.id === assignmentId);
+  if (!assignment) return { assignment: null, course: null, error: 'Assignment not found.' };
+  const course = (db.courses || []).find((c: any) => c.id === assignment.courseId);
+  if (!course) return { assignment, course: null, error: 'Course not found.' };
+  if (!teacherCanManageCourse(teacher.id, course, !!teacher.isSuperAdmin)) {
+    return { assignment, course, error: 'You do not have access to this course.' };
+  }
+  const isStudent = (db.enrollments || []).some(
+    (e: any) => e.courseId === assignment.courseId && e.studentId === studentId
+  );
+  if (!isStudent) {
+    // Allow if student has an existing gradebook entry (legacy visibility)
+    const hasEntry = (db.gradebookEntries || []).some(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+    );
+    if (!hasEntry) return { assignment, course, error: 'Student is not enrolled in this course.' };
+  }
+  return { assignment, course };
+}
+
+// POST /api/assignments/:assignmentId/students/:studentId/excuse
+app.post("/api/assignments/:assignmentId/students/:studentId/excuse", requireTeacher, async (req, res) => {
+  try {
+    const { assignmentId, studentId } = req.params;
+    const teacher = (req as any).user;
+    const db = readDb();
+    const { error, assignment } = resolveAssignmentForLifecycle(assignmentId, studentId, teacher, db);
+    if (error) { fail(res, 'FORBIDDEN', error); return; }
+
+    ensureGradebookEntryForAssignment(studentId, assignmentId, db);
+    const idx = db.gradebookEntries.findIndex(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+    );
+    const now = new Date().toISOString();
+    db.gradebookEntries[idx].status = 'excused';
+    db.gradebookEntries[idx].excusedAt = now;
+    db.gradebookEntries[idx].excusedBy = teacher.id;
+    db.gradebookEntries[idx].updatedAt = now;
+
+    await commitDb(db);
+    res.json({ success: true, gradebookEntry: db.gradebookEntries[idx] });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/assignments/:assignmentId/students/:studentId/mark-missing
+app.post("/api/assignments/:assignmentId/students/:studentId/mark-missing", requireTeacher, async (req, res) => {
+  try {
+    const { assignmentId, studentId } = req.params;
+    const teacher = (req as any).user;
+    const db = readDb();
+    const { error } = resolveAssignmentForLifecycle(assignmentId, studentId, teacher, db);
+    if (error) { fail(res, 'FORBIDDEN', error); return; }
+
+    ensureGradebookEntryForAssignment(studentId, assignmentId, db);
+    const idx = db.gradebookEntries.findIndex(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+    );
+    const now = new Date().toISOString();
+    db.gradebookEntries[idx].status = 'missing';
+    db.gradebookEntries[idx].missingMarkedAt = now;
+    db.gradebookEntries[idx].missingMarkedBy = teacher.id;
+    db.gradebookEntries[idx].updatedAt = now;
+
+    await commitDb(db);
+    res.json({ success: true, gradebookEntry: db.gradebookEntries[idx] });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/assignments/:assignmentId/students/:studentId/extend
+app.post("/api/assignments/:assignmentId/students/:studentId/extend", requireTeacher, async (req, res) => {
+  try {
+    const { assignmentId, studentId } = req.params;
+    const { extendedUntil } = req.body;
+    if (!extendedUntil) { fail(res, 'VALIDATION_ERROR', 'extendedUntil (ISO date string) is required.'); return; }
+    const teacher = (req as any).user;
+    const db = readDb();
+    const { error } = resolveAssignmentForLifecycle(assignmentId, studentId, teacher, db);
+    if (error) { fail(res, 'FORBIDDEN', error); return; }
+
+    ensureGradebookEntryForAssignment(studentId, assignmentId, db);
+    const idx = db.gradebookEntries.findIndex(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+    );
+    const now = new Date().toISOString();
+    db.gradebookEntries[idx].extendedUntil = extendedUntil;
+    db.gradebookEntries[idx].updatedAt = now;
+    // If student was marked missing, revert to extended/in_progress
+    if (db.gradebookEntries[idx].status === 'missing' || db.gradebookEntries[idx].status === 'not_started') {
+      db.gradebookEntries[idx].status = 'extended';
+    }
+
+    await commitDb(db);
+    res.json({ success: true, gradebookEntry: db.gradebookEntries[idx] });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/assignments/:assignmentId/students/:studentId/reopen
+app.post("/api/assignments/:assignmentId/students/:studentId/reopen", requireTeacher, async (req, res) => {
+  try {
+    const { assignmentId, studentId } = req.params;
+    const teacher = (req as any).user;
+    const db = readDb();
+    const { error } = resolveAssignmentForLifecycle(assignmentId, studentId, teacher, db);
+    if (error) { fail(res, 'FORBIDDEN', error); return; }
+
+    ensureGradebookEntryForAssignment(studentId, assignmentId, db);
+    const idx = db.gradebookEntries.findIndex(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+    );
+    const now = new Date().toISOString();
+    db.gradebookEntries[idx].status = 'reopened';
+    db.gradebookEntries[idx].reopenedAt = now;
+    db.gradebookEntries[idx].reopenedBy = teacher.id;
+    db.gradebookEntries[idx].updatedAt = now;
+
+    // Reopen the most recent attempt (if any) so student can resume
+    const existingAttempt = (db.attempts || []).find(
+      (a: any) => a.studentId === studentId &&
+        (a.assignmentId === assignmentId ||
+         a.lessonId === (db.lessonAssignments || []).find((la: any) => la.id === assignmentId)?.lessonId) &&
+        !a.isPreviewAttempt
+    );
+    if (existingAttempt && existingAttempt.status === 'completed') {
+      const aIdx = db.attempts.findIndex((a: any) => a.id === existingAttempt.id);
+      db.attempts[aIdx].status = 'started';
+      db.attempts[aIdx].completedAt = null;
+    }
+
+    await commitDb(db);
+    res.json({ success: true, gradebookEntry: db.gradebookEntries[idx] });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/assignments/:assignmentId/students/:studentId/status  (generic status update)
+app.post("/api/assignments/:assignmentId/students/:studentId/status", requireTeacher, async (req, res) => {
+  try {
+    const { assignmentId, studentId } = req.params;
+    const { status } = req.body;
+    const allowed = ['excused', 'missing', 'extended', 'reopened', 'not_started'];
+    if (!allowed.includes(status)) {
+      fail(res, 'VALIDATION_ERROR', `Invalid status. Allowed: ${allowed.join(', ')}.`); return;
+    }
+    const teacher = (req as any).user;
+    const db = readDb();
+    const { error } = resolveAssignmentForLifecycle(assignmentId, studentId, teacher, db);
+    if (error) { fail(res, 'FORBIDDEN', error); return; }
+
+    ensureGradebookEntryForAssignment(studentId, assignmentId, db);
+    const idx = db.gradebookEntries.findIndex(
+      (e: any) => e.assignmentId === assignmentId && e.studentId === studentId
+    );
+    const now = new Date().toISOString();
+    db.gradebookEntries[idx].status = status;
+    db.gradebookEntries[idx].updatedAt = now;
+
+    await commitDb(db);
+    res.json({ success: true, gradebookEntry: db.gradebookEntries[idx] });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// ====================================================
+// AI Review Queue (teacher-only)
+// ====================================================
+
+// GET /api/ai-review/queue — Returns prioritized review queue for SA responses
+app.get("/api/ai-review/queue", requireTeacher, (req, res) => {
+  try {
+    const teacher = (req as any).user;
+    const db = readDb();
+
+    // Optional filters
+    const { assignmentId, studentId, category, status: statusFilter } = req.query;
+
+    // Merge all SA responses with their AI grading records
+    const allResponses = mergeResponsesWithAiGrading(
+      (db.responses || []).filter((r: any) => r.type === 'sa'),
+      db
+    );
+
+    const queueItems = allResponses
+      .filter((r: any) => {
+        if (assignmentId) {
+          const attempt = (db.attempts || []).find((a: any) => a.id === r.attemptId);
+          if (!attempt || attempt.assignmentId !== assignmentId) return false;
+        }
+        if (studentId && r.studentId !== studentId) return false;
+        if (category && r.gradebookCategory !== category && r.gradingMode !== category) return false;
+        return true;
+      })
+      .map((r: any) => {
+        const attempt = (db.attempts || []).find((a: any) => a.id === r.attemptId);
+        const assignment = attempt?.assignmentId
+          ? (db.lessonAssignments || []).find((a: any) => a.id === attempt.assignmentId)
+          : null;
+        const course = assignment
+          ? (db.courses || []).find((c: any) => c.id === assignment.courseId)
+          : null;
+        const student = (db.users || []).find((u: any) => u.id === r.studentId);
+
+        // Verify teacher has access to this course
+        if (course && !teacherCanManageCourse(teacher.id, course, !!teacher.isSuperAdmin)) return null;
+
+        // Resolve question text from immutable LessonVersion
+        const version = attempt?.lessonVersionId
+          ? (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId)
+          : null;
+        let questionText: any = null;
+        let rubricCategories: any[] = [];
+        if (version) {
+          const block = (version.blocksSnapshot || []).find((b: any) => b.id === r.blockId);
+          if (block) {
+            let rawQ: any = null;
+            if (r.checkpointId && Array.isArray(block.videoCheckpoints)) {
+              const cp = block.videoCheckpoints.find((c: any) => c.id === r.checkpointId);
+              rawQ = cp ? (cp.questions || []).find((q: any) => q.id === r.questionId) : null;
+            } else {
+              rawQ = block.singleQuestion ||
+                (block.questionPool?.questions || []).find((q: any) => q.id === r.questionId);
+            }
+            if (rawQ) {
+              questionText = rawQ.stem;
+              rubricCategories = rawQ.rubricCategories || [];
+            }
+          }
+        }
+
+        const grading = r.aiGrading || {};
+        const isPractice = r.gradebookCategory === 'practice' || r.gradingMode === 'practice';
+
+        // Determine review status category
+        let reviewStatus: string;
+        const gre = (db.gradebookResponseEntries || []).find((e: any) => e.responseId === r.id);
+        if (gre?.status === 'feedback_released') {
+          reviewStatus = 'feedback_released';
+        } else if (gre?.status === 'teacher_reviewed' || gre?.status === 'teacher_overridden') {
+          reviewStatus = 'reviewed_not_released';
+        } else if (!grading.status || grading.status === 'pending') {
+          reviewStatus = 'pending_ai';
+        } else if (grading.status === 'failed') {
+          reviewStatus = 'error';
+        } else if (grading.status === 'needs_review' || r.isLowEffort) {
+          reviewStatus = 'needs_teacher_review';
+        } else {
+          reviewStatus = 'ai_scored_awaiting_review';
+        }
+
+        if (statusFilter && reviewStatus !== statusFilter) return null;
+
+        return {
+          responseId: r.id,
+          studentId: r.studentId,
+          studentName: student?.name || 'Unknown Student',
+          studentEmail: student?.email || '',
+          courseId: course?.id || '',
+          courseName: course?.name || '',
+          assignmentId: assignment?.id || attempt?.assignmentId || '',
+          lessonTitle: assignment
+            ? ((db.lessons || []).find((l: any) => l.id === assignment.lessonId)?.title || '')
+            : '',
+          lessonVersionId: attempt?.lessonVersionId || null,
+          questionText,
+          rubricCategories,
+          studentResponse: r.responseValue,
+          isPractice,
+          category: isPractice ? 'practice' : 'assessment',
+          aiScore: grading.score,
+          maxScore: r.maxPoints,
+          aiFeedback: grading.feedback,
+          aiRationale: grading.rationale,
+          rubricBreakdown: grading.rubricBreakdown || {},
+          confidence: grading.confidence,
+          needsTeacherReview: grading.needsTeacherReview || r.isLowEffort || false,
+          isLowEffort: r.isLowEffort || false,
+          lowEffortReason: r.lowEffortReason || null,
+          teacherOverride: r.teacherOverride || null,
+          teacherReviewedAt: r.teacherReviewedAt || null,
+          feedbackReleasedAt: gre?.feedbackReleasedAt || r.aiFeedbackReleasedAt || null,
+          feedbackVisibleToStudent: !!(gre?.feedbackReleasedAt || r.aiFeedbackReleasedAt),
+          gradebookStatus: gre?.status || (grading.status ? 'ai_scored' : 'pending_ai'),
+          reviewStatus,
+          submittedAt: r.createdAt || null,
+          activeTimeSpent: r.activeTimeSpent || 0,
+          attemptId: r.attemptId,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+
+    // Sort: pending_ai first, then needs_teacher_review, then ai_scored_awaiting_review, then reviewed, then released
+    const order = ['pending_ai', 'error', 'needs_teacher_review', 'ai_scored_awaiting_review', 'reviewed_not_released', 'feedback_released'];
+    queueItems.sort((a: any, b: any) => (order.indexOf(a.reviewStatus) - order.indexOf(b.reviewStatus)));
+
+    // Build summary counts
+    const counts: Record<string, number> = {};
+    for (const item of queueItems) {
+      counts[item.reviewStatus] = (counts[item.reviewStatus] || 0) + 1;
+    }
+
+    res.json({ queue: queueItems, counts, total: queueItems.length });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// POST /api/ai-review/:responseId/approve — Mark AI score as accepted by teacher
+app.post("/api/ai-review/:responseId/approve", requireTeacher, async (req, res) => {
+  try {
+    const { responseId } = req.params;
+    const teacher = (req as any).user;
+    const db = readDb();
+
+    const responseIdx = db.responses.findIndex((r: any) => r.id === responseId);
+    if (responseIdx === -1) { fail(res, 'NOT_FOUND', 'Response not found.'); return; }
+
+    const response = db.responses[responseIdx];
+    const now = new Date().toISOString();
+    response.teacherReviewedAt = now;
+    response.teacherReviewedBy = teacher.id;
+
+    // Update GradebookResponseEntry
+    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
+    if (greIdx !== -1) {
+      db.gradebookResponseEntries[greIdx].status = 'teacher_reviewed';
+      db.gradebookResponseEntries[greIdx].reviewedAt = now;
+      db.gradebookResponseEntries[greIdx].reviewedBy = teacher.id;
+      db.gradebookResponseEntries[greIdx].updatedAt = now;
+    }
+
+    // Update attempt GradebookEntry
+    if (response.attemptId) recalculateAttemptScore(response.attemptId, db);
+
+    await commitDb(db);
+    res.json({ success: true, response: mergeResponsesWithAiGrading([db.responses[responseIdx]], db)[0] });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/ai-review/:responseId/override — Override AI score; preserve original AI score for audit
+app.post("/api/ai-review/:responseId/override", requireTeacher, async (req, res) => {
+  try {
+    const { responseId } = req.params;
+    const { score, studentFacingFeedback, teacherOnlyNotes } = req.body;
+    const teacher = (req as any).user;
+    const db = readDb();
+
+    const responseIdx = db.responses.findIndex((r: any) => r.id === responseId);
+    if (responseIdx === -1) { fail(res, 'NOT_FOUND', 'Response not found.'); return; }
+
+    const response = db.responses[responseIdx];
+    const now = new Date().toISOString();
+    const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === responseId);
+
+    // Preserve original AI score before override
+    const originalAiScore = aiRecord?.parsedScore ?? response.score ?? null;
+
+    response.score = Number(score);
+    response.pointsEarned = Number(score);
+    response.teacherReviewedAt = now;
+    response.teacherReviewedBy = teacher.id;
+    response.teacherOverrideScore = Number(score);
+    response.teacherOverrideFeedback = teacherOnlyNotes || '';
+    response.teacherOverride = { score: Number(score), notes: teacherOnlyNotes || '', gradedAt: now };
+    if (studentFacingFeedback !== undefined) {
+      response.studentFacingFeedback = studentFacingFeedback;
+    }
+
+    // GradebookResponseEntry
+    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
+    const gre = greIdx !== -1 ? db.gradebookResponseEntries[greIdx] : null;
+    if (greIdx !== -1) {
+      gre.status = 'teacher_overridden';
+      gre.score = Number(score);
+      gre.originalAiScore = originalAiScore;
+      gre.reviewedAt = now;
+      gre.reviewedBy = teacher.id;
+      if (studentFacingFeedback !== undefined) gre.studentFacingFeedback = studentFacingFeedback;
+      if (teacherOnlyNotes) gre.teacherOnlyNotes = teacherOnlyNotes;
+      gre.updatedAt = now;
+    } else {
+      // Create a GradebookResponseEntry if missing
+      const attempt = (db.attempts || []).find((a: any) => a.id === response.attemptId);
+      if (attempt) upsertResponseGradebookEntry(response, attempt, 'teacher_overridden', 'teacher_override', studentFacingFeedback || teacherOnlyNotes || '', db);
+    }
+
+    if (response.attemptId) recalculateAttemptScore(response.attemptId, db);
+
+    await commitDb(db);
+    res.json({ success: true, response: mergeResponsesWithAiGrading([db.responses[responseIdx]], db)[0] });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/ai-review/:responseId/mark-reviewed — Mark a response as reviewed without changing score
+app.post("/api/ai-review/:responseId/mark-reviewed", requireTeacher, async (req, res) => {
+  try {
+    const { responseId } = req.params;
+    const { teacherOnlyNotes } = req.body;
+    const teacher = (req as any).user;
+    const db = readDb();
+
+    const responseIdx = db.responses.findIndex((r: any) => r.id === responseId);
+    if (responseIdx === -1) { fail(res, 'NOT_FOUND', 'Response not found.'); return; }
+
+    const response = db.responses[responseIdx];
+    const now = new Date().toISOString();
+    response.teacherReviewedAt = now;
+    response.teacherReviewedBy = teacher.id;
+    if (teacherOnlyNotes) response.teacherOverrideFeedback = teacherOnlyNotes;
+
+    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
+    if (greIdx !== -1) {
+      db.gradebookResponseEntries[greIdx].status = 'teacher_reviewed';
+      db.gradebookResponseEntries[greIdx].reviewedAt = now;
+      db.gradebookResponseEntries[greIdx].reviewedBy = teacher.id;
+      if (teacherOnlyNotes) db.gradebookResponseEntries[greIdx].teacherOnlyNotes = teacherOnlyNotes;
+      db.gradebookResponseEntries[greIdx].updatedAt = now;
+    }
+
+    if (response.attemptId) recalculateAttemptScore(response.attemptId, db);
+    await commitDb(db);
+    res.json({ success: true });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/ai-review/:responseId/release-feedback — Release student-facing feedback for one response
+app.post("/api/ai-review/:responseId/release-feedback", requireTeacher, async (req, res) => {
+  try {
+    const { responseId } = req.params;
+    const { studentFacingFeedback } = req.body;
+    const teacher = (req as any).user;
+    const db = readDb();
+
+    const responseIdx = db.responses.findIndex((r: any) => r.id === responseId);
+    if (responseIdx === -1) { fail(res, 'NOT_FOUND', 'Response not found.'); return; }
+
+    const response = db.responses[responseIdx];
+    const now = new Date().toISOString();
+
+    // Set student-facing feedback and mark released
+    if (studentFacingFeedback !== undefined) {
+      response.studentFacingFeedback = studentFacingFeedback;
+    }
+    response.aiFeedbackReleasedAt = now;
+    response.feedbackReleasedAt = now;
+    response.feedbackVisibleToStudent = true;
+
+    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
+    if (greIdx !== -1) {
+      db.gradebookResponseEntries[greIdx].status = 'feedback_released';
+      db.gradebookResponseEntries[greIdx].feedbackReleasedAt = now;
+      db.gradebookResponseEntries[greIdx].feedbackReleasedBy = teacher.id;
+      db.gradebookResponseEntries[greIdx].feedbackVisibleToStudent = true;
+      if (studentFacingFeedback !== undefined) {
+        db.gradebookResponseEntries[greIdx].studentFacingFeedback = studentFacingFeedback;
+      }
+      db.gradebookResponseEntries[greIdx].updatedAt = now;
+    }
+
+    // Update GradebookEntry if all responses for this attempt are released
+    if (response.attemptId) {
+      const attempt = (db.attempts || []).find((a: any) => a.id === response.attemptId);
+      if (attempt) {
+        const assignmentId = attempt.assignmentId;
+        if (assignmentId) {
+          const gbIdx = (db.gradebookEntries || []).findIndex(
+            (e: any) => e.assignmentId === assignmentId && e.studentId === response.studentId
+          );
+          if (gbIdx !== -1) {
+            db.gradebookEntries[gbIdx].feedbackReleasedAt = now;
+            db.gradebookEntries[gbIdx].feedbackReleasedBy = teacher.id;
+            db.gradebookEntries[gbIdx].status = 'feedback_released';
+            db.gradebookEntries[gbIdx].updatedAt = now;
+          }
+        }
+      }
+    }
+
+    await commitDb(db);
+    res.json({ success: true });
+  } catch (err) { sendAppError(res, err); }
+});
+
+// POST /api/assignments/:assignmentId/release-reviewed-feedback — Bulk release for all reviewed responses
+app.post("/api/assignments/:assignmentId/release-reviewed-feedback", requireTeacher, async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const teacher = (req as any).user;
+    const db = readDb();
+
+    const assignment = (db.lessonAssignments || []).find((a: any) => a.id === assignmentId);
+    if (!assignment) { fail(res, 'NOT_FOUND', 'Assignment not found.'); return; }
+    const course = (db.courses || []).find((c: any) => c.id === assignment.courseId);
+    if (!teacherCanManageCourse(teacher.id, course, !!teacher.isSuperAdmin)) {
+      fail(res, 'FORBIDDEN', 'You do not have access to this course.'); return;
+    }
+
+    const now = new Date().toISOString();
+    let releasedCount = 0;
+
+    // Release all reviewed/overridden responses for this assignment's attempts
+    const assignmentAttempts = (db.attempts || []).filter((a: any) => a.assignmentId === assignmentId);
+    const attemptIds = new Set(assignmentAttempts.map((a: any) => a.id));
+
+    (db.gradebookResponseEntries || []).forEach((gre: any, i: number) => {
+      if (!attemptIds.has(gre.attemptId)) return;
+      if (!['teacher_reviewed', 'teacher_overridden', 'ai_scored'].includes(gre.status)) return;
+      db.gradebookResponseEntries[i].status = 'feedback_released';
+      db.gradebookResponseEntries[i].feedbackReleasedAt = now;
+      db.gradebookResponseEntries[i].feedbackReleasedBy = teacher.id;
+      db.gradebookResponseEntries[i].feedbackVisibleToStudent = true;
+      db.gradebookResponseEntries[i].updatedAt = now;
+
+      // Mirror onto the response record
+      const rIdx = (db.responses || []).findIndex((r: any) => r.id === gre.responseId);
+      if (rIdx !== -1) {
+        db.responses[rIdx].aiFeedbackReleasedAt = now;
+        db.responses[rIdx].feedbackReleasedAt = now;
+        db.responses[rIdx].feedbackVisibleToStudent = true;
+      }
+      releasedCount++;
+    });
+
+    // Update all affected GradebookEntries
+    assignmentAttempts.forEach((a: any) => {
+      const gbIdx = (db.gradebookEntries || []).findIndex(
+        (e: any) => e.assignmentId === assignmentId && e.studentId === a.studentId
+      );
+      if (gbIdx !== -1) {
+        db.gradebookEntries[gbIdx].feedbackReleasedAt = now;
+        db.gradebookEntries[gbIdx].feedbackReleasedBy = teacher.id;
+        db.gradebookEntries[gbIdx].status = 'feedback_released';
+        db.gradebookEntries[gbIdx].updatedAt = now;
+      }
+    });
+
+    await commitDb(db);
+    res.json({ success: true, releasedCount });
+  } catch (err) { sendAppError(res, err); }
 });
 
 // ====================================================
