@@ -11,6 +11,8 @@
     "lint": "tsc --noEmit",
     "verify:slice": "tsx scripts/verify-slice.ts",
     "verify:workflow": "tsx scripts/verify-workflow.ts",
+    "verify:builder": "tsx scripts/verify-builder.ts",
+    "verify:teacher-state": "tsx scripts/verify-teacher-state.ts",
     "verify:allowlist": "tsx scripts/verify-allowlist.ts",
     "verify:image": "tsx scripts/verify-image-formatting.ts",
     "verify:hardening": "tsx scripts/verify-hardening.ts",
