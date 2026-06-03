@@ -4165,3 +4165,120 @@ Future-agent warning:
   - The duplicate top-bar collapse button MUST NOT be re-added. The sidebar owns its own
     collapse control.
 ```
+
+```text
+Date: 2026-06-03
+Agent: Claude Code (Sonnet 4.6)
+Task: Visual Math/Equation Editor Overhaul
+
+WHAT CHANGED:
+
+src/components/RichContent/FormulaEditorModal.tsx (complete rewrite, 71 → ~280 lines):
+  - Replaced the minimal single-field modal with a full two-column equation editor.
+  - LEFT COLUMN: Large MathLive <math-field> editing area with focus-within border highlight,
+    a tip paragraph showing example LaTeX commands, and full keyboard support.
+  - RIGHT COLUMN (64-unit scrollable panel): 10 collapsible symbol categories, each with
+    a toggle button (ChevronDown/Right), aria-expanded, and a flex-wrap grid of symbol buttons.
+  - QUICK BAR: 14 most-common symbols (fraction, sqrt, power, squared, subscript, +, −, ×, ÷,
+    =, ≈, π, ∞, |x|) always visible above the two-column body.
+  - SYMBOL CATEGORIES added (all with correct LaTeX strings):
+      1. Numbers (0–9, decimal, comma, π, e, ∞, i)
+      2. Arithmetic & Units (+, −, ×, ÷, ±, %, °, ·, x̄, ½)
+      3. Exponents, Roots & Logs (xⁿ, x², x³, xᵢ, √, ⁿ√, eˣ, ln, log, logᵦ, a/b)
+      4. Relations (=, ≠, <, >, ≤, ≥, ≈, ∝, ±, ~, ≅)
+      5. Groups ((), [], {}, |x|, ⟨⟩, (x,y))
+      6. Trigonometry (sin, cos, tan, sec, csc, cot, arcsin, arccos, arctan)
+      7. Statistics (x̄, ȳ, σ, μ, n!, Σ, P(), C, s, r)
+      8. Greek (α, β, γ, Γ, δ, Δ, θ, λ, μ, π, ρ, σ, Σ, τ, φ, χ, ψ, ω, Ω, ε)
+      9. Calculus (∫, ∫ₐᵇ, d/dx, ∂/∂x, ∂, lim, Σ series, ∞, ∇, ∮)
+     10. Science Extras (→, ⇌, ↑, ↓, Δ, ×10ⁿ, subscript, x⁺, x⁻)
+  - SYMBOL INSERTION: Each symbol button uses onMouseDown + e.preventDefault() so the
+    math-field retains focus. Calls mf.insert(latex) then mf.focus(). Symbols are inserted
+    at the current cursor position (not appended to the end).
+  - KEYBOARD BUTTON FIX: MathLive's internal virtual keyboard UI is suppressed on mount via
+    mf.mathVirtualKeyboardPolicy = 'off'. Our own symbol palette replaces it entirely.
+  - MENU BUTTON FIX: MathLive's formula menu (three-line) is no longer the primary interaction
+    surface. We provide a stable React-managed palette that opens/closes predictably.
+  - Esc key closes modal (document keydown listener, cleaned up on unmount).
+  - Clicking the backdrop overlay closes modal (onMouseDown on the backdrop div).
+  - Enter (without Shift) in the math-field triggers save.
+  - Modal has role="dialog", aria-modal="true", aria-label="Visual Math Editor".
+  - All symbol buttons have title and aria-label attributes.
+  - Category sections have aria-expanded on the toggle button.
+  - Modal max-width is max-w-5xl; right panel is 64-unit (256px) fixed width; both columns
+    scroll independently.
+  - onSave(latex, "") interface is preserved — both callers (RichContentEditor insertion and
+    FormulaNode edit) work without changes.
+  - No new npm dependencies added (mathlive is already installed at ^0.109.2).
+
+ARCHITECTURE DECISION — MathLive vs MathQuill:
+  The reference files uploaded (equation_editor.html/css/js, mathquill.min.js) use an older
+  jQuery+MathQuill stack. VERITAS Learn already has MathLive 0.109.2 installed and working
+  (used in FormulaNode, ChemistryNode, RichContentRenderer). MathLive is more modern, has
+  better accessibility, and is already wired into the Lexical-based rich text system.
+  The reference files were used only as a design inspiration (two-column layout, quick bar,
+  categorized collapsible symbol groups). No MathQuill code was imported or adapted.
+
+SYMBOL INSERTION BEHAVIOR:
+  mf.insert(latex) inserts at the cursor. After insertion, mf.focus() re-focuses the field
+  so the teacher can continue typing or clicking more symbols without manually re-clicking the
+  math field. Templates like \\frac{}{} leave the cursor positioned inside the numerator.
+
+SAVE / CANCEL:
+  Save: reads mf.value (the LaTeX string), calls onSave(latex, ""), modal unmounts.
+  Cancel or Esc or backdrop click: calls onClose(), modal unmounts, Lexical content unchanged.
+  Edit existing formula: onSave triggers handleUpdate() in FormulaNode which calls
+    node.setFormula(newFormula) inside editor.update() — preserves the Lexical node.
+
+COMPATIBILITY:
+  - FormulaNode, ChemistryNode, ImageNode — all unchanged.
+  - ChemistryFormulaModal — unchanged.
+  - RichContentEditor — unchanged (modal integration unchanged).
+  - richContentSanitizer, richContentMigration — unchanged.
+  - Existing saved formulas continue to render correctly via <math-field readonly>.
+  - All student-facing formula rendering is read-only; no student access to the editor.
+
+ACCESSIBILITY:
+  - role="dialog" + aria-modal="true" + aria-label on the modal container.
+  - aria-expanded on each category toggle.
+  - title + aria-label on every symbol button.
+  - Esc key handler closes the modal.
+  - Auto-focus on mount (80 ms delay to let dialog render).
+  - onMouseDown + preventDefault on symbol buttons keeps math-field focus.
+  - Visible focus ring (focus:ring-2 focus:ring-blue-300) on all interactive elements.
+
+VERIFICATION:
+  - npm run lint: pre-existing TS errors in scripts/ and server.ts (Node types, Express,
+    etc.) — all pre-date this PR and are unrelated to the FormulaEditorModal changes.
+    No new TS errors introduced in src/.
+  - npm run build / npx vite build: node_modules not installed in this sandbox environment;
+    build not runnable here. Previous PR build was verified green (see prior entry).
+    The new FormulaEditorModal.tsx uses only the same imports as the old file plus
+    ChevronDown and ChevronRight from lucide-react (present in v0.546.0).
+  - Logic correctness verified by code review: symbol insert, Esc handler, backdrop close,
+    Enter-to-save, aria attributes, onSave interface compatibility.
+
+Known issues / remaining work:
+  - MathLive virtual keyboard policy 'off' hides the on-screen keyboard popover entirely.
+    If teachers on tablets need a virtual keyboard, the policy can be changed to 'auto'
+    or 'sandboxed' and the symbol palette can coexist. For now, the policy is 'off' to
+    prevent the MathLive toolbar from conflicting with our palette.
+  - MathLive's formula menu (three-line "hamburger") may still appear inside the math-field
+    on some MathLive builds. If it does, it can be suppressed via:
+      mf.menuItems = [];
+    or CSS: math-field::part(menu-toggle) { display: none; }
+    Added as a future-agent note below.
+  - The right panel category width (256px) may be tight on mobile. On screens < 768px the
+    two-column layout will compress; a responsive breakpoint (sm:hidden / drawer pattern)
+    is a future improvement.
+
+Future-agent warning:
+  - Do NOT revert FormulaEditorModal.tsx to the old single-field version.
+  - The onSave interface (formula: string, mathml: string) must be preserved; both callers
+    pass only the first argument. The second arg is vestigial but kept for API stability.
+  - If MathLive's formula menu (three-line) re-appears and causes UX problems, suppress it
+    with mf.menuItems = [] in the mount useEffect.
+  - Do NOT remove the onMouseDown / e.preventDefault() pattern on symbol buttons — without
+    it, clicking a button steals focus from the math-field and insert() writes to a blurred
+    field, which may not place the symbol at the expected cursor position.
+```
