@@ -181,6 +181,69 @@
         "addedAt": { "type": "string" }
       },
       "required": ["id", "email", "addedBy", "addedAt"]
+    },
+    "Enrollment": {
+      "title": "Enrollment",
+      "description": "Student enrollment in a course",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "courseId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentEmail": { "type": "string" },
+        "studentName": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "removed"] },
+        "enrolledAt": { "type": "string" }
+      },
+      "required": ["id", "courseId", "studentId", "studentEmail", "studentName", "status", "enrolledAt"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "A teacher assignment record of a lesson for a course",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "lessonVersionId": { "type": "string" },
+        "courseId": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "opensAt": { "type": "string" },
+        "dueAt": { "type": "string" },
+        "closesAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "lessonId", "courseId", "opensAt", "dueAt", "closesAt", "createdAt"]
+    },
+    "LessonDraft": {
+      "title": "LessonDraft",
+      "description": "Teacher working draft of a lesson with automated backups",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "baseLessonUpdatedAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "restored", "discarded", "published"] }
+      },
+      "required": ["id", "lessonId", "teacherId", "baseLessonUpdatedAt", "createdAt", "updatedAt", "status"]
+    },
+    "LessonVersion": {
+      "title": "LessonVersion",
+      "description": "Immutable published snapshot of a lesson",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "versionNumber": { "type": "number" },
+        "title": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "sourceLessonUpdatedAt": { "type": "string" },
+        "status": { "type": "string", "enum": ["published", "archived"] }
+      },
+      "required": ["id", "lessonId", "versionNumber", "title", "createdBy", "createdAt", "sourceLessonUpdatedAt", "status"]
     }
   },
   "firestore": {
@@ -191,6 +254,10 @@
     "courses/{courseId}": {
       "schema": "Course",
       "description": "Active classrooms and course subjects"
+    },
+    "enrollments/{enrollmentId}": {
+      "schema": "Enrollment",
+      "description": "Student course enrollment statuses"
     },
     "lessons/{lessonId}": {
       "schema": "Lesson",
@@ -204,7 +271,7 @@
       "schema": "LessonAttempt",
       "description": "Student workspace session state"
     },
-    "assignments/{assignmentId}": {
+    "questionAssignments/{assignmentId}": {
       "schema": "QuestionAssignment",
       "description": "Scrambled question variants deterministically assigned to a student's attempt to deter sharing"
     },
@@ -220,6 +287,10 @@
       "schema": "AIGradingRecord",
       "description": "AI grading records for teacher verification and review of short answer responses"
     },
+    "lessonAssignments/{assignmentId}": {
+      "schema": "Assignment",
+      "description": "Active assignments tracking due dates and conditions"
+    },
     "gradebookEntries/{entryId}": {
       "schema": "GradebookEntry",
       "description": "Durable high-level grades per lesson assignment and student"
@@ -231,6 +302,14 @@
     "approvedTeachers/{teacherId}": {
       "schema": "ApprovedTeacher",
       "description": "Dynamic list of verified teachers approved by system super admin"
+    },
+    "lessonDrafts/{draftId}": {
+      "schema": "LessonDraft",
+      "description": "Autosaved teacher scratchpad lesson drafts"
+    },
+    "lessonVersions/{versionId}": {
+      "schema": "LessonVersion",
+      "description": "Immutable historic version snapshorts of published lessons"
     }
   }
 }

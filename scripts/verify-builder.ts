@@ -219,7 +219,7 @@ check("thumbnail save/reload preserves video metadata and checkpoints",
 // ---------------------------------------------------------------------------
 console.log("\nStep 6: Builder updates and server persistence keep rich lesson data intact...");
 
-const server = read("server.ts");
+const serverContent = read("server.ts");
 
 check("Checkpoint updates derive from latest block state",
   /const updateCheckpoint[\s\S]*setCurrentBlocks\(\(prev: any\[\]\) =>/.test(builder));
@@ -267,7 +267,7 @@ const richPayload = {
   choiceText: { html: "<p>Choice A rich text.</p>", plainText: "Choice A rich text." },
   thumbnailUrl: "https://cdn.example.test/thumb.jpg",
 };
-const savedBlocks: any[] = [
+const savedBlocks2: any[] = [
   { id: "video_1", type: "video", title: "Video", videoUrl: "https://cdn.example.test/video.mp4", thumbnailUrl: richPayload.thumbnailUrl, videoCheckpoints: [] },
   { id: "reading_1", type: "reading", title: "Reading", content: richPayload.readingContent },
   { id: "mc_1", type: "question", title: "MC", questionType: "mc", isPractice: true, singleQuestion: {
@@ -280,28 +280,28 @@ const savedBlocks: any[] = [
     rubricCategories: [{ id: "rub_1", name: "Evidence", maxPoints: 2, description: richPayload.rubricDescription }], points: 2,
   } },
 ];
-const reloadedBlocks = JSON.parse(JSON.stringify(savedBlocks));
-const versionSnapshot = JSON.parse(JSON.stringify(reloadedBlocks));
-check("Save/reload preserves reading rich content", reloadedBlocks[1].content.html === richPayload.readingContent.html);
-check("Save/reload preserves MC stem, feedback, and choice text", reloadedBlocks[2].singleQuestion.stem.html === richPayload.mcStem.html && reloadedBlocks[2].singleQuestion.explanation.html === richPayload.explanation.html && reloadedBlocks[2].singleQuestion.choices[0].text.html === richPayload.choiceText.html);
-check("Save/reload preserves SA stem, instructions, model answer, scoring guidance, and rubric", reloadedBlocks[3].singleQuestion.stem.html === richPayload.saStem.html && reloadedBlocks[3].singleQuestion.studentInstructions.html === richPayload.studentInstructions.html && reloadedBlocks[3].singleQuestion.modelAnswer.html === richPayload.modelAnswer.html && reloadedBlocks[3].singleQuestion.aiScoringGuidance.html === richPayload.aiScoringGuidance.html && reloadedBlocks[3].singleQuestion.rubricCategories[0].description.html === richPayload.rubricDescription.html);
-check("Save/reload preserves video thumbnail URL", reloadedBlocks[0].thumbnailUrl === richPayload.thumbnailUrl);
-check("Version snapshot preserves all rich block/question fields", JSON.stringify(versionSnapshot) === JSON.stringify(savedBlocks));
+const reloadedBlocks2 = JSON.parse(JSON.stringify(savedBlocks2));
+const versionSnapshot = JSON.parse(JSON.stringify(reloadedBlocks2));
+check("Save/reload preserves reading rich content", reloadedBlocks2[1].content.html === richPayload.readingContent.html);
+check("Save/reload preserves MC stem, feedback, and choice text", reloadedBlocks2[2].singleQuestion.stem.html === richPayload.mcStem.html && reloadedBlocks2[2].singleQuestion.explanation.html === richPayload.explanation.html && reloadedBlocks2[2].singleQuestion.choices[0].text.html === richPayload.choiceText.html);
+check("Save/reload preserves SA stem, instructions, model answer, scoring guidance, and rubric", reloadedBlocks2[3].singleQuestion.stem.html === richPayload.saStem.html && reloadedBlocks2[3].singleQuestion.studentInstructions.html === richPayload.studentInstructions.html && reloadedBlocks2[3].singleQuestion.modelAnswer.html === richPayload.modelAnswer.html && reloadedBlocks2[3].singleQuestion.aiScoringGuidance.html === richPayload.aiScoringGuidance.html && reloadedBlocks2[3].singleQuestion.rubricCategories[0].description.html === richPayload.rubricDescription.html);
+check("Save/reload preserves video thumbnail URL", reloadedBlocks2[0].thumbnailUrl === richPayload.thumbnailUrl);
+check("Version snapshot preserves all rich block/question fields", JSON.stringify(versionSnapshot) === JSON.stringify(savedBlocks2));
 
-const firstQuestionBefore = JSON.parse(JSON.stringify(savedBlocks[2]));
-const withSecondQuestion = [...savedBlocks, { id: "q2", type: "question", title: "Second", questionType: "mc", singleQuestion: { id: "q_second", type: "mc", stem: "Second stem", choices: [{ id: "choice_2a", text: "Second A" }, { id: "choice_2b", text: "Second B" }], correctChoiceId: "choice_2a" } }];
+const firstQuestionBefore = JSON.parse(JSON.stringify(savedBlocks2[2]));
+const withSecondQuestion = [...savedBlocks2, { id: "q2", type: "question", title: "Second", questionType: "mc", singleQuestion: { id: "q_second", type: "mc", stem: "Second stem", choices: [{ id: "choice_2a", text: "Second A" }, { id: "choice_2b", text: "Second B" }], correctChoiceId: "choice_2a" } }];
 check("Adding a second question does not erase the first question stem, feedback, choices, or reading content",
   JSON.stringify(withSecondQuestion[2]) === JSON.stringify(firstQuestionBefore) &&
-  JSON.stringify(withSecondQuestion[1].content) === JSON.stringify(richPayload.readingContent));
+  JSON.stringify((withSecondQuestion[1] as any).content) === JSON.stringify(richPayload.readingContent));
 
 check("POST /api/lessons preserves reading content, question data, and video thumbnails",
-  /thumbnailUrl: bType === "video" \? b\.thumbnailUrl/.test(server) &&
-  /content: bType === "reading" \? b\.content/.test(server) &&
-  /singleQuestion: bType === "question" \? b\.singleQuestion/.test(server));
+  /thumbnailUrl: bType === "video" \? b\.thumbnailUrl/.test(serverContent) &&
+  /content: bType === "reading" \? b\.content/.test(serverContent) &&
+  /singleQuestion: bType === "question" \? b\.singleQuestion/.test(serverContent));
 check("PUT /api/lessons/:id preserves reading content, question data, and video thumbnails",
-  /app\.put\("\/api\/lessons\/:id"[\s\S]*thumbnailUrl: bType === "video" \? b\.thumbnailUrl[\s\S]*content: bType === "reading" \? b\.content[\s\S]*singleQuestion: bType === "question" \? b\.singleQuestion/.test(server));
+  /app\.put\("\/api\/lessons\/:id"[\s\S]*thumbnailUrl: bType === "video" \? b\.thumbnailUrl[\s\S]*content: bType === "reading" \? b\.content[\s\S]*singleQuestion: bType === "question" \? b\.singleQuestion/.test(serverContent));
 check("createLessonVersionSnapshot deep-copies sorted blocks without stripping fields",
-  /blocksSnapshot: JSON\.parse\(JSON\.stringify\(sortedBlocks\)\)/.test(server));
+  /blocksSnapshot: JSON\.parse\(JSON\.stringify\(sortedBlocks\)\)/.test(serverContent));
 
 console.log(`\n=== RESULT: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

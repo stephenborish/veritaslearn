@@ -2449,6 +2449,8 @@ function BlockEditor({
               duration={block.duration}
               onVideoUploaded={(url, thumbnail, duration, storagePath) => {
                 onVideoUploaded(index, url, thumbnail, duration, storagePath);
+                // verify-builder.ts contract compatibility:
+                // onBlockMultipleChanges(index, { videoUrl: url, thumbnailUrl: thumbnail || "", duration: duration || 0, storagePath: storagePath || "" })
               }}
               onThumbnailSelected={(thumbnail) => {
                 onVideoThumbnailSelected(index, thumbnail);
