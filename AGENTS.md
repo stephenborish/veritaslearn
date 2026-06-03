@@ -282,6 +282,149 @@ The teacher portal should include:
 
 ---
 
+## 5.1 Teacher Lesson Builder (Authoring UX)
+
+The lesson builder (`src/components/TeacherDashboard/LessonsBuilder.tsx`,
+`QuestionEditor.tsx`, and the framework-free `builderWorkflow.ts`) is a
+teacher-facing product, not a database editor. The rules below are binding for
+any future change to the authoring surface.
+
+### Design principles (binding)
+
+- **Light mode only.** Bright white / soft off-white surfaces, dark legible
+  text, subtle borders and shadows, restrained accent colors with meaning
+  (blue = video, purple = reading, emerald = assessment, teal = practice,
+  indigo = assigned, amber = needs attention, rose = blocker). No dark mode.
+- **Calm and spacious, not cluttered.** Strong typographic hierarchy, concise
+  labels, useful empty states. Avoid walls of badges and dense control grids.
+- **No developer / internal wording in the UI.** Never surface `isPractice`,
+  `gradingMode`, `payload`, raw object/field names, raw lesson/block IDs, or
+  scary proctoring language ("secure response record", "passive pacing logs").
+- **Resilient against mistakes.** Destructive actions confirm; teacher work is
+  never silently overwritten.
+- **Animations are subtle and respect `prefers-reduced-motion`** (via the
+  `motion` library's `useReducedMotion` and the CSS guard in `index.css`).
+  Used for: save-state transitions, block-added highlight, readiness item
+  resolution, and publish/assign confirmations.
+
+### Workflow structure
+
+The builder communicates one coherent path with five visible stages:
+
+**Setup → Content & Questions → Preview → Publish → Assign**
+(`WORKFLOW_STAGES` in `builderWorkflow.ts`).
+
+It is a guide, not a rigid wizard — teachers can jump to any stage or block at
+any time from the left rail. Each stage answers: what it's for, what's required,
+what's optional, and what to do next.
+
+### Command header (mission control)
+
+The sticky header always shows: lesson title, teacher-friendly status, animated
+save state + last-saved time, the action buttons (Lessons, Save draft, Preview,
+Publish, Assign), and a **Next best action** ribbon.
+
+Status vocabulary (`lessonStatusLabel`): `Draft`, `Needs attention`,
+`Ready to publish`, `Published, not assigned`, `Assigned`. Save state:
+`Saving…`, `Saved`, `Save failed`, `Saving draft…`, `Draft saved`,
+`Unsaved changes`, `Saved <relative time>`.
+
+### Next best action
+
+`computeNextBestAction` returns the single most useful next step and where it
+routes. The order is the product opinion:
+
+1. No title → "Add a lesson title." (Setup)
+2. No blocks → "Add your first content block." (Setup)
+3. Blockers exist → "Finish N items that need attention." (first blocker)
+4. Ready, unpublished → "Preview or publish this lesson." (Publish)
+5. Published, unassigned → "Assign this lesson to a course." (Assign)
+6. Assigned → "View student progress." (progress)
+
+### Block navigation
+
+The left rail is the lesson outline: each block shows its number, type icon,
+title, a subtitle (Video · N checks / Reading / Practice|Assessment), a
+warning dot when it has a blocker, selected state, reorder controls, and a
+delete control. Add actions ("Add video / reading / question") carry a short
+plain-language description and a freshly added block briefly highlights.
+
+### Practice vs Assessment (language)
+
+Authored everywhere through the shared `ModeSelector` (question blocks and
+checkpoints). Two cards, never the `isPractice` field name:
+
+- **Practice** — students get feedback right away; recorded as practice;
+  doesn't count toward the grade.
+- **Assessment** — students submit for review; scores and answers stay hidden
+  until released; counts toward the grade.
+
+The label appears in the question editor, block outline, readiness summary,
+publish confirmation, and student-visibility notes.
+
+### Video & checkpoint authoring
+
+Video blocks separate the video source (upload or link), delivery, and
+checkpoints. A checkpoint reads as "pause the video here and ask this": pause
+time (shown as `m:ss`), question type, "Required before continuing", "Pause
+video here", the Practice/Assessment selector, and the question editor.
+
+### MC & SA authoring
+
+- MC: student stem is separated from answer rows; fixed letters A–E; the correct
+  answer binds to a **stable choice id** (`correctChoiceId`), never an array
+  index, so grading survives scrambling; choices support rich text/math/images.
+- SA: student-facing prompt + optional instructions are separated from the
+  **teacher-only scoring setup** (model answer, scoring guidance, rubric, notes),
+  which is clearly labeled "Students will not see this."
+
+### AI rubric authoring
+
+Actions: **Draft rubric with AI**, **Revise rubric** (with a free-text
+instruction), then edit before publishing. An **AI scoring readiness** strip
+shows: rubric ready / totals mismatch / add a rubric, model answer set/missing,
+scoring guidance set/missing, and an "AI draft — review before publishing"
+marker. AI never overwrites silently and a failure is shown calmly: the
+question/rubric is not changed; technical detail is secondary, never the
+primary message. AI rubric generation must not be removed.
+
+### Readiness validation
+
+`computeReadiness` classifies every item by severity into three tiers in the
+right panel:
+
+- **Blockers** (rose) — must fix before publishing (missing title, no content,
+  missing video, incomplete MC stem/choices, missing correct answer, missing
+  rubric, rubric total ≠ points, checkpoint without a question).
+- **Needs attention** (amber) — non-blocking quality issues (assessment SA
+  missing a model answer or scoring guidance; assignment pointing at an
+  archived course).
+- **Optional** (slate) — improvements (practice SA model answer; unpublished;
+  published-but-unassigned).
+
+Every item uses plain language ("Question 3 needs a correct answer.",
+"Checkpoint at 2:15 needs a question.", "Rubric totals 3, not 4.") and jumps to
+the block/checkpoint that needs the fix. Only blockers prevent publishing.
+
+### Publish & assign
+
+Publish opens a calm confirmation summarizing the lesson (videos, readings,
+checkpoints, practice/assessment counts, AI-scored count), a feedback-visibility
+note, and any "worth a look first" attention items; blockers prevent it. After
+publishing, Assign is the obvious next step. Assignment captures course, open,
+due, and close dates and confirms with the course name and feedback summary; the
+confirmation offers "Back to lessons" / "Done".
+
+### Draft safety
+
+Autosave/recovery is unchanged in behavior and must stay reliable. Background
+server refreshes never overwrite active edits — a recovered server draft (or
+local fallback) is offered with Restore / Discard, and a conflict banner warns
+when the lesson changed after the draft was saved. Teacher work is never
+silently overwritten.
+
+---
+
 ## 6. Student Portal Structure
 
 The student portal should include:

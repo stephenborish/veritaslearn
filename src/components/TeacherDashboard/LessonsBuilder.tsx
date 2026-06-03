@@ -1,15 +1,23 @@
 import React, { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import {
   Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock,
   ArrowUp, ArrowDown, BookOpen, Calendar, Eye, Play, CheckCircle,
   ChevronRight, ChevronLeft, HelpCircle, Info, Send, GraduationCap,
-  BarChart2, Layers
+  BarChart2, Layers, Sparkles, ArrowRight, BookMarked
 } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
 import QuestionEditor, { validateQuestionClient } from "./QuestionEditor";
 import LearningConditionsEditor, { buildDefaultPolicy, type IntegrityPolicy } from "./LearningConditionsEditor";
+import {
+  computeNextBestAction,
+  lessonStatusLabel,
+  modeLabel,
+  type NextActionTarget,
+  type ReadinessSeverity,
+} from "./builderWorkflow";
 
 function uid(prefix: string): string {
   return prefix + "_" + Math.random().toString(36).slice(2, 9);
@@ -113,6 +121,8 @@ export default function LessonsBuilder({
   const [postPublishLessonId, setPostPublishLessonId] = useState<string | null>(null);
 
   const [currentBlocks, setCurrentBlocks] = useState<any[]>([]);
+  // Briefly highlights a freshly added block so the add feels satisfying.
+  const [justAddedBlockId, setJustAddedBlockId] = useState<string | null>(null);
 
   const [asgOpensAt, setAsgOpensAt] = useState(getDefaultOpenDate());
   const [asgDueAt, setAsgDueAt] = useState(getDefaultDueDate());
@@ -357,6 +367,8 @@ export default function LessonsBuilder({
     const nextBlocks = [...currentBlocks, newBlock];
     setCurrentBlocks(nextBlocks);
     setActiveWorkspace(nextBlocks.length - 1);
+    setJustAddedBlockId(freshId);
+    setTimeout(() => setJustAddedBlockId((id) => (id === freshId ? null : id)), 1400);
   };
 
   const handleDeleteBlock = (index: number) => {
@@ -809,6 +821,20 @@ export default function LessonsBuilder({
     }
   };
 
+  // ---- Next best action navigation ----
+  // Sends the teacher to the single most useful next step. Pure routing only.
+  const goToAction = (target: NextActionTarget) => {
+    if (target === "publish") { handlePublishLive(); return; }
+    if (target === "assign") { handleAssignAndLaunch(); return; }
+    if (target === "preview") { handlePreviewAsStudent(); return; }
+    if (target === "progress") {
+      setSelectedLesson(null);
+      setBuilderSubTab("assignments");
+      return;
+    }
+    setActiveWorkspace(target as "setup" | number);
+  };
+
   // ---- Assignment form ----
   const handleCreateAssignmentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -852,24 +878,28 @@ export default function LessonsBuilder({
   };
 
   // ---- Readiness computation ----
-  type ReadinessIssue = { message: string; target: "setup" | number };  const computeReadiness = (): {
+  type ReadinessIssue = { message: string; target: "setup" | number; severity?: ReadinessSeverity };
+  const computeReadiness = (): {
     issues: ReadinessIssue[];
     warnings: ReadinessIssue[];
+    attention: ReadinessIssue[];
+    optional: ReadinessIssue[];
     gradedQCount: number;
     practiceQCount: number;
     videoCount: number;
     readingCount: number;
     aiGradedCount: number;
+    checkpointCount: number;
   } => {
     const issues: ReadinessIssue[] = [];
     const warnings: ReadinessIssue[] = [];
-    let gradedQCount = 0, practiceQCount = 0, videoCount = 0, readingCount = 0, aiGradedCount = 0;
+    let gradedQCount = 0, practiceQCount = 0, videoCount = 0, readingCount = 0, aiGradedCount = 0, checkpointCount = 0;
 
     if (!title || !title.trim()) {
-      issues.push({ message: "Lesson title is missing. Set a title in Lesson Setup.", target: "setup" });
+      issues.push({ message: "Add a lesson title in Setup.", target: "setup" });
     }
     if (currentBlocks.length === 0) {
-      issues.push({ message: "No content blocks. Add at least one Video, Reading, or Question block.", target: "setup" });
+      issues.push({ message: "Add at least one video, reading, or question.", target: "setup" });
     }
 
     // Helper choice blank check
@@ -889,7 +919,7 @@ export default function LessonsBuilder({
     // Advanced question inspector
     const checkQuestion = (q: any, blockIdx: number, contextLabel: string, isPractice: boolean) => {
       if (!q) {
-        issues.push({ message: `${contextLabel}: Question configuration is missing.`, target: blockIdx });
+        issues.push({ message: `${contextLabel} needs a question.`, target: blockIdx });
         return;
       }
 
@@ -899,7 +929,7 @@ export default function LessonsBuilder({
       // Stem/Prompt empty check
       const stemText = q.stem ? (typeof q.stem === "string" ? q.stem : (q.stem.plainText || "")) : "";
       if (!stemText.trim()) {
-        issues.push({ message: `${contextLabel}: Question prompt stem is empty or incomplete.`, target: blockIdx });
+        issues.push({ message: `${contextLabel} needs a question prompt.`, target: blockIdx });
       }
 
       if (isMc) {
@@ -907,17 +937,17 @@ export default function LessonsBuilder({
         const blank = (q.choices || []).filter((c: any) => !isChoiceNonBlank(c));
 
         if (!q.choices || q.choices.length === 0 || nonBlank.length === 0) {
-          issues.push({ message: `${contextLabel}: Incomplete multiple choice question — no options are defined.`, target: blockIdx });
+          issues.push({ message: `${contextLabel} needs answer choices.`, target: blockIdx });
         } else if (nonBlank.length < 2) {
-          issues.push({ message: `${contextLabel}: Incomplete multiple choice question — need 2 or more complete answer choices.`, target: blockIdx });
+          issues.push({ message: `${contextLabel} needs at least two answer choices.`, target: blockIdx });
         }
 
         if (blank.length > 0) {
-          issues.push({ message: `${contextLabel}: Incomplete multiple choice question — has empty candidate answers.`, target: blockIdx });
+          issues.push({ message: `${contextLabel} has a blank answer choice.`, target: blockIdx });
         }
 
         if (!q.correctChoiceId) {
-          issues.push({ message: `${contextLabel}: Missing correct answer — no option is marked as correct.`, target: blockIdx });
+          issues.push({ message: `${contextLabel} needs a correct answer.`, target: blockIdx });
         }
       } else if (isSa) {
         // SA Prompt vs rubric vs model answers
@@ -928,49 +958,51 @@ export default function LessonsBuilder({
         const isGuidanceMissing = !guidanceText.trim();
 
         if (!isPractice) {
-          // Graded short-answers
+          // Assessment short-answers — these rely on a rubric for AI scoring.
           if (isModelAnsMissing) {
-            warnings.push({ message: `${contextLabel}: Missing model answer — AI grading quality improves significantly with a reference solution.`, target: blockIdx });
+            warnings.push({ message: `${contextLabel}: add a model answer so AI scoring has a reference.`, target: blockIdx, severity: "attention" });
           }
           if (isGuidanceMissing) {
-            warnings.push({ message: `${contextLabel}: Missing AI scoring guidance — adding details ensures robust automatic scoring.`, target: blockIdx });
+            warnings.push({ message: `${contextLabel}: add scoring guidance so AI knows what to look for.`, target: blockIdx, severity: "attention" });
           }
 
           if (!q.rubricCategories || q.rubricCategories.length === 0) {
-            issues.push({ message: `${contextLabel}: Missing rubric categories — required for graded AI evaluations.`, target: blockIdx });
+            issues.push({ message: `${contextLabel}: short answer needs a rubric for scoring.`, target: blockIdx });
           } else {
             const rubricTotal = (q.rubricCategories as any[]).reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
             if (q.points > 0 && rubricTotal !== q.points) {
-              issues.push({ message: `${contextLabel}: Rubric points mismatch — rubric sum (${rubricTotal} pts) does not match question points (${q.points} pts).`, target: blockIdx });
+              issues.push({ message: `${contextLabel}: rubric totals ${rubricTotal} pts, but the question is worth ${q.points}.`, target: blockIdx });
             }
           }
         } else {
-          // Practice short answers
+          // Practice short answers — feedback quality only, never blocking.
           if (isModelAnsMissing) {
-            warnings.push({ message: `${contextLabel}: Missing model answer — help students evaluate practice draft results.`, target: blockIdx });
+            warnings.push({ message: `${contextLabel}: add a model answer to improve practice feedback.`, target: blockIdx, severity: "optional" });
           }
         }
       }
     };
 
     currentBlocks.forEach((b: any, i: number) => {
-      const blockLabel = `Block ${i + 1} ("${b.title || "Untitled"}")`;
+      const blockLabel = b.title?.trim() ? `“${b.title.trim()}”` : `Block ${i + 1}`;
       if (!b.title?.trim()) {
-        issues.push({ message: `Block ${i + 1}: title is missing or empty.`, target: i });
+        issues.push({ message: `Block ${i + 1} needs a title.`, target: i });
       }
 
       if (b.type === "video") {
         videoCount++;
         if (!b.videoUrl && !b.storagePath) {
-          issues.push({ message: `${blockLabel}: no video source uploaded or selected.`, target: i });
+          issues.push({ message: `${blockLabel} needs a video.`, target: i });
         }
         const cps: any[] = b.videoCheckpoints || [];
         cps.forEach((cp: any, ci: number) => {
-          const checkpointLabel = `${blockLabel} Checkpoint ${ci + 1} ("${cp.title || "Untitled"}")`;
+          checkpointCount++;
+          const tsLabel = formatTimestamp(cp.timestamp);
+          const checkpointLabel = `${blockLabel} checkpoint at ${tsLabel}`;
           const q = cp.questions?.[0];
-          
+
           if (cp.timestamp === undefined || cp.timestamp < 0) {
-            issues.push({ message: `${checkpointLabel}: invalid point timestamp (${cp.timestamp}s).`, target: i });
+            issues.push({ message: `${blockLabel}: a checkpoint needs a valid time.`, target: i });
           }
 
           if (cp.isPractice) {
@@ -981,7 +1013,7 @@ export default function LessonsBuilder({
           } else {
             gradedQCount++;
             if (!q) {
-              issues.push({ message: `${checkpointLabel}: question configuration is missing.`, target: i });
+              issues.push({ message: `${checkpointLabel} needs a question.`, target: i });
             } else {
               if (q.type === "sa") aiGradedCount++;
               checkQuestion(q, i, checkpointLabel, false);
@@ -994,7 +1026,7 @@ export default function LessonsBuilder({
           ? b.content.trim().length > 0
           : !!(b.content?.plainText?.trim() || b.content?.html?.replace(/<[^>]*>/g, "").trim());
         if (!hasContent) {
-          issues.push({ message: `${blockLabel}: reading section content is empty.`, target: i });
+          issues.push({ message: `${blockLabel} needs reading content.`, target: i });
         }
       } else if (b.type === "question" && b.singleQuestion) {
         const isPractice = !!b.isPractice;
@@ -1009,25 +1041,27 @@ export default function LessonsBuilder({
       }
     });
 
-    // Checklist of assignments-level publishing states
+    // Publishing-state notes — never blockers, just gentle guidance toward the next step.
     if (selectedLesson && selectedLesson.id && selectedLesson.id !== "new") {
       if (!isPublished) {
-        warnings.push({ message: "Unpublished lesson — students cannot view or launch this lesson. Click Publish to release.", target: "setup" });
+        warnings.push({ message: "Not published yet — publish so this lesson can be assigned.", target: "setup", severity: "optional" });
       } else {
         const lessonAssignments = (assignments || []).filter((a: any) => a.lessonId === selectedLesson.id);
         if (lessonAssignments.length === 0) {
-          warnings.push({ message: "Published but unassigned lesson — assign this lesson to a course so students can register/practice.", target: "setup" });
+          warnings.push({ message: "Published, not assigned — assign it to a course so students can start.", target: "setup", severity: "optional" });
         } else {
           const activeCourseIds = new Set((courses || []).map((c: any) => c.id));
           const hasUnassignedActiveCourse = lessonAssignments.some((a: any) => !activeCourseIds.has(a.courseId));
           if (hasUnassignedActiveCourse) {
-            warnings.push({ message: "Assigned lesson with no active course target — assignments link to a course that is missing or archived.", target: "setup" });
+            warnings.push({ message: "Assigned to a course that is archived or missing — re-assign to an active course.", target: "setup", severity: "attention" });
           }
         }
       }
     }
 
-    return { issues, warnings, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount };
+    const attention = warnings.filter((w) => w.severity === "attention");
+    const optional = warnings.filter((w) => w.severity !== "attention");
+    return { issues, warnings, attention, optional, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount, checkpointCount };
   };
 
   function isChoiceNonBlank(c: any): boolean {
@@ -1062,13 +1096,13 @@ export default function LessonsBuilder({
               onClick={() => setBuilderSubTab("library")}
               className={`pb-3 px-4 font-sans text-xs font-bold uppercase tracking-wider border-b-2 transition ${builderSubTab === "library" ? "border-[#0A192F] text-[#0A192F]" : "border-transparent text-slate-400 hover:text-slate-600"}`}
             >
-              Lessons Library
+              Lessons
             </button>
             <button
               onClick={() => setBuilderSubTab("assignments")}
               className={`pb-3 px-4 font-sans text-xs font-bold uppercase tracking-wider border-b-2 transition flex items-center gap-1.5 ${builderSubTab === "assignments" ? "border-[#0A192F] text-[#0A192F]" : "border-transparent text-slate-400 hover:text-slate-600"}`}
             >
-              <Calendar className="w-4 h-4" /> Assignments Manager
+              <Calendar className="w-4 h-4" /> Assignments
             </button>
           </div>
 
@@ -1079,9 +1113,19 @@ export default function LessonsBuilder({
                   onClick={startNewLesson}
                   className="bg-[#0A192F] hover:bg-[#15294b] text-white text-xs font-bold px-4 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm tracking-wider uppercase"
                 >
-                  <Plus className="w-4 h-4" /> Create Lesson Plan
+                  <Plus className="w-4 h-4" /> New lesson
                 </button>
               </div>
+              {lessons.length === 0 && (
+                <div className="text-center py-16 border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+                  <BookMarked className="w-9 h-9 mx-auto mb-3 text-slate-300" />
+                  <p className="font-semibold text-slate-600">No lessons yet</p>
+                  <p className="text-xs text-slate-400 mt-1 mb-4">Create your first lesson — add a video, reading, or question, then publish and assign it.</p>
+                  <button onClick={startNewLesson} className="bg-[#0A192F] hover:bg-[#15294b] text-white text-xs font-bold px-4 py-2 rounded inline-flex items-center gap-1.5 cursor-pointer">
+                    <Plus className="w-4 h-4" /> New lesson
+                  </button>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {lessons.map((lesson) => {
@@ -1097,13 +1141,10 @@ export default function LessonsBuilder({
                     <div key={lesson.id} className="bg-white border text-slate-800 border-slate-250 p-6 rounded shadow-sm hover:border-slate-300 hover:shadow-md transition flex flex-col justify-between min-h-[300px] font-sans">
                       <div className="space-y-4">
                         <div className="flex justify-between items-start gap-4">
-                          <div className="space-y-1">
-                            <h3 className="text-base font-bold text-slate-900 tracking-tight text-left">{lesson.title}</h3>
-                            <span className="text-[10px] font-mono font-bold text-slate-400 block tracking-tight">ID: {lesson.id.toUpperCase()}</span>
-                          </div>
+                          <h3 className="text-base font-bold text-slate-900 tracking-tight text-left">{lesson.title || "Untitled lesson"}</h3>
                           <div className="flex flex-col items-end gap-1 shrink-0">
-                            <span className={`text-[9px] font-bold font-mono uppercase tracking-widest px-2 py-0.5 rounded-sm border ${lesson.isPublished ? "bg-emerald-50 text-emerald-700 border-emerald-100" : "bg-slate-100 text-slate-550 border-slate-200"}`}>
-                              {lesson.isPublished ? "Published" : "Draft State"}
+                            <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${lesson.isPublished ? (lessonAsgs.length > 0 ? "bg-indigo-50 text-indigo-700 border-indigo-200" : "bg-emerald-50 text-emerald-700 border-emerald-200") : "bg-slate-100 text-slate-500 border-slate-200"}`}>
+                              {lesson.isPublished ? (lessonAsgs.length > 0 ? "Assigned" : "Published") : "Draft"}
                             </span>
                           </div>
                         </div>
@@ -1111,47 +1152,45 @@ export default function LessonsBuilder({
                         <p className="text-xs text-slate-500 leading-relaxed line-clamp-2">
                           {(() => {
                             const desc = lesson.description;
-                            if (!desc) return "Complete this lesson segment.";
-                            if (typeof desc === "object") return (desc as any).plainText || ((desc as any).html ? (desc as any).html.replace(/<[^>]*>/g, "") : "");
-                            return String(desc).replace(/<[^>]*>/g, "").trim() || "Complete this lesson segment.";
+                            if (!desc) return "No description yet.";
+                            if (typeof desc === "object") return (desc as any).plainText || ((desc as any).html ? (desc as any).html.replace(/<[^>]*>/g, "") : "") || "No description yet.";
+                            return String(desc).replace(/<[^>]*>/g, "").trim() || "No description yet.";
                           })()}
                         </p>
 
                         <div className="bg-slate-50/50 border border-slate-200/60 rounded-md p-3.5 space-y-2">
-                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Lesson Structure</div>
+                          <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Contents</div>
                           <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-[11px] text-slate-600 font-medium">
                             <span>Videos: <strong>{videoCount}</strong></span>
-                            <span>Passages: <strong>{readingCount}</strong></span>
-                            <span>Practice Qs: <strong>{practiceCount}</strong></span>
-                            <span>Graded Qs: <strong className="text-[#0a192f]">{gradedCount}</strong></span>
+                            <span>Readings: <strong>{readingCount}</strong></span>
+                            <span>Practice: <strong className="text-teal-700">{practiceCount}</strong></span>
+                            <span>Assessment: <strong className="text-emerald-700">{gradedCount}</strong></span>
                           </div>
                         </div>
 
                         <div className="border-t border-slate-100 pt-3.5 space-y-2 text-left">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Student Access</span>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Students</span>
                           {!lesson.isPublished ? (
-                            <div className="bg-amber-50 border border-amber-200/70 p-2.5 rounded text-slate-700">
-                              <div className="flex items-center gap-1.5 text-amber-800 font-bold uppercase tracking-wider text-[10px]">
-                                <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-                                <span>Unpublished Draft — Students Blocked</span>
-                              </div>
+                            <div className="bg-slate-50 border border-slate-200 p-2.5 rounded text-slate-600 text-[11px]">
+                              Draft — only you can see this. Publish to assign it.
                             </div>
                           ) : lessonAsgs.length === 0 ? (
-                            <div className="bg-slate-100/80 border border-slate-200 p-2.5 rounded text-slate-600">
-                              <div className="font-bold text-slate-700 text-[10px] uppercase tracking-wider">Published · Not Yet Assigned</div>
+                            <div className="bg-sky-50 border border-sky-200 p-2.5 rounded text-sky-800 text-[11px] font-semibold">
+                              Published, not assigned — assign it to a course.
                             </div>
                           ) : (
                             <div className="space-y-1">
                               {lessonAsgs.map((asg) => {
                                 const opens = asg.opensAt || "";
                                 const closes = asg.closesAt || "";
+                                const courseName = (courses.find((c: any) => c.id === asg.courseId)?.name) || asg.courseId;
                                 let badge = null;
                                 if (now < opens) badge = <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Scheduled</span>;
-                                else if (now <= closes) badge = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase animate-pulse">● Active</span>;
-                                else badge = <span className="bg-red-50 text-red-600 border border-red-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Closed</span>;
+                                else if (now <= closes) badge = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase animate-pulse">● Open</span>;
+                                else badge = <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Closed</span>;
                                 return (
                                   <div key={asg.id} className="bg-slate-50 border border-slate-200 p-2 rounded flex justify-between items-center gap-2 text-[11px]">
-                                    <span className="font-semibold text-slate-700">{asg.courseId}{asg.section ? ` · ${asg.section}` : ""}</span>
+                                    <span className="font-semibold text-slate-700">{courseName}{asg.section ? ` · ${asg.section}` : ""}</span>
                                     {badge}
                                   </div>
                                 );
@@ -1166,16 +1205,17 @@ export default function LessonsBuilder({
                           <button
                             type="button"
                             onClick={() => onLaunchPreviewAttempt && onLaunchPreviewAttempt(lesson.id)}
-                            className="bg-amber-50 hover:bg-amber-100 text-amber-800 font-bold uppercase text-[9px] tracking-widest border border-amber-200 px-3 py-1.5 rounded transition cursor-pointer"
+                            className="bg-white hover:bg-slate-50 text-slate-700 font-bold uppercase text-[9px] tracking-widest border border-slate-200 px-3 py-1.5 rounded transition cursor-pointer flex items-center gap-1"
                           >
-                            Preview Student
+                            <Eye className="w-3 h-3" /> Preview
                           </button>
                           <button
                             onClick={() => { setBuilderSubTab("assignments"); setAsgLessonId(lesson.id); setShowAssignmentForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}
                             disabled={!lesson.isPublished}
-                            className={`text-[9px] tracking-widest font-bold uppercase px-3 py-1.5 rounded transition border ${lesson.isPublished ? "bg-indigo-600 hover:bg-indigo-700 border-indigo-700 text-white" : "bg-slate-100 text-slate-350 border-slate-200 cursor-not-allowed"}`}
+                            className={`text-[9px] tracking-widest font-bold uppercase px-3 py-1.5 rounded transition border flex items-center gap-1 ${lesson.isPublished ? "bg-indigo-600 hover:bg-indigo-700 border-indigo-700 text-white" : "bg-slate-100 text-slate-350 border-slate-200 cursor-not-allowed"}`}
+                            title={lesson.isPublished ? "Assign to a course" : "Publish first, then assign"}
                           >
-                            Assign / Launch
+                            <Calendar className="w-3 h-3" /> Assign
                           </button>
                         </div>
                         <div className="flex gap-2">
@@ -1303,80 +1343,95 @@ export default function LessonsBuilder({
             </div>
           )}
 
-          {/* Sticky command bar */}
-          <div className="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-4 py-3 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-0">
-            <div className="flex items-center gap-2 flex-wrap min-w-0">
-              <BookOpen className="w-4 h-4 text-[#0A192F] shrink-0" />
-              <span className="font-bold text-slate-800 text-sm truncate max-w-xs">{title || "Untitled Lesson"}</span>
-              {/* Derived status badge */}
-              {(() => {
-                const lessonAsgs = assignments.filter((a: any) => a.lessonId === selectedLesson?.id && selectedLesson?.id !== "new");
-                const now = new Date().toISOString();
-                if (!isPublished) {
-                  return (
-                    <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-slate-100 text-slate-600 border border-slate-200">
-                      {isDirty ? "Unsaved changes" : "Draft"}
-                    </span>
-                  );
-                }
-                if (lessonAsgs.length === 0) {
-                  return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-emerald-50 text-emerald-700 border border-emerald-200">Published · Not assigned</span>;
-                }
-                const active = lessonAsgs.some((a: any) => now >= a.opensAt && now <= (a.closesAt || a.dueAt));
-                if (active) return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-green-100 text-green-800 border border-green-200 animate-pulse">● Active</span>;
-                const upcoming = lessonAsgs.some((a: any) => now < a.opensAt);
-                if (upcoming) return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-blue-50 text-blue-700 border border-blue-200">Assigned</span>;
-                return <span className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full shrink-0 bg-slate-100 text-slate-500 border border-slate-200">Closed</span>;
-              })()}
-              {/* Save state indicator */}
-              <span className="text-[11px] font-medium flex items-center gap-1 shrink-0">
-                {saveStatus === "saving" && <span className="text-blue-600 flex items-center gap-1"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving…</span>}
-                {saveStatus === "saved" && <span className="text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Saved</span>}
-                {saveStatus === "error" && <span className="text-red-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Save failed</span>}
-                {saveStatus === "clean" && isDirty && autosaveStatus === "saving" && <span className="text-slate-500 flex items-center gap-1"><Clock className="w-3 h-3 animate-spin" /> Autosaving…</span>}
-                {saveStatus === "clean" && isDirty && autosaveStatus === "saved" && <span className="text-slate-400 flex items-center gap-1"><CheckCircle className="w-3 h-3" /> Draft saved</span>}
-                {saveStatus === "clean" && isDirty && autosaveStatus === "failed" && <span className="text-red-500 flex items-center gap-1"><AlertCircle className="w-3 h-3" /> Draft save failed</span>}
-                {saveStatus === "clean" && isDirty && (autosaveStatus === "idle") && <span className="text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5 animate-pulse" /> Unsaved changes</span>}
-                {saveStatus === "clean" && !isDirty && lastSavedAt && (
-                  <span className="text-slate-400 flex items-center gap-1">
-                    <CheckCircle className="w-3.5 h-3.5" />
-                    Saved {formatRelativeTime(lastSavedAt)}
-                  </span>
-                )}
-                {saveStatus === "clean" && !isDirty && !lastSavedAt && (
-                  <span className="text-slate-400 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> No changes</span>
-                )}
-              </span>
-            </div>
+          {/* Command header — calm mission control */}
+          {(() => {
+            const r = computeReadiness();
+            const lessonAsgs = assignments.filter((a: any) => a.lessonId === selectedLesson?.id && selectedLesson?.id !== "new");
+            const isNew = selectedLesson?.id === "new";
+            const isAssigned = lessonAsgs.length > 0;
+            const status = lessonStatusLabel({
+              isNew, isPublished, isAssigned,
+              blockerCount: r.issues.length,
+              hasTitle: !!title.trim(),
+              blockCount: currentBlocks.length,
+            });
+            const firstBlocker = r.issues[0]?.target;
+            const nextAction = computeNextBestAction({
+              hasTitle: !!title.trim(),
+              blockCount: currentBlocks.length,
+              blockerCount: r.issues.length,
+              firstBlockerTarget: firstBlocker,
+              isPublished, isAssigned, isNew,
+            });
+            const statusStyle: Record<string, string> = {
+              "Draft": "bg-slate-100 text-slate-600 border-slate-200",
+              "Needs attention": "bg-amber-50 text-amber-700 border-amber-200",
+              "Ready to publish": "bg-emerald-50 text-emerald-700 border-emerald-200",
+              "Published, not assigned": "bg-sky-50 text-sky-700 border-sky-200",
+              "Assigned": "bg-indigo-50 text-indigo-700 border-indigo-200",
+            };
+            const toneStyle: Record<string, string> = {
+              build: "bg-amber-500 hover:bg-amber-600",
+              ready: "bg-emerald-600 hover:bg-emerald-700",
+              done: "bg-indigo-600 hover:bg-indigo-700",
+            };
+            return (
+              <div className="sticky top-0 z-30 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow-sm mb-0 overflow-hidden">
+                <div className="px-4 py-3 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
+                  <div className="flex items-center gap-2.5 flex-wrap min-w-0">
+                    <BookOpen className="w-5 h-5 text-[#0A192F] shrink-0" />
+                    <span className="font-bold text-slate-900 text-base truncate max-w-[16rem]">{title || "Untitled lesson"}</span>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${statusStyle[status]}`}>{status}</span>
+                    {/* Save state — animated */}
+                    <SaveStateChip saveStatus={saveStatus} autosaveStatus={autosaveStatus} isDirty={isDirty} lastSavedAt={lastSavedAt} />
+                  </div>
 
-            <div className="flex flex-wrap gap-1.5 items-center shrink-0">
-              <button onClick={handleReturnToLibrary} className="border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-semibold px-2.5 py-1.5 rounded transition cursor-pointer">
-                ← Library
-              </button>
-              <button onClick={handleSaveAsDraft} disabled={saveStatus === "saving"} className="bg-slate-600 hover:bg-slate-700 text-white text-xs font-bold px-2.5 py-1.5 rounded flex items-center gap-1 transition cursor-pointer shadow-sm">
-                <Save className="w-3.5 h-3.5" /> Save Draft
-              </button>
-              <button
-                onClick={handlePublishLive}
-                disabled={saveStatus === "saving"}
-                className={`text-white text-xs font-bold px-2.5 py-1.5 rounded transition cursor-pointer shadow-sm ${isPublished ? "bg-emerald-500 hover:bg-emerald-600" : "bg-emerald-600 hover:bg-emerald-700"}`}
-              >
-                {isPublished ? "Re-Publish" : "Publish Lesson"}
-              </button>
-              <button onClick={handleAssignAndLaunch} disabled={saveStatus === "saving"} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-2.5 py-1.5 rounded flex items-center gap-1 transition cursor-pointer shadow-sm">
-                <Calendar className="w-3.5 h-3.5" /> Assign
-              </button>
-              <button
-                onClick={handlePreviewAsStudent}
-                disabled={saveStatus === "saving"}
-                className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-2.5 py-1.5 rounded flex items-center gap-1 transition cursor-pointer shadow-sm"
-                title={isDirty ? "Saves draft then launches preview" : "Preview the student experience"}
-              >
-                <Eye className="w-3.5 h-3.5" />
-                {isDirty ? "Save & Preview" : "Preview"}
-              </button>
-            </div>
-          </div>
+                  <div className="flex flex-wrap gap-1.5 items-center shrink-0">
+                    <button onClick={handleReturnToLibrary} className="border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 text-xs font-semibold px-2.5 py-1.5 rounded transition cursor-pointer flex items-center gap-1">
+                      <ChevronLeft className="w-3.5 h-3.5" /> Lessons
+                    </button>
+                    <button onClick={handleSaveAsDraft} disabled={saveStatus === "saving"} className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold px-2.5 py-1.5 rounded flex items-center gap-1 transition cursor-pointer disabled:opacity-60">
+                      <Save className="w-3.5 h-3.5" /> Save draft
+                    </button>
+                    <button
+                      onClick={handlePreviewAsStudent}
+                      disabled={saveStatus === "saving"}
+                      className="border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold px-2.5 py-1.5 rounded flex items-center gap-1 transition cursor-pointer disabled:opacity-60"
+                      title={isDirty ? "Saves your draft, then opens the student view" : "See the student view"}
+                    >
+                      <Eye className="w-3.5 h-3.5" /> Preview
+                    </button>
+                    <button
+                      onClick={handlePublishLive}
+                      disabled={saveStatus === "saving"}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded flex items-center gap-1 transition cursor-pointer shadow-sm disabled:opacity-60"
+                    >
+                      <Send className="w-3.5 h-3.5" /> {isPublished ? "Republish" : "Publish"}
+                    </button>
+                    <button onClick={handleAssignAndLaunch} disabled={saveStatus === "saving" || !isPublished} className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded flex items-center gap-1 transition cursor-pointer shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" title={isPublished ? "Assign to a course" : "Publish first, then assign"}>
+                      <Calendar className="w-3.5 h-3.5" /> Assign
+                    </button>
+                  </div>
+                </div>
+
+                {/* Next best action ribbon */}
+                <button
+                  type="button"
+                  onClick={() => goToAction(nextAction.target)}
+                  className="w-full text-left flex items-center justify-between gap-3 px-4 py-2 border-t border-slate-100 bg-gradient-to-r from-slate-50 to-white hover:from-slate-100 transition group cursor-pointer"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 shrink-0">Next</span>
+                    <span className="text-xs font-semibold text-slate-700 truncate">{nextAction.message}</span>
+                  </span>
+                  <span className={`text-[11px] font-bold text-white px-2.5 py-1 rounded shrink-0 flex items-center gap-1 transition ${toneStyle[nextAction.tone]}`}>
+                    {nextAction.cta} <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                  </span>
+                </button>
+              </div>
+            );
+          })()}
 
           {/* Save errors */}
           {saveError && saveError.length > 0 && (
@@ -1393,59 +1448,79 @@ export default function LessonsBuilder({
           {/* Publish confirmation modal */}
           {showPublishConfirm && (() => {
             const r = computeReadiness();
+            const reduce = false;
+            const summaryRows: Array<[string, number, string?]> = [
+              ["Videos", r.videoCount],
+              ["Readings", r.readingCount],
+              ["Checkpoints", r.checkpointCount],
+              ["Practice questions", r.practiceQCount, "text-teal-700"],
+              ["Assessment questions", r.gradedQCount, "text-emerald-700"],
+            ];
+            if (r.aiGradedCount > 0) summaryRows.push(["AI-scored short answers", r.aiGradedCount, "text-indigo-700"]);
             return (
               <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                <div className="bg-white rounded-lg border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+                <motion.div
+                  initial={reduce ? false : { opacity: 0, scale: 0.97, y: 8 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4"
+                >
                   <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
                     <div className="w-9 h-9 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
                       <Send className="w-4 h-4 text-emerald-700" />
                     </div>
                     <div>
                       <h3 className="font-bold text-slate-900 text-base">Publish this lesson?</h3>
-                      <p className="text-xs text-slate-500">"{title || "Untitled Lesson"}"</p>
+                      <p className="text-xs text-slate-500 truncate max-w-[18rem]">“{title || "Untitled lesson"}”</p>
                     </div>
                   </div>
 
-                  <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-2">
-                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">What students will see</div>
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">In this lesson</div>
                     <div className="grid grid-cols-2 gap-y-1.5 gap-x-4 text-xs text-slate-600">
-                      <span>Content blocks</span><span className="font-bold text-slate-800">{r.gradedQCount + r.practiceQCount > 0 ? currentBlocks.length : currentBlocks.length}</span>
-                      <span>Practice questions</span><span className="font-bold text-slate-800">{r.practiceQCount}</span>
-                      <span>Assessment questions</span><span className="font-bold text-slate-800">{r.gradedQCount}</span>
-                      {r.aiGradedCount > 0 && <><span>AI-graded (SA)</span><span className="font-bold text-indigo-700">{r.aiGradedCount}</span></>}
+                      <span>Total blocks</span><span className="font-bold text-slate-800">{currentBlocks.length}</span>
+                      {summaryRows.filter(([, n]) => n > 0).map(([label, n, accent]) => (
+                        <React.Fragment key={label}>
+                          <span>{label}</span><span className={`font-bold ${accent || "text-slate-800"}`}>{n}</span>
+                        </React.Fragment>
+                      ))}
                     </div>
                   </div>
 
-                  {r.warnings.length > 0 && (
-                    <div className="bg-amber-50 border border-amber-200 rounded p-3 space-y-1">
+                  <div className="bg-sky-50/70 border border-sky-200 rounded-lg p-3 text-[11px] text-sky-900 leading-relaxed">
+                    Students will see practice feedback right away. Assessment scores and answers stay hidden until you release them.
+                  </div>
+
+                  {r.attention.length > 0 && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1">
                       <div className="text-[10px] font-bold text-amber-700 uppercase tracking-wider flex items-center gap-1">
-                        <Info className="w-3 h-3" /> Suggestions
+                        <Info className="w-3 h-3" /> Worth a look first
                       </div>
-                      {r.warnings.map((w, i) => (
+                      {r.attention.map((w, i) => (
                         <div key={i} className="text-xs text-amber-700 pl-3">• {w.message}</div>
                       ))}
                     </div>
                   )}
 
                   <p className="text-xs text-slate-500 leading-relaxed">
-                    After publishing, this lesson can be assigned to a course. Students cannot access it until it's assigned and the availability window opens.
+                    After publishing, assign this lesson to a course. Students can’t access it until it’s assigned and the open date arrives.
                   </p>
 
                   <div className="flex gap-2 pt-1">
                     <button
                       onClick={() => setShowPublishConfirm(false)}
-                      className="flex-1 border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm py-2.5 rounded font-semibold transition cursor-pointer"
+                      className="flex-1 border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm py-2.5 rounded-lg font-semibold transition cursor-pointer"
                     >
-                      Cancel
+                      Not yet
                     </button>
                     <button
                       onClick={handleConfirmPublish}
-                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm py-2.5 rounded font-bold transition cursor-pointer"
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm py-2.5 rounded-lg font-bold transition cursor-pointer flex items-center justify-center gap-1.5"
                     >
-                      Publish Lesson
+                      <Send className="w-4 h-4" /> Publish
                     </button>
                   </div>
-                </div>
+                </motion.div>
               </div>
             );
           })()}
@@ -1453,27 +1528,32 @@ export default function LessonsBuilder({
           {/* Post-publish prompt modal */}
           {postPublishLessonId && (
             <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-              <div className="bg-white rounded-lg border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                transition={{ duration: 0.22 }}
+                className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-4"
+              >
                 <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                  <div className="w-9 h-9 bg-emerald-100 rounded-lg flex items-center justify-center shrink-0">
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: "spring", stiffness: 360, damping: 18, delay: 0.05 }}
+                    className="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center shrink-0"
+                  >
                     <CheckCircle className="w-5 h-5 text-emerald-600" />
-                  </div>
+                  </motion.div>
                   <div>
-                    <h3 className="font-bold text-slate-900 text-base">Lesson Published!</h3>
-                    <p className="text-xs text-slate-500">"{title || "Untitled Lesson"}" is now live</p>
+                    <h3 className="font-bold text-slate-900 text-base">Published 🎉</h3>
+                    <p className="text-xs text-slate-500 truncate max-w-[18rem]">“{title || "Untitled lesson"}” is ready to assign</p>
                   </div>
                 </div>
 
-                <div className="text-xs text-slate-600 leading-relaxed space-y-2">
-                  <p>
-                    Great work! This lesson plan is now locked and published.
-                  </p>
-                  <p className="font-semibold text-slate-850 bg-amber-50/80 border border-amber-200 p-2.5 rounded">
-                    ⚠️ Note: To make this lesson accessible to students, you must assign it to an active course section.
-                  </p>
-                </div>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  One more step: assign this lesson to a course so students can start. You can set open and due dates when you assign it.
+                </p>
 
-                <div className="flex flex-col gap-2 pt-2">
+                <div className="flex flex-col gap-2 pt-1">
                   <button
                     onClick={() => {
                       setAsgLessonId(postPublishLessonId);
@@ -1481,92 +1561,101 @@ export default function LessonsBuilder({
                       setBuilderSubTab("assignments");
                       setPostPublishLessonId(null);
                     }}
-                    className="w-full bg-[#0A192F] hover:bg-[#15294b] text-white text-sm py-2.5 rounded font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm py-2.5 rounded-lg font-bold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
                   >
                     <Calendar className="w-4 h-4" />
-                    Assign to Course Section Now
+                    Assign to a course
                   </button>
                   <button
                     onClick={() => setPostPublishLessonId(null)}
-                    className="w-full border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm py-2 rounded font-semibold transition cursor-pointer"
+                    className="w-full border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm py-2 rounded-lg font-semibold transition cursor-pointer"
                   >
-                    I'll assign it later
+                    I’ll assign it later
                   </button>
                 </div>
-              </div>
+              </motion.div>
             </div>
           )}
 
-          {/* Assignment Creation Confirmation Modal */}
+          {/* Assignment confirmation modal */}
           {savedAssignmentConfirm && (
             <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-              <div className="bg-white rounded-xl border border-slate-100 shadow-2xl max-w-lg w-full p-6 space-y-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.96, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                transition={{ duration: 0.22 }}
+                className="bg-white rounded-xl border border-slate-100 shadow-2xl max-w-lg w-full p-6 space-y-4"
+              >
                 <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
-                  <div className="w-10 h-10 bg-indigo-50 border border-indigo-100 rounded-lg flex items-center justify-center shrink-0">
-                    <Calendar className="w-5 h-5 text-indigo-700" />
-                  </div>
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ type: "spring", stiffness: 360, damping: 18, delay: 0.05 }}
+                    className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center shrink-0"
+                  >
+                    <CheckCircle className="w-5 h-5 text-indigo-700" />
+                  </motion.div>
                   <div>
-                    <h3 className="font-bold text-slate-900 text-base">Assignment Configuration Confirmed</h3>
-                    <p className="text-xs text-slate-500">Successfully scheduled for students</p>
+                    <h3 className="font-bold text-slate-900 text-base">Assigned to {savedAssignmentConfirm.courseName}</h3>
+                    <p className="text-xs text-slate-500 truncate max-w-[20rem]">“{savedAssignmentConfirm.lessonTitle}” is scheduled for students</p>
                   </div>
                 </div>
 
-                {/* Details grid */}
                 <div className="space-y-3">
-                  <div className="grid grid-cols-3 gap-2.5 bg-slate-50 border border-slate-150 p-4 rounded-lg text-xs leading-normal">
-                    <span className="font-bold text-slate-550">Lesson Plan:</span>
+                  <div className="grid grid-cols-3 gap-2.5 bg-slate-50 border border-slate-200 p-4 rounded-lg text-xs leading-normal">
+                    <span className="font-bold text-slate-500">Lesson</span>
                     <span className="font-semibold text-slate-900 col-span-2">{savedAssignmentConfirm.lessonTitle}</span>
 
-                    <span className="font-bold text-slate-550">Target Course:</span>
-                    <span className="font-semibold text-slate-900 col-span-2">{savedAssignmentConfirm.courseName}</span>
-
-                    <span className="font-bold text-slate-550">Section Tag:</span>
-                    <span className="font-semibold text-slate-900 col-span-2">{savedAssignmentConfirm.section || "Universal / All Section Members"}</span>
+                    <span className="font-bold text-slate-500">Course</span>
+                    <span className="font-semibold text-slate-900 col-span-2">{savedAssignmentConfirm.courseName}{savedAssignmentConfirm.section ? ` · ${savedAssignmentConfirm.section}` : ""}</span>
                   </div>
 
-                  <div className="bg-amber-50/60 border border-amber-200/60 p-4 rounded-lg space-y-2 text-xs leading-normal text-slate-700">
-                    <div className="font-bold text-amber-800 flex items-center gap-1.5 uppercase tracking-wide text-[10px]">
-                      <Clock className="w-3.5 h-3.5 text-amber-600" />
-                      Section Availability Window
+                  <div className="bg-slate-50 border border-slate-200 p-4 rounded-lg space-y-2 text-xs leading-normal text-slate-700">
+                    <div className="font-bold text-slate-500 flex items-center gap-1.5 uppercase tracking-wide text-[10px]">
+                      <Clock className="w-3.5 h-3.5 text-slate-400" /> Availability
                     </div>
-                    <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="grid grid-cols-3 gap-2 text-[11px]">
                       <div>
-                        <span className="text-slate-400 block font-sans text-[9px] uppercase font-bold">Opens / Visible:</span>
+                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Opens</span>
                         <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.opensAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block font-sans text-[9px] uppercase font-bold">Recommended Due Date:</span>
-                        <span className="font-semibold text-slate-850 font-bold">{new Date(savedAssignmentConfirm.dueAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Due</span>
+                        <span className="font-semibold text-slate-900">{new Date(savedAssignmentConfirm.dueAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
                       </div>
-                    </div>
-                    <div className="pt-1.5 border-t border-amber-200/40 text-[10.5px]">
-                      <span className="font-bold text-amber-850">Hard Close:</span> locked on <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.closesAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>. Retakes are not allowed.
+                      <div>
+                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Closes</span>
+                        <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.closesAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Feedback summary based on policy defaults */}
-                  <div className="bg-indigo-50/40 border border-indigo-150 p-4 rounded-lg text-xs leading-normal text-slate-700">
-                    <div className="font-bold text-indigo-800 uppercase tracking-wide text-[10px] mb-1.5 flex items-center gap-1.5">
-                      <GraduationCap className="w-3.5 h-3.5" />
-                      Feedback & Student Portal Experience
+                  <div className="bg-sky-50/70 border border-sky-200 p-4 rounded-lg text-xs leading-normal text-sky-900">
+                    <div className="font-bold uppercase tracking-wide text-[10px] mb-1.5 flex items-center gap-1.5">
+                      <GraduationCap className="w-3.5 h-3.5" /> What students will see
                     </div>
-                    <ul className="space-y-1.5 list-disc list-inside text-[11px] text-indigo-950">
-                      <li><strong>Practice Items</strong>: Students receive direct corrective feedback with explanations immediately.</li>
-                      <li><strong>Graded Items</strong>: Choice answers, scores, model responses, and rubrics are hidden until released by review.</li>
-                      <li><strong>Integrity Controls</strong>: Fullscreen strict layout, no scroll bypassing, passive pacing logs active.</li>
+                    <ul className="space-y-1 list-disc list-inside text-[11px]">
+                      <li><strong>Practice:</strong> feedback and explanations appear right away.</li>
+                      <li><strong>Assessment:</strong> answers and scores stay hidden until you release them.</li>
                     </ul>
                   </div>
                 </div>
 
-                <div className="pt-2 flex justify-end">
+                <div className="pt-2 flex justify-end gap-2">
+                  <button
+                    onClick={() => { setSavedAssignmentConfirm(null); setSelectedLesson(null); }}
+                    className="border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold px-4 py-2.5 rounded-lg transition cursor-pointer"
+                  >
+                    Back to lessons
+                  </button>
                   <button
                     onClick={() => setSavedAssignmentConfirm(null)}
-                    className="bg-[#0A192F] hover:bg-[#15294b] text-white text-xs font-bold px-5 py-2.5 rounded-lg transition shrink-0 cursor-pointer shadow-xs"
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2.5 rounded-lg transition shrink-0 cursor-pointer shadow-sm"
                   >
-                    Got it, Close
+                    Done
                   </button>
                 </div>
-              </div>
+              </motion.div>
             </div>
           )}
 
@@ -1583,41 +1672,36 @@ export default function LessonsBuilder({
                 const questionsDone = contentDone && r.issues.length === 0;
                 const lessonAsgs = assignments.filter((a: any) => a.lessonId === selectedLesson?.id && selectedLesson?.id !== "new");
 
+                const onContent = typeof activeWorkspace === "number";
                 const stages = [
                   {
-                    key: "setup", label: "Lesson Setup", icon: Settings,
+                    key: "setup", label: "Setup", icon: Settings,
                     done: setupDone, action: () => setActiveWorkspace("setup"),
-                    active: activeWorkspace === "setup"
+                    active: activeWorkspace === "setup",
+                    note: setupDone ? undefined : "Start here",
                   },
                   {
-                    key: "content", label: "Build Content", icon: Layers,
-                    done: contentDone, action: () => setActiveWorkspace(currentBlocks.length > 0 ? 0 : "setup"),
-                    active: typeof activeWorkspace === "number" && currentBlocks[activeWorkspace]?.type !== "question",
-                    note: "Add blocks below"
+                    key: "content", label: "Content & Questions", icon: Layers,
+                    done: questionsDone, action: () => setActiveWorkspace(currentBlocks.length > 0 ? (typeof activeWorkspace === "number" ? activeWorkspace : 0) : "setup"),
+                    active: onContent,
+                    note: r.issues.length > 0 ? `${r.issues.length} to fix` : !contentDone ? "Add content" : undefined,
+                    warn: r.issues.length > 0,
                   },
                   {
-                    key: "questions", label: "Questions & Rubrics", icon: HelpCircle,
-                    done: questionsDone, action: () => {
-                      const qi = currentBlocks.findIndex((b: any) => b.type === "question");
-                      if (qi >= 0) setActiveWorkspace(qi);
-                    },
-                    active: typeof activeWorkspace === "number" && currentBlocks[activeWorkspace]?.type === "question",
-                    note: r.issues.length > 0 ? `${r.issues.length} issue${r.issues.length !== 1 ? "s" : ""}` : undefined
-                  },
-                  {
-                    key: "preview", label: "Preview as Student", icon: Eye,
+                    key: "preview", label: "Preview", icon: Eye,
                     done: false, action: handlePreviewAsStudent, active: false,
-                    note: isDirty ? "Saves first" : undefined
+                    note: isDirty ? "Saves first" : undefined,
                   },
                   {
                     key: "publish", label: "Publish", icon: Send,
                     done: isPublished, action: handlePublishLive, active: false,
-                    note: isPublished ? "Published" : questionsDone ? "Ready" : "Fix issues first"
+                    note: isPublished ? "Done" : questionsDone ? "Ready" : "Fix first",
+                    warn: !isPublished && !questionsDone,
                   },
                   {
-                    key: "assign", label: "Assign to Course", icon: Calendar,
+                    key: "assign", label: "Assign", icon: Calendar,
                     done: lessonAsgs.length > 0, action: handleAssignAndLaunch, active: false,
-                    note: !isPublished ? "Publish first" : lessonAsgs.length > 0 ? `${lessonAsgs.length} active` : undefined
+                    note: !isPublished ? "Publish first" : lessonAsgs.length > 0 ? "Done" : "Ready",
                   },
                 ];
 
@@ -1640,7 +1724,7 @@ export default function LessonsBuilder({
                           </span>
                           <span className="flex-1 truncate">{stage.label}</span>
                           {stage.note && !stage.active && (
-                            <span className={`text-[9px] font-bold uppercase shrink-0 ${stage.note.includes("issue") || stage.note === "Fix issues first" || stage.note === "Publish first" ? "text-amber-500" : "text-slate-400"}`}>
+                            <span className={`text-[9px] font-bold uppercase shrink-0 ${(stage as any).warn ? "text-amber-500" : "text-slate-400"}`}>
                               {stage.note}
                             </span>
                           )}
@@ -1653,9 +1737,13 @@ export default function LessonsBuilder({
 
               {/* Block sequence */}
               <div className="flex-1 p-3 space-y-1 overflow-y-auto">
-                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Student Sequence</div>
+                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Lesson outline</div>
                 {currentBlocks.length === 0 ? (
-                  <p className="text-[11px] text-slate-400 italic text-center py-4">No blocks yet.<br/>Add one below.</p>
+                  <div className="text-center py-6 px-2 border border-dashed border-slate-200 rounded-lg bg-slate-50/50">
+                    <Layers className="w-6 h-6 mx-auto mb-1.5 text-slate-300" />
+                    <p className="text-[11px] font-semibold text-slate-500">Nothing here yet</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Start with a video, reading, or question below.</p>
+                  </div>
                 ) : (
                   currentBlocks.map((b: any, idx: number) => {
                     const cfg = blockTypeConfig(b.type);
@@ -1664,21 +1752,34 @@ export default function LessonsBuilder({
                     const { issues } = computeReadiness();
                     const blockIssues = issues.filter((iss) => iss.target === idx);
                     const hasIssues = blockIssues.length > 0;
+                    const cpCount = b.type === "video" ? (b.videoCheckpoints?.length || 0) : 0;
+                    const sub = b.type === "question"
+                      ? `${cfg.label} · ${modeLabel(b.isPractice)}`
+                      : b.type === "video"
+                      ? `${cfg.label}${cpCount > 0 ? ` · ${cpCount} check${cpCount === 1 ? "" : "s"}` : ""}`
+                      : cfg.label;
 
                     return (
-                      <div key={b.id} className={`group relative rounded border transition cursor-pointer ${isActive ? "bg-[#0A192F] border-[#0A192F] text-white" : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700"}`}>
+                      <motion.div
+                        key={b.id}
+                        layout
+                        initial={justAddedBlockId === b.id ? { opacity: 0, y: -4 } : false}
+                        animate={justAddedBlockId === b.id ? { opacity: 1, y: 0 } : {}}
+                        transition={{ duration: 0.25 }}
+                        className={`group relative rounded border transition cursor-pointer ${isActive ? "bg-[#0A192F] border-[#0A192F] text-white" : justAddedBlockId === b.id ? "bg-emerald-50 border-emerald-300 text-slate-700" : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700"}`}
+                      >
                         <button
                           onClick={() => setActiveWorkspace(idx)}
                           className="w-full text-left flex items-start gap-2 px-2 py-2"
                         >
-                          <span className={`font-mono text-[9px] shrink-0 mt-0.5 ${isActive ? "text-white/60" : "text-slate-400"}`}>#{idx + 1}</span>
+                          <span className={`font-mono text-[9px] shrink-0 mt-0.5 ${isActive ? "text-white/60" : "text-slate-400"}`}>{idx + 1}</span>
                           <IconComp className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${isActive ? "text-white/80" : cfg.color}`} />
                           <div className="min-w-0 flex-1">
-                            <span className="text-[11px] font-semibold block truncate">{b.title || `Untitled ${b.type}`}</span>
-                            <span className={`text-[9px] font-bold uppercase ${isActive ? "text-white/60" : "text-slate-400"}`}>{cfg.label}{b.type === "question" ? (b.isPractice ? " · Practice" : " · Graded") : ""}</span>
+                            <span className="text-[11px] font-semibold block truncate">{b.title || `Untitled ${cfg.label.toLowerCase()}`}</span>
+                            <span className={`text-[9px] font-bold uppercase ${isActive ? "text-white/60" : b.type === "question" ? (b.isPractice ? "text-teal-500" : "text-emerald-600") : "text-slate-400"}`}>{sub}</span>
                           </div>
                           {hasIssues && !isActive && (
-                            <AlertCircle className="w-3 h-3 text-rose-500 shrink-0 mt-0.5" />
+                            <AlertCircle className="w-3 h-3 text-amber-500 shrink-0 mt-0.5" />
                           )}
                         </button>
 
@@ -1694,23 +1795,26 @@ export default function LessonsBuilder({
                             <Trash className="w-3 h-3" />
                           </button>
                         </div>
-                      </div>
+                      </motion.div>
                     );
                   })
                 )}
               </div>
 
               {/* Add block buttons */}
-              <div className="border-t border-slate-100 p-3 space-y-1">
-                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Add Block</div>
-                <button onClick={() => handleAddBlock("video")} className="w-full text-left flex items-center gap-2 text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-2.5 py-1.5 rounded transition">
-                  <Video className="w-3.5 h-3.5 shrink-0" /> + Video
+              <div className="border-t border-slate-100 p-3 space-y-1.5">
+                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Add to lesson</div>
+                <button onClick={() => handleAddBlock("video")} className="w-full text-left flex items-start gap-2 text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-2.5 py-2 rounded-lg transition group">
+                  <Video className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="min-w-0"><span className="text-[11px] font-bold block">Add video</span><span className="text-[9px] text-blue-500/90 block leading-tight">Play a clip and add checkpoints</span></span>
                 </button>
-                <button onClick={() => handleAddBlock("reading")} className="w-full text-left flex items-center gap-2 text-[11px] font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded transition">
-                  <FileText className="w-3.5 h-3.5 shrink-0" /> + Reading
+                <button onClick={() => handleAddBlock("reading")} className="w-full text-left flex items-start gap-2 text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-2 rounded-lg transition group">
+                  <FileText className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="min-w-0"><span className="text-[11px] font-bold block">Add reading</span><span className="text-[9px] text-purple-500/90 block leading-tight">A passage for students to read</span></span>
                 </button>
-                <button onClick={() => handleAddBlock("question")} className="w-full text-left flex items-center gap-2 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1.5 rounded transition">
-                  <HelpCircle className="w-3.5 h-3.5 shrink-0" /> + Question
+                <button onClick={() => handleAddBlock("question")} className="w-full text-left flex items-start gap-2 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-2 rounded-lg transition group">
+                  <HelpCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span className="min-w-0"><span className="text-[11px] font-bold block">Add question</span><span className="text-[9px] text-emerald-600/90 block leading-tight">Practice or assessment check</span></span>
                 </button>
               </div>
             </aside>
@@ -1720,24 +1824,27 @@ export default function LessonsBuilder({
               {activeWorkspace === "setup" ? (
                 // ---- Setup panel ----
                 <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
-                  <h4 className="text-xs font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1.5 border-b border-slate-100 pb-3">
-                    <Settings className="w-4 h-4" /> Lesson Setup
-                  </h4>
+                  <div className="border-b border-slate-100 pb-3">
+                    <h4 className="text-xs font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1.5">
+                      <Settings className="w-4 h-4" /> Setup
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-1">Name the lesson and choose how it’s delivered. Only the title is required.</p>
+                  </div>
 
                   <div className="space-y-4 text-xs max-w-2xl">
                     <div>
-                      <label className="font-bold text-slate-700 block mb-1">Lesson Title <span className="text-red-500">*</span></label>
+                      <label className="font-bold text-slate-700 block mb-1">Lesson title <span className="text-red-500">*</span></label>
                       <input
                         type="text"
                         value={title}
                         onChange={(e) => setTitle(e.target.value)}
-                        placeholder="Enter a clear, descriptive title"
+                        placeholder="e.g. The Constitutional Convention"
                         className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 focus:outline-none focus:border-[#0A192F] text-slate-800 font-medium"
                       />
                     </div>
 
                     <div>
-                      <label className="font-bold text-slate-700 block mb-1">Lesson Overview / Description</label>
+                      <label className="font-bold text-slate-700 block mb-1">Description <span className="font-normal text-slate-400">(optional)</span></label>
                       <RichContentEditor
                         value={description}
                         onChange={(val: any) => setDescription(val)}
@@ -1748,7 +1855,7 @@ export default function LessonsBuilder({
                     </div>
 
                     <div>
-                      <label className="font-bold text-slate-700 block mb-1">Estimated Completion Time</label>
+                      <label className="font-bold text-slate-700 block mb-1">Estimated time</label>
                       <div className="flex items-center gap-2">
                         <input
                           type="number"
@@ -1762,26 +1869,26 @@ export default function LessonsBuilder({
                     </div>
 
                     <div className="border-t border-slate-100 pt-4 space-y-3">
-                      <span className="font-bold text-slate-700 block">Delivery Rules</span>
+                      <span className="font-bold text-slate-700 block">How students experience it</span>
                       <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
                         <input type="checkbox" checked={restrictSeeking} onChange={(e) => setRestrictSeeking(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                        Restrict video seeking — students cannot skip ahead
+                        Keep videos in order — students watch before skipping ahead
                       </label>
                       <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
                         <input type="checkbox" checked={requireFullscreen} onChange={(e) => setRequireFullscreen(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                        Require fullscreen focus — log focus monitoring events
+                        Encourage focus with a fullscreen view
                       </label>
                       <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
                         <input type="checkbox" checked={allowRetakes} onChange={(e) => setAllowRetakes(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                        Allow retakes after completion
+                        Allow another attempt after finishing
                       </label>
                       <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
                         <input type="checkbox" checked={randomizeChoices} onChange={(e) => setRandomizeChoices(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                        Randomize answer choices per student
+                        Shuffle answer choices for each student
                       </label>
                       <label className="flex items-center gap-2 font-medium text-slate-600 cursor-pointer text-[11px] hover:text-slate-900 transition">
                         <input type="checkbox" checked={immediateFeedback} onChange={(e) => setImmediateFeedback(e.target.checked)} className="focus:ring-0 rounded-sm" />
-                        Show immediate feedback after practice questions
+                        Show feedback right away on practice questions
                       </label>
                     </div>
 
@@ -1790,9 +1897,9 @@ export default function LessonsBuilder({
                         <label className="flex items-start gap-2 font-semibold text-slate-800 cursor-pointer text-[12px] hover:text-slate-900 transition">
                           <input type="checkbox" checked={isPublished} onChange={(e) => setIsPublished(e.target.checked)} className="focus:ring-0 rounded-sm mt-0.5" />
                           <div>
-                            <span>Published — make assignable to students</span>
+                            <span>Published — ready to assign</span>
                             <p className="text-[10px] font-normal text-slate-500 mt-0.5 leading-relaxed">
-                              Once published, this lesson can be assigned and accessed by students. Unpublished drafts are hidden from all student portals.
+                              Published lessons can be assigned to a course. Drafts stay private to you until you publish.
                             </p>
                           </div>
                         </label>
@@ -1821,8 +1928,8 @@ export default function LessonsBuilder({
               ) : (
                 <div className="bg-white border border-slate-200 rounded-lg p-16 text-center text-slate-400 text-sm">
                   <BookOpen className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-                  <p className="font-semibold text-slate-600">Select a block from the sequence rail</p>
-                  <p className="text-xs mt-1">or click <strong>Lesson Setup</strong> to edit lesson metadata</p>
+                  <p className="font-semibold text-slate-600">Pick a block from the outline to edit it</p>
+                  <p className="text-xs mt-1">or open <strong>Setup</strong> to edit the lesson details</p>
                 </div>
               )}
             </main>
@@ -1832,18 +1939,16 @@ export default function LessonsBuilder({
               const r = computeReadiness();
               return (
                 <ReadinessPanel
-                  issues={r.issues}
-                  warnings={r.warnings}
+                  blockers={r.issues}
+                  attention={r.attention}
+                  optional={r.optional}
                   gradedQCount={r.gradedQCount}
                   practiceQCount={r.practiceQCount}
                   videoCount={r.videoCount}
                   readingCount={r.readingCount}
                   aiGradedCount={r.aiGradedCount}
+                  checkpointCount={r.checkpointCount}
                   totalBlocks={currentBlocks.length}
-                  saveStatus={saveStatus}
-                  isDirty={isDirty}
-                  lastSavedAt={lastSavedAt}
-                  selectedLessonId={selectedLesson?.id}
                   isPublished={isPublished}
                   onNavigate={setActiveWorkspace}
                 />
@@ -1860,6 +1965,14 @@ export default function LessonsBuilder({
 // Helpers
 // =====================================================
 
+/** Seconds → "m:ss" for friendly checkpoint labels (e.g. 135 → "2:15"). */
+function formatTimestamp(seconds: number | undefined): string {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${m}:${rem.toString().padStart(2, "0")}`;
+}
+
 function formatRelativeTime(date: Date): string {
   const diffMs = Date.now() - date.getTime();
   const diffSec = Math.floor(diffMs / 1000);
@@ -1874,179 +1987,226 @@ function formatRelativeTime(date: Date): string {
 // Sub-components
 // =====================================================
 
+/** Animated save-state chip for the command header. Status is never color-only. */
+function SaveStateChip({
+  saveStatus, autosaveStatus, isDirty, lastSavedAt,
+}: {
+  saveStatus: string;
+  autosaveStatus: string;
+  isDirty: boolean;
+  lastSavedAt: Date | null;
+}) {
+  const reduce = useReducedMotion();
+  let icon: React.ReactNode = null;
+  let text = "";
+  let cls = "text-slate-400";
+
+  if (saveStatus === "saving") { icon = <Clock className="w-3.5 h-3.5 animate-spin" />; text = "Saving…"; cls = "text-blue-600"; }
+  else if (saveStatus === "saved") { icon = <CheckCircle className="w-3.5 h-3.5" />; text = "Saved"; cls = "text-emerald-600"; }
+  else if (saveStatus === "error") { icon = <AlertCircle className="w-3.5 h-3.5" />; text = "Save failed"; cls = "text-rose-600"; }
+  else if (isDirty && autosaveStatus === "saving") { icon = <Clock className="w-3 h-3 animate-spin" />; text = "Saving draft…"; cls = "text-slate-500"; }
+  else if (isDirty && autosaveStatus === "saved") { icon = <CheckCircle className="w-3 h-3" />; text = "Draft saved"; cls = "text-slate-400"; }
+  else if (isDirty && autosaveStatus === "failed") { icon = <AlertCircle className="w-3 h-3" />; text = "Draft save failed"; cls = "text-rose-500"; }
+  else if (isDirty) { icon = <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />; text = "Unsaved changes"; cls = "text-amber-600"; }
+  else if (lastSavedAt) { icon = <CheckCircle className="w-3.5 h-3.5" />; text = `Saved ${formatRelativeTime(lastSavedAt)}`; cls = "text-slate-400"; }
+  else { icon = <CheckCircle className="w-3.5 h-3.5" />; text = "All changes saved"; cls = "text-slate-400"; }
+
+  return (
+    <AnimatePresence mode="wait">
+      <motion.span
+        key={text}
+        initial={reduce ? false : { opacity: 0, y: -2 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={reduce ? undefined : { opacity: 0, y: 2 }}
+        transition={{ duration: 0.18 }}
+        className={`text-[11px] font-medium flex items-center gap-1 shrink-0 ${cls}`}
+      >
+        {icon} {text}
+      </motion.span>
+    </AnimatePresence>
+  );
+}
+
 interface ReadinessPanelProps {
-  issues: Array<{ message: string; target: "setup" | number }>;
-  warnings: Array<{ message: string; target: "setup" | number }>;
+  blockers: Array<{ message: string; target: "setup" | number }>;
+  attention: Array<{ message: string; target: "setup" | number }>;
+  optional: Array<{ message: string; target: "setup" | number }>;
   gradedQCount: number;
   practiceQCount: number;
   videoCount: number;
   readingCount: number;
   aiGradedCount: number;
+  checkpointCount: number;
   totalBlocks: number;
-  saveStatus: string;
-  isDirty: boolean;
-  lastSavedAt: Date | null;
-  selectedLessonId: string | undefined;
   isPublished: boolean;
   onNavigate: (target: "setup" | number) => void;
 }
 
+/**
+ * Renders a tier of readiness rows. Returns motion.li elements directly so the
+ * React `key` lands on the motion element (which accepts it) rather than a custom
+ * component. Each row jumps to where the item can be fixed.
+ */
+type ReadinessTone = "blocker" | "attention" | "optional";
+function renderReadinessRows(
+  items: Array<{ message: string; target: "setup" | number }>,
+  tone: ReadinessTone,
+  cta: string,
+  onNavigate: (t: "setup" | number) => void,
+) {
+  const styles = {
+    blocker: { text: "text-rose-700", icon: "text-rose-500", hover: "hover:bg-rose-50/60 hover:border-rose-200", Icon: AlertCircle },
+    attention: { text: "text-amber-700", icon: "text-amber-500", hover: "hover:bg-amber-50/60 hover:border-amber-200", Icon: AlertCircle },
+    optional: { text: "text-slate-600", icon: "text-slate-400", hover: "hover:bg-slate-50 hover:border-slate-200", Icon: Info },
+  }[tone];
+  const Icon = styles.Icon;
+  return items.map((item, i) => (
+    <motion.li
+      key={item.message + i}
+      layout
+      initial={{ opacity: 0, x: -4 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18 }}
+    >
+      <button
+        type="button"
+        onClick={() => onNavigate(item.target)}
+        className={`w-full text-left text-[11px] flex flex-col rounded p-1.5 border border-transparent transition ${styles.text} ${styles.hover}`}
+      >
+        <span className="flex items-start gap-1.5 font-semibold">
+          <Icon className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${styles.icon}`} />
+          <span>{item.message}</span>
+        </span>
+        <span className="text-[9px] font-bold uppercase tracking-wider mt-1 ml-5 opacity-70">{cta} →</span>
+      </button>
+    </motion.li>
+  ));
+}
+
 function ReadinessPanel({
-  issues, warnings, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount,
-  totalBlocks, saveStatus, isDirty, lastSavedAt, selectedLessonId, isPublished, onNavigate
+  blockers, attention, optional, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount,
+  checkpointCount, totalBlocks, isPublished, onNavigate
 }: ReadinessPanelProps) {
-  const canPublish = issues.length === 0;
+  const canPublish = blockers.length === 0;
+  const stats: Array<{ value: number; label: string; accent?: string }> = [
+    { value: totalBlocks, label: "Blocks" },
+    { value: gradedQCount, label: "Assessment", accent: "text-emerald-700" },
+  ];
+  if (practiceQCount > 0) stats.push({ value: practiceQCount, label: "Practice", accent: "text-teal-700" });
+  if (videoCount > 0) stats.push({ value: videoCount, label: "Videos" });
+  if (readingCount > 0) stats.push({ value: readingCount, label: "Readings" });
+  if (checkpointCount > 0) stats.push({ value: checkpointCount, label: "Checkpoints" });
+  if (aiGradedCount > 0) stats.push({ value: aiGradedCount, label: "AI-scored", accent: "text-indigo-700" });
+
   return (
     <aside className="w-72 shrink-0 border border-slate-200 rounded-r-lg bg-white flex flex-col overflow-y-auto ml-3">
-      {/* Summary stats */}
+      {/* Readiness headline */}
       <div className="p-4 border-b border-slate-100">
         <div className="flex items-center gap-2 mb-3">
           <BarChart2 className="w-4 h-4 text-slate-500" />
-          <span className="font-bold text-xs uppercase tracking-wider text-slate-800">Lesson Summary</span>
+          <span className="font-bold text-xs uppercase tracking-wider text-slate-800">Readiness</span>
         </div>
 
         <div className="grid grid-cols-2 gap-2 text-[11px] mb-3">
-          <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
-            <div className="font-bold text-slate-800 text-base">{totalBlocks}</div>
-            <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Blocks</div>
-          </div>
-          <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
-            <div className="font-bold text-slate-800 text-base">{gradedQCount}</div>
-            <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Assessment Qs</div>
-          </div>
-          {practiceQCount > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
-              <div className="font-bold text-slate-800 text-base">{practiceQCount}</div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Practice Qs</div>
+          {stats.map((s) => (
+            <div key={s.label} className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
+              <div className={`font-bold text-base ${s.accent || "text-slate-800"}`}>{s.value}</div>
+              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">{s.label}</div>
             </div>
-          )}
-          {aiGradedCount > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
-              <div className="font-bold text-indigo-700 text-base">{aiGradedCount}</div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">AI-Graded SA</div>
-            </div>
-          )}
-          {videoCount > 0 && (
-            <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
-              <div className="font-bold text-slate-800 text-base">{videoCount}</div>
-              <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Videos</div>
-            </div>
-          )}
+          ))}
         </div>
 
-        {/* Publish readiness badge */}
-        <div className={`rounded p-2 flex items-center gap-2 ${canPublish && isPublished ? "bg-emerald-100/60 text-emerald-800" : canPublish ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-800 border border-amber-200"}`}>
+        {/* Publish readiness banner — animated on resolution */}
+        <motion.div
+          layout
+          className={`rounded p-2 flex items-center gap-2 ${canPublish && isPublished ? "bg-emerald-100/60 text-emerald-800" : canPublish ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-800 border border-amber-200"}`}
+        >
           {canPublish && isPublished ? (
             <><CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" /><span className="text-[11px] font-bold">Published</span></>
           ) : canPublish ? (
             <><CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" /><span className="text-[11px] font-bold">Ready to publish</span></>
           ) : (
-            <><AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" /><span className="text-[11px] font-bold">{issues.length} issue{issues.length !== 1 ? "s" : ""} to fix before publishing</span></>
+            <><AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" /><span className="text-[11px] font-bold">Fix {blockers.length} blocker{blockers.length !== 1 ? "s" : ""} before publishing</span></>
           )}
-        </div>
+        </motion.div>
       </div>
 
-      {/* Critical issues */}
-      {issues.length > 0 && (
+      {/* Blockers */}
+      {blockers.length > 0 && (
         <div className="p-4 border-b border-slate-100">
           <div className="text-[10px] font-bold uppercase tracking-widest text-rose-600 mb-2.5 flex items-center gap-1">
-            <AlertCircle className="w-3.5 h-3.5" /> Must fix (blocks publish)
+            <AlertCircle className="w-3.5 h-3.5" /> Blockers
           </div>
-          <ul className="space-y-2">
-            {issues.map((issue, i) => (
-              <li key={i}>
-                <button
-                  type="button"
-                  onClick={() => onNavigate(issue.target)}
-                  className="w-full text-left text-[11px] text-rose-700 flex flex-col hover:bg-rose-50/50 rounded p-1.5 border border-transparent hover:border-rose-200 transition"
-                  title="Click to navigate and fix this issue immediately"
-                >
-                  <div className="flex items-start gap-1.5 font-semibold">
-                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-rose-500" />
-                    <span>{issue.message}</span>
-                  </div>
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-rose-600 mt-1 ml-5 bg-rose-50 px-1 py-0.5 rounded border border-rose-100 transition">
-                    Fix this issue →
-                  </span>
-                </button>
-              </li>
-            ))}
+          <ul className="space-y-1.5">
+            <AnimatePresence initial={false}>
+              {renderReadinessRows(blockers, "blocker", "Fix this", onNavigate)}
+            </AnimatePresence>
           </ul>
         </div>
       )}
 
-      {/* Non-critical warnings */}
-      {warnings.length > 0 && (
+      {/* Needs attention */}
+      {attention.length > 0 && (
         <div className="p-4 border-b border-slate-100">
           <div className="text-[10px] font-bold uppercase tracking-widest text-amber-600 mb-2.5 flex items-center gap-1">
-            <Info className="w-3.5 h-3.5" /> Suggestions (won't block publish)
+            <AlertCircle className="w-3.5 h-3.5" /> Needs attention
           </div>
-          <ul className="space-y-2">
-            {warnings.map((w, i) => (
-              <li key={i}>
-                <button
-                  type="button"
-                  onClick={() => onNavigate(w.target)}
-                  className="w-full text-left text-[11px] text-amber-750 flex flex-col hover:bg-amber-50/50 rounded p-1.5 border border-transparent hover:border-amber-200 transition"
-                  title="Click to view and adjust suggestion"
-                >
-                  <div className="flex items-start gap-1.5 font-semibold">
-                    <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
-                    <span>{w.message}</span>
-                  </div>
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-amber-600 mt-1 ml-5 bg-amber-50 px-1 py-0.5 rounded border border-amber-100 transition">
-                    Adjust block →
-                  </span>
-                </button>
-              </li>
-            ))}
+          <ul className="space-y-1.5">
+            <AnimatePresence initial={false}>
+              {renderReadinessRows(attention, "attention", "Review", onNavigate)}
+            </AnimatePresence>
           </ul>
         </div>
       )}
 
-      {/* Save status + notes */}
-      <div className="p-4 text-[11px] text-slate-500 space-y-2 border-b border-slate-150">
-        <div className="font-bold text-slate-600 text-xs text-left">Save Status</div>
-        {saveStatus === "saved" && <div className="text-emerald-600 flex items-center gap-1 font-semibold"><CheckCircle className="w-3.5 h-3.5" /> Saved successfully</div>}
-        {saveStatus === "saving" && <div className="text-blue-600 flex items-center gap-1 font-semibold"><Clock className="w-3.5 h-3.5 animate-spin" /> Saving…</div>}
-        {saveStatus === "error" && <div className="text-red-600 flex items-center gap-1 font-semibold"><AlertCircle className="w-3.5 h-3.5" /> Save failed — check connectivity</div>}
-        {saveStatus === "clean" && isDirty && <div className="text-amber-600 font-semibold">Unsaved changes</div>}
-        {saveStatus === "clean" && !isDirty && lastSavedAt && <div className="text-slate-400">Last saved: {lastSavedAt.toLocaleTimeString()}</div>}
-        {selectedLessonId && selectedLessonId !== "new" && (
-          <div className="text-[10px] font-mono text-slate-400 truncate text-left">ID: {selectedLessonId}</div>
-        )}
-        <div className="border-t border-slate-100 pt-2 space-y-1">
-          <div className="text-slate-500 leading-relaxed text-left">
-            <strong className="text-slate-600">Student Preview</strong> hides all teacher-only fields — answer keys, rubrics, AI guidance, and model answers.
+      {/* Optional improvements */}
+      {optional.length > 0 && (
+        <div className="p-4 border-b border-slate-100">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2.5 flex items-center gap-1">
+            <Info className="w-3.5 h-3.5" /> Optional
           </div>
-          {aiGradedCount > 0 && (
-            <div className="text-indigo-600 flex items-start gap-1 leading-relaxed text-left">
-              <GraduationCap className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>Teacher review recommended for AI-graded short answers before releasing scores to students.</span>
-            </div>
-          )}
+          <ul className="space-y-1.5">
+            <AnimatePresence initial={false}>
+              {renderReadinessRows(optional, "optional", "Open", onNavigate)}
+            </AnimatePresence>
+          </ul>
         </div>
-      </div>
+      )}
 
-      {/* Student Visibility Preview Guide */}
+      {blockers.length === 0 && attention.length === 0 && optional.length === 0 && (
+        <div className="p-4 border-b border-slate-100 text-center">
+          <CheckCircle className="w-7 h-7 mx-auto mb-1.5 text-emerald-400" />
+          <p className="text-[11px] font-semibold text-slate-600">Everything looks good.</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">Preview, then publish when you’re ready.</p>
+        </div>
+      )}
+
+      {/* What students will see */}
       <div className="p-4 bg-slate-50/80 mt-auto space-y-2.5 text-[11px] text-slate-500 leading-normal border-t border-slate-200">
         <div className="text-[9px] font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1">
-          <Eye className="w-3.5 h-3.5 text-[#0A192F]" /> What Students See (By Mode)
+          <Eye className="w-3.5 h-3.5 text-[#0A192F]" /> What students will see
         </div>
         <div className="space-y-2 text-[10px] text-left">
           <div className="flex items-start gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0 mt-1"></span>
-            <span><strong>Practice Mode:</strong> Immediate correct/incorrect results and written explanation shown instantly.</span>
+            <span><strong>Practice:</strong> students see whether they were right, plus your explanation, right away.</span>
           </div>
           <div className="flex items-start gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-650 shrink-0 mt-1"></span>
-            <span><strong>Assessment Mode:</strong> Correct answer and explanation remain hidden until released.</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0 mt-1"></span>
+            <span><strong>Assessment:</strong> answers and scores stay hidden until you release them.</span>
           </div>
           <div className="flex items-start gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0 mt-1"></span>
-            <span><strong>Short-Answers:</strong> Answer draft is autosaved; scoring details hold as "Pending Review."</span>
+            <span>Students never see model answers, rubrics, or scoring guidance.</span>
           </div>
         </div>
+        {aiGradedCount > 0 && (
+          <div className="text-indigo-600 flex items-start gap-1 leading-relaxed text-left border-t border-slate-200 pt-2">
+            <GraduationCap className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>Review AI-scored short answers before releasing scores.</span>
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -2070,6 +2230,49 @@ interface BlockEditorProps {
   lessonTitle?: string;
 }
 
+/**
+ * Practice vs Assessment chooser. The same calm two-card control is used for
+ * question blocks and video checkpoints so the choice always reads the same way.
+ * Never surfaces the internal `isPractice` field name to teachers.
+ */
+function ModeSelector({
+  isPractice, onChange, name,
+}: {
+  isPractice: boolean;
+  onChange: (practice: boolean) => void;
+  name: string;
+}) {
+  return (
+    <div className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-2">
+      <span className="font-semibold text-slate-700 text-xs block">How students experience this</span>
+      <div className="grid grid-cols-2 gap-3">
+        <label className={`border rounded-lg p-2.5 flex flex-col gap-1 cursor-pointer transition ${!isPractice ? "bg-emerald-50/70 border-emerald-300 ring-1 ring-emerald-200" : "bg-white border-slate-200 hover:border-slate-300"}`}>
+          <div className="flex items-center gap-1.5 font-bold text-emerald-800 text-[11px]">
+            <input type="radio" name={name} checked={!isPractice} onChange={() => onChange(false)} />
+            <GraduationCap className="w-3 h-3" /> <span>Assessment</span>
+          </div>
+          <ul className="text-[10px] text-slate-500 space-y-0.5 list-disc pl-3">
+            <li>Students submit for review</li>
+            <li>Scores and answers stay hidden until you release them</li>
+            <li>Counts toward the grade</li>
+          </ul>
+        </label>
+        <label className={`border rounded-lg p-2.5 flex flex-col gap-1 cursor-pointer transition ${isPractice ? "bg-teal-50/70 border-teal-300 ring-1 ring-teal-200" : "bg-white border-slate-200 hover:border-slate-300"}`}>
+          <div className="flex items-center gap-1.5 font-bold text-teal-800 text-[11px]">
+            <input type="radio" name={name} checked={isPractice} onChange={() => onChange(true)} />
+            <Eye className="w-3 h-3" /> <span>Practice</span>
+          </div>
+          <ul className="text-[10px] text-slate-500 space-y-0.5 list-disc pl-3">
+            <li>Students get feedback right away</li>
+            <li>Recorded as practice</li>
+            <li>Doesn’t count toward the grade</li>
+          </ul>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function BlockEditor({
   block,
   index,
@@ -2085,7 +2288,7 @@ function BlockEditor({
   selectedLessonId,
   lessonTitle
 }: BlockEditorProps) {
-  const typeLabel = block.type === "video" ? "Video" : block.type === "reading" ? "Reading Passage" : "Question";
+  const typeLabel = block.type === "video" ? "Video" : block.type === "reading" ? "Reading" : "Question";
 
   return (
     <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm">
@@ -2098,30 +2301,21 @@ function BlockEditor({
         {block.type === "question" && (
           <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide ${block.isPractice ? "bg-teal-100 text-teal-800 border border-teal-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200"}`}>
             {block.isPractice ? (
-              <>
-                <Eye className="w-3 h-3" />
-                Practice — feedback visible to student
-              </>
+              <><Eye className="w-3 h-3" /> Practice · students see feedback</>
             ) : (
-              <>
-                <GraduationCap className="w-3 h-3" />
-                Assessment — answer key hidden from student
-              </>
+              <><GraduationCap className="w-3 h-3" /> Assessment · answers stay hidden</>
             )}
           </div>
         )}
-        {block.type !== "question" && (
-          <div className="text-[10px] text-slate-500">
-            {block.type === "video" && (restrictSeeking ? "Seeking Restricted" : "Open Seeking")}
-            {block.type === "reading" && "Acknowledgement Required"}
-          </div>
+        {block.type === "video" && (
+          <div className="text-[10px] text-slate-500">{restrictSeeking ? "Plays in order" : "Free seeking"}</div>
         )}
       </div>
 
       <div className="p-5 space-y-5 text-xs">
         {/* Block title */}
         <div>
-          <label className="font-bold text-slate-700 block mb-1">Block Title</label>
+          <label className="font-bold text-slate-700 block mb-1">Title</label>
           <input
             type="text"
             value={block.title}
@@ -2144,7 +2338,7 @@ function BlockEditor({
             />
 
             <div className="pt-2 border-t border-slate-100">
-              <label className="font-semibold text-slate-600 block mb-1">Direct Video URL (Backup/Manual Override)</label>
+              <label className="font-semibold text-slate-600 block mb-1">Or paste a video link</label>
               <input
                 type="text"
                 value={block.videoUrl || ""}
@@ -2156,14 +2350,24 @@ function BlockEditor({
 
             {/* Video checkpoints */}
             <div className="pt-3 border-t border-slate-100 space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="font-bold text-slate-700 flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-blue-600" /> Video Checkpoints
-                </label>
-                <button type="button" onClick={() => addCheckpoint(index)} className="text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-blue-100 flex items-center gap-1">
-                  <Plus className="w-3 h-3" /> Add Checkpoint
-                </button>
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="font-bold text-slate-700 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-blue-600" /> Checkpoints
+                  </label>
+                  <button type="button" onClick={() => addCheckpoint(index)} className="text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider hover:bg-blue-100 flex items-center gap-1">
+                    <Plus className="w-3 h-3" /> Add checkpoint
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">Pause the video at a moment and ask a quick question.</p>
               </div>
+
+              {(block.videoCheckpoints || []).length === 0 && (
+                <div className="text-center py-5 px-3 border border-dashed border-slate-200 rounded-lg bg-slate-50/40">
+                  <Clock className="w-5 h-5 mx-auto mb-1 text-slate-300" />
+                  <p className="text-[11px] text-slate-500">No checkpoints yet — add one to check understanding mid-video.</p>
+                </div>
+              )}
 
               {(block.videoCheckpoints || []).map((cp: any) => (
                 <div key={cp.id} className="border border-slate-200 rounded bg-slate-50/60 p-3 space-y-3">
@@ -2182,17 +2386,20 @@ function BlockEditor({
 
                   <div className="grid grid-cols-2 gap-3 text-[11px]">
                     <div>
-                      <label className="font-semibold text-slate-600 block mb-1">Timestamp (seconds)</label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={cp.timestamp ?? 0}
-                        onChange={(e) => updateCheckpoint(index, cp.id, { timestamp: Number(e.target.value) })}
-                        className="w-full bg-white border border-slate-200 rounded px-2 py-1 focus:outline-none focus:border-slate-400"
-                      />
+                      <label className="font-semibold text-slate-600 block mb-1">Pause at <span className="font-normal text-slate-400">({formatTimestamp(cp.timestamp)})</span></label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={0}
+                          value={cp.timestamp ?? 0}
+                          onChange={(e) => updateCheckpoint(index, cp.id, { timestamp: Number(e.target.value) })}
+                          className="w-full bg-white border border-slate-200 rounded px-2 py-1 focus:outline-none focus:border-slate-400"
+                        />
+                        <span className="text-[10px] text-slate-400 shrink-0">sec</span>
+                      </div>
                     </div>
                     <div>
-                      <label className="font-semibold text-slate-600 block mb-1">Question Type</label>
+                      <label className="font-semibold text-slate-600 block mb-1">Question type</label>
                       <select
                         value={cp.questionType || "mc"}
                         onChange={(e) => {
@@ -2212,41 +2419,19 @@ function BlockEditor({
                   <div className="flex flex-wrap gap-4 text-[11px] items-center">
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <input type="checkbox" checked={!!cp.isRequired} onChange={(e) => updateCheckpoint(index, cp.id, { isRequired: e.target.checked })} />
-                      Required (blocks progress)
+                      Required before continuing
                     </label>
                     <label className="flex items-center gap-1.5 cursor-pointer">
                       <input type="checkbox" checked={!!cp.pauseVideo} onChange={(e) => updateCheckpoint(index, cp.id, { pauseVideo: e.target.checked })} />
-                      Pause video
+                      Pause video here
                     </label>
                   </div>
 
-                  <div className="w-full mt-2 bg-slate-50 border border-slate-200 rounded p-2.5 space-y-2">
-                    <span className="font-semibold text-slate-600 text-xs block">Grading Mode Selection</span>
-                    <div className="grid grid-cols-2 gap-3">
-                      <label className={`border rounded p-2 flex flex-col justify-between cursor-pointer transition ${!cp.isPractice ? "bg-emerald-50/60 border-emerald-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-                        <div className="flex items-center gap-1.5 font-bold text-emerald-800 text-[11px]">
-                          <input type="radio" name={`cp-mode-${cp.id}`} checked={!cp.isPractice} onChange={() => updateCheckpoint(index, cp.id, { isPractice: false })} />
-                          <span>Assessment Mode</span>
-                        </div>
-                        <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
-                          <li>Students do not receive score or feedback immediately</li>
-                          <li>Score is securely recorded for teacher review</li>
-                          <li>Appropriate for graded checkpoints</li>
-                        </ul>
-                      </label>
-                      <label className={`border rounded p-2 flex flex-col justify-between cursor-pointer transition ${cp.isPractice ? "bg-teal-50/60 border-teal-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-                        <div className="flex items-center gap-1.5 font-bold text-teal-800 text-[11px]">
-                          <input type="radio" name={`cp-mode-${cp.id}`} checked={!!cp.isPractice} onChange={() => updateCheckpoint(index, cp.id, { isPractice: true })} />
-                          <span>Practice Mode</span>
-                        </div>
-                        <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
-                          <li>Students receive feedback immediately</li>
-                          <li>Score is recorded as practice</li>
-                          <li>Does not count toward assessment score</li>
-                        </ul>
-                      </label>
-                    </div>
-                  </div>
+                  <ModeSelector
+                    isPractice={!!cp.isPractice}
+                    name={`cp-mode-${cp.id}`}
+                    onChange={(practice) => updateCheckpoint(index, cp.id, { isPractice: practice })}
+                  />
 
                   {cp.questions?.[0] ? (
                     <QuestionEditor
@@ -2274,7 +2459,7 @@ function BlockEditor({
         {/* Reading block */}
         {block.type === "reading" && (
           <div>
-            <label className="font-bold text-slate-700 block mb-1">Reading Passage Content</label>
+            <label className="font-bold text-slate-700 block mb-1">Reading content</label>
             <RichContentEditor
               value={block.content || ""}
               onChange={(val: any) => onBlockChange(index, "content", val)}
@@ -2287,9 +2472,9 @@ function BlockEditor({
         {/* Question block */}
         {block.type === "question" && (
           <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="font-semibold text-slate-600 block mb-1">Question Type</label>
+            <div className="space-y-3">
+              <div className="max-w-xs">
+                <label className="font-semibold text-slate-600 block mb-1">Question type</label>
                 <select
                   value={block.questionType || "mc"}
                   onChange={(e) => {
@@ -2302,38 +2487,16 @@ function BlockEditor({
                   }}
                   className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-slate-800 focus:outline-none"
                 >
-                  <option value="mc">Multiple Choice (Auto-Graded)</option>
-                  <option value="sa">Short Answer (Rubric / AI Graded)</option>
+                  <option value="mc">Multiple choice</option>
+                  <option value="sa">Short answer</option>
                 </select>
               </div>
 
-              <div className="col-span-2">
-                <span className="font-semibold text-slate-600 text-xs block mb-1">Grading Mode Selection</span>
-                <div className="grid grid-cols-2 gap-3">
-                  <label className={`border rounded p-2.5 flex flex-col justify-between cursor-pointer transition ${!block.isPractice ? "bg-emerald-50/60 border-emerald-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-                    <div className="flex items-center gap-1.5 font-bold text-emerald-800 text-[11px]">
-                      <input type="radio" name={`block-mode-${index}`} checked={!block.isPractice} onChange={() => onBlockChange(index, "isPractice", false)} />
-                      <span>Assessment Mode</span>
-                    </div>
-                    <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
-                      <li>Students do not receive score or correctness feedback immediately</li>
-                      <li>Score is securely recorded in the teacher's review queue</li>
-                      <li>Appropriate for graded assessments</li>
-                    </ul>
-                  </label>
-                  <label className={`border rounded p-2.5 flex flex-col justify-between cursor-pointer transition ${block.isPractice ? "bg-teal-50/60 border-teal-300" : "bg-white border-slate-200 hover:border-slate-300"}`}>
-                    <div className="flex items-center gap-1.5 font-bold text-teal-800 text-[11px]">
-                      <input type="radio" name={`block-mode-${index}`} checked={!!block.isPractice} onChange={() => onBlockChange(index, "isPractice", true)} />
-                      <span>Practice Mode</span>
-                    </div>
-                    <ul className="text-[10px] text-slate-500 mt-1 space-y-0.5 list-disc pl-3">
-                      <li>Students receive immediate results & corrective feedback</li>
-                      <li>Score is recorded separately as practice data</li>
-                      <li>Does not count toward final assessment grades</li>
-                    </ul>
-                  </label>
-                </div>
-              </div>
+              <ModeSelector
+                isPractice={!!block.isPractice}
+                name={`block-mode-${index}`}
+                onChange={(practice) => onBlockChange(index, "isPractice", practice)}
+              />
             </div>
 
             {block.singleQuestion ? (
@@ -2372,8 +2535,8 @@ function AssignmentsTab({
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white border border-slate-200 rounded p-5 shadow-sm gap-4">
         <div>
-          <h3 className="font-bold text-slate-800 text-[18px]">Course Deliveries & Scheduling</h3>
-          <p className="text-xs text-slate-500 mt-1">Deploy lesson versions to courses. Configure availability dates to automatically enforce open/due boundaries.</p>
+          <h3 className="font-bold text-slate-800 text-[18px]">Assignments</h3>
+          <p className="text-xs text-slate-500 mt-1">Give a course access to a published lesson, with open and due dates.</p>
         </div>
         {!showAssignmentForm && (
           <button
@@ -2385,7 +2548,7 @@ function AssignmentsTab({
             }}
             className="bg-[#0A192F] hover:bg-[#15294b] text-white text-xs font-bold px-4 py-2 rounded flex items-center gap-1.5 transition cursor-pointer shadow-sm tracking-wider uppercase shrink-0"
           >
-            <Plus className="w-4 h-4" /> Assign Lesson
+            <Plus className="w-4 h-4" /> Assign a lesson
           </button>
         )}
       </div>
@@ -2393,7 +2556,7 @@ function AssignmentsTab({
       {showAssignmentForm && (
         <form onSubmit={onSubmit} className="bg-white border border-slate-200 rounded p-6 shadow-sm space-y-4 max-w-2xl">
           <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-            <h4 className="text-xs font-bold text-slate-800 uppercase tracking-widest">New Lesson Assignment Setup</h4>
+            <h4 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Assign a lesson</h4>
             <button type="button" onClick={() => setShowAssignmentForm(false)} className="text-xs text-slate-400 hover:text-slate-600 font-bold uppercase">Cancel</button>
           </div>
 
@@ -2441,15 +2604,15 @@ function AssignmentsTab({
             </div>
 
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Opens At *</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Opens *</label>
               <input type="datetime-local" value={asgOpensAt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgOpensAt(e.target.value)} className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400" required />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Due At *</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Due *</label>
               <input type="datetime-local" value={asgDueAt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgDueAt(e.target.value)} className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400" required />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Closes At *</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Closes *</label>
               <input type="datetime-local" value={asgClosesAt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgClosesAt(e.target.value)} className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400" required />
             </div>
           </div>
@@ -2459,8 +2622,8 @@ function AssignmentsTab({
           </div>
 
           <div className="flex justify-end pt-2 border-t border-slate-100">
-            <button type="submit" disabled={lessons.filter((l: any) => l.isPublished).length === 0} className="bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-xs font-bold px-5 py-2.5 rounded shadow-sm tracking-wide uppercase transition cursor-pointer">
-              Publish Assignment
+            <button type="submit" disabled={lessons.filter((l: any) => l.isPublished).length === 0} className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-xs font-bold px-5 py-2.5 rounded shadow-sm tracking-wide uppercase transition cursor-pointer">
+              Assign to course
             </button>
           </div>
         </form>
@@ -2468,23 +2631,24 @@ function AssignmentsTab({
 
       <div className="bg-white border border-slate-200 rounded shadow-sm overflow-hidden">
         <div className="p-4 bg-slate-50 border-b border-slate-200">
-          <h4 className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Assignments ({assignments.length})</h4>
+          <h4 className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Active assignments ({assignments.length})</h4>
         </div>
         {assignments.length === 0 ? (
           <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center">
             <Calendar className="w-10 h-10 text-slate-300 mb-2" />
-            <p className="text-xs font-bold text-slate-600">No active assignments configured.</p>
+            <p className="text-xs font-bold text-slate-600">No assignments yet</p>
+            <p className="text-[11px] text-slate-400 mt-1">Publish a lesson, then assign it to a course.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                  <th className="p-3">Course / Section</th>
-                  <th className="p-3">Lesson Plan</th>
-                  <th className="p-3">Opens At</th>
-                  <th className="p-3">Due At</th>
-                  <th className="p-3">Closes At</th>
+                  <th className="p-3">Course</th>
+                  <th className="p-3">Lesson</th>
+                  <th className="p-3">Opens</th>
+                  <th className="p-3">Due</th>
+                  <th className="p-3">Closes</th>
                   <th className="p-3 text-center">Status</th>
                   <th className="p-3 text-right">Action</th>
                 </tr>
@@ -2494,21 +2658,22 @@ function AssignmentsTab({
                   const now = new Date().toISOString();
                   const opens = asg.opensAt || "";
                   const closes = asg.closesAt || "";
+                  const courseName = (courses.find((c: any) => c.id === asg.courseId)?.name) || asg.courseId;
                   let statusNode = null;
                   if (now < opens) statusNode = <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Scheduled</span>;
-                  else if (now <= closes) statusNode = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Open & Active</span>;
-                  else statusNode = <span className="bg-red-50 text-red-700 border border-red-100 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Closed</span>;
+                  else if (now <= closes) statusNode = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Open</span>;
+                  else statusNode = <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Closed</span>;
                   return (
                     <tr key={asg.id} className="hover:bg-slate-50/50">
-                      <td className="p-3"><span className="font-bold text-slate-800">{asg.courseId}</span>{asg.section && <span className="text-slate-400 ml-1.5">• {asg.section}</span>}</td>
-                      <td className="p-3 font-semibold text-slate-800">{asg.lessonTitle || "Untitled Lesson"}</td>
+                      <td className="p-3"><span className="font-bold text-slate-800">{courseName}</span>{asg.section && <span className="text-slate-400 ml-1.5">· {asg.section}</span>}</td>
+                      <td className="p-3 font-semibold text-slate-800">{asg.lessonTitle || "Untitled lesson"}</td>
                       <td className="p-3 text-[11px] text-slate-500">{new Date(opens).toLocaleString()}</td>
                       <td className="p-3 text-[11px] text-slate-500 font-semibold">{new Date(asg.dueAt).toLocaleString()}</td>
                       <td className="p-3 text-[11px] text-slate-500">{new Date(closes).toLocaleString()}</td>
                       <td className="p-3 text-center">{statusNode}</td>
                       <td className="p-3 text-right">
-                        <button type="button" onClick={() => onDeleteAssignment && onDeleteAssignment(asg.id)} className="text-red-600 hover:text-red-800 font-bold uppercase text-[9px] tracking-widest px-2.5 py-1 rounded hover:bg-red-50 transition cursor-pointer">
-                          Recall
+                        <button type="button" onClick={() => { if (window.confirm("Remove this assignment? Students will lose access.")) onDeleteAssignment && onDeleteAssignment(asg.id); }} className="text-red-600 hover:text-red-800 font-bold uppercase text-[9px] tracking-widest px-2.5 py-1 rounded hover:bg-red-50 transition cursor-pointer">
+                          Remove
                         </button>
                       </td>
                     </tr>

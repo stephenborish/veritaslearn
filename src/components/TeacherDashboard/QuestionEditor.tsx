@@ -145,6 +145,8 @@ export default function QuestionEditor({
   const [showPreview, setShowPreview] = useState(false);
   const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
   const [aiError, setAiError] = useState<string | null>(null);
+  // Technical detail kept secondary so the calm headline stays primary in the UI.
+  const [aiErrorDetail, setAiErrorDetail] = useState<string | null>(null);
   const [aiWarnings, setAiWarnings] = useState<string[]>([]);
   const [aiDraftActive, setAiDraftActive] = useState(false);
   const [showRevise, setShowRevise] = useState(false);
@@ -205,6 +207,8 @@ export default function QuestionEditor({
     setAiWarnings(Array.isArray(data.warnings) ? data.warnings : []);
     setAiDraftActive(true);
     setAiStatus("idle");
+    setAiError(null);
+    setAiErrorDetail(null);
   };
 
   const generateRubric = async () => {
@@ -223,6 +227,7 @@ export default function QuestionEditor({
 
     setAiStatus("generating");
     setAiError(null);
+    setAiErrorDetail(null);
 
     const timer = setTimeout(() => {
       setAiStatus("repairing");
@@ -265,7 +270,8 @@ export default function QuestionEditor({
       applyAiResult(data);
     } catch (err: any) {
       setAiStatus("error");
-      setAiError(err.message || "Generation failed. Please try again.");
+      setAiError("Rubric draft didn’t go through. Your question wasn’t changed — try again, or fill in the fields below yourself.");
+      setAiErrorDetail(err?.message || null);
     } finally {
       clearTimeout(timer);
     }
@@ -292,6 +298,7 @@ export default function QuestionEditor({
 
     setAiStatus("generating");
     setAiError(null);
+    setAiErrorDetail(null);
 
     const timer = setTimeout(() => {
       setAiStatus("repairing");
@@ -332,7 +339,8 @@ export default function QuestionEditor({
       setRevisionInstruction("");
     } catch (err: any) {
       setAiStatus("error");
-      setAiError(err.message || "Revision failed. Please try again.");
+      setAiError("Revision didn’t go through. Your rubric wasn’t changed — try again, or edit it directly.");
+      setAiErrorDetail(err?.message || null);
     } finally {
       clearTimeout(timer);
     }
@@ -388,62 +396,51 @@ export default function QuestionEditor({
 
         {type === "sa" && (
           <div className="bg-slate-50 border border-slate-200 rounded p-2.5 space-y-1.5 text-xs text-slate-700">
-            <span className="font-bold text-[10px] uppercase tracking-wider text-slate-600 block">AI Grading Status Dashboard (Teacher-Only Metadata)</span>
+            <span className="font-bold text-[10px] uppercase tracking-wider text-slate-600 block">AI scoring readiness</span>
             <div className="flex flex-wrap gap-1.5 align-middle">
-              {/* AI Rubric Ready vs Rubric total mismatch or Missing Rubric */}
+              {/* Rubric status */}
               {rubric.length === 0 ? (
-                <span className="inline-flex items-center gap-1 bg-rose-50 text-rose-700 border border-rose-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <AlertCircle className="w-3 h-3 text-rose-500" /> Missing Rubric Categories
+                <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
+                  <AlertCircle className="w-3 h-3 text-amber-500" /> Add a rubric
                 </span>
               ) : rubricTotal === Number(q.points) ? (
                 <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> AI Rubric Ready ({rubricTotal}/{q.points} pts matched)
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Rubric ready ({rubricTotal}/{q.points} pts)
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <AlertCircle className="w-3 h-3 text-amber-500" /> Rubric Points Mismatch ({rubricTotal} pts vs {Number(q.points) || 0} pts)
+                  <AlertCircle className="w-3 h-3 text-amber-500" /> Rubric totals {rubricTotal}, not {Number(q.points) || 0}
                 </span>
               )}
 
-              {/* Model Answer status */}
+              {/* Model answer status */}
               {!textContent(q.modelAnswer).trim() ? (
                 <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <AlertCircle className="w-3 h-3 text-amber-500" /> Missing Ideal Model Answer
+                  <AlertCircle className="w-3 h-3 text-amber-500" /> Add a model answer
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Ideal Model Answer Set
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Model answer set
                 </span>
               )}
 
-              {/* Scoring Guidance status */}
+              {/* Scoring guidance status */}
               {!textContent(q.aiScoringGuidance).trim() ? (
                 <span className="inline-flex items-center gap-1 bg-amber-50 text-amber-700 border border-amber-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <AlertCircle className="w-3 h-3 text-amber-500" /> Missing AI Scoring Guidance
+                  <AlertCircle className="w-3 h-3 text-amber-500" /> Add scoring guidance
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> AI Scoring Guidance Configured
+                  <CheckCircle2 className="w-3 h-3 text-emerald-500" /> Scoring guidance set
                 </span>
               )}
 
-              {/* AI generated status */}
-              {aiDraftActive ? (
+              {/* AI draft marker — only when relevant */}
+              {aiDraftActive && (
                 <span className="inline-flex items-center gap-1 bg-violet-50 text-violet-700 border border-violet-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  <Wand2 className="w-3 h-3 text-violet-500" /> Drafted by AI (Editable)
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 bg-slate-100 text-slate-600 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                  Manual Setup
+                  <Wand2 className="w-3 h-3 text-violet-500" /> AI draft — review before publishing
                 </span>
               )}
-
-              <span className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded px-1.5 py-0.5 text-[10px] font-medium">
-                Teacher Review Recommended
-              </span>
-            </div>
-            <div className="text-[10px] text-slate-500 italic mt-1 leading-snug">
-              ℹ️ Model answers, scoring guidance, and rubrics are strictly <strong className="text-amber-800 font-semibold uppercase">teacher-only</strong> and secure; students are never shown these values.
             </div>
           </div>
         )}
@@ -561,8 +558,8 @@ export default function QuestionEditor({
       <div className="p-4 space-y-3 bg-amber-50/30">
         <div className={zoneLabelCls}>
           <Lock className="w-3.5 h-3.5 text-amber-600" />
-          <span className="text-amber-700">Teacher-Only Grading Guidance</span>
-          <span className="text-[9px] font-normal text-amber-600 normal-case tracking-normal">(never shown to students)</span>
+          <span className="text-amber-700">Teacher-only scoring setup</span>
+          <span className="text-[9px] font-normal text-amber-600 normal-case tracking-normal">Students will not see this.</span>
         </div>
 
         {type === "mc" && (
@@ -584,8 +581,8 @@ export default function QuestionEditor({
             <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 space-y-2">
               <div className="flex items-center gap-1.5 mb-1">
                 <Wand2 className="w-3.5 h-3.5 text-violet-600" />
-                <span className="text-[10px] font-bold uppercase tracking-widest text-violet-700">AI Rubric Authoring</span>
-                <span className="text-[9px] text-violet-500 normal-case tracking-normal font-normal ml-1">— drafts only, you control the final version</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-violet-700">Rubric assistant</span>
+                <span className="text-[9px] text-violet-500 normal-case tracking-normal font-normal ml-1">— drafts a starting point; you decide the final version</span>
               </div>
 
               <div className="flex flex-wrap gap-1.5">
@@ -596,11 +593,11 @@ export default function QuestionEditor({
                   className="flex items-center gap-1 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
                 >
                   {aiStatus === "generating" && !showRevise ? (
-                    <><RotateCcw className="w-3 h-3 animate-spin" /> Generating…</>
+                    <><RotateCcw className="w-3 h-3 animate-spin" /> Drafting…</>
                   ) : aiStatus === "repairing" && !showRevise ? (
-                    <><RotateCcw className="w-3 h-3 animate-spin" /> Repairing AI output…</>
+                    <><RotateCcw className="w-3 h-3 animate-spin" /> Finishing up…</>
                   ) : (
-                    <><Wand2 className="w-3 h-3" /> Generate ideal answer + rubric</>
+                    <><Wand2 className="w-3 h-3" /> Draft rubric with AI</>
                   )}
                 </button>
 
@@ -610,7 +607,7 @@ export default function QuestionEditor({
                   onClick={() => { setShowRevise((v) => !v); setAiError(null); }}
                   className="flex items-center gap-1 bg-white hover:bg-violet-50 disabled:opacity-50 border border-violet-300 text-violet-700 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
                 >
-                  <RotateCcw className="w-3 h-3" /> Revise current rubric
+                  <RotateCcw className="w-3 h-3" /> Revise rubric
                 </button>
               </div>
 
@@ -680,10 +677,14 @@ export default function QuestionEditor({
                 </div>
               )}
 
-              {/* Error state */}
+              {/* Error state — calm headline first, technical detail muted */}
               {aiStatus === "error" && aiError && (
-                <div className="flex items-start gap-1.5 bg-red-50 border border-red-200 rounded px-2.5 py-1.5 text-[10px] text-red-700">
-                  <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" /> {aiError}
+                <div className="flex items-start gap-1.5 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 text-[10px] text-amber-800">
+                  <AlertCircle className="w-3 h-3 mt-0.5 shrink-0 text-amber-500" />
+                  <span className="flex-1">
+                    <span className="font-semibold block">{aiError}</span>
+                    {aiErrorDetail && <span className="text-amber-600/70 text-[9px] block mt-0.5">Detail: {aiErrorDetail}</span>}
+                  </span>
                 </div>
               )}
             </div>
@@ -772,7 +773,7 @@ export default function QuestionEditor({
       {/* ===== ZONE 4: Points + Validation ===== */}
       <div className="p-4 flex flex-wrap items-start gap-6">
         <div className="w-36">
-          <label className={labelCls}>Points {graded ? "(graded)" : "(practice)"}</label>
+          <label className={labelCls}>Points {graded ? "(assessment)" : "(practice)"}</label>
           <input
             type="number"
             min={0}
@@ -852,7 +853,7 @@ export default function QuestionEditor({
               </div>
             )}
 
-            <p className="text-[10px] text-slate-400">Worth {Number(q.points) || 0} pt(s) · {graded ? "Graded" : "Practice"}</p>
+            <p className="text-[10px] text-slate-400">Worth {Number(q.points) || 0} pt(s) · {graded ? "Assessment" : "Practice"}</p>
           </div>
         )}
       </div>
