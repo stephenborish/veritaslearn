@@ -188,7 +188,7 @@ export default function StudentDossierModal({
 
   // Count blurs, screens, seek blocks
   const blurs = sSignals.filter((s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden").length;
-  const screens = sSignals.filter((s) => s.eventType === "fullscreen_exited").length;
+  const screens = sSignals.filter((s) => s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited").length;
   const copyPastes = sSignals.filter((s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked").length;
   const seekVio = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
   const totalViolations = blurs + screens + copyPastes + seekVio;

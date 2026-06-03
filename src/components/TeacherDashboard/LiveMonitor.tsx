@@ -98,7 +98,9 @@ export default function LiveMonitor({
     const blurs = sSignals.filter(
       (s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden"
     ).length;
-    const fullscreenExits = sSignals.filter((s) => s.eventType === "fullscreen_exited").length;
+    const fullscreenExits = sSignals.filter(
+      (s) => s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited"
+    ).length;
     const seekBlocks = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
     const copyPastes = sSignals.filter(
       (s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked"
@@ -247,6 +249,7 @@ export default function LiveMonitor({
     const labels: Record<string, string> = {
       blur_focus_lost: "Focus lost",
       visibility_hidden: "Tab hidden",
+      fullscreen_exit: "Fullscreen exit",
       fullscreen_exited: "Fullscreen exit",
       seek_attempt_blocked: "Seek blocked",
       copy_blocked: "Copy blocked",

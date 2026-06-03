@@ -3961,3 +3961,207 @@ Future-agent warning:
   - NEVER create fake attempt records to represent gradebook lifecycle states (missing, excused,
     extended). Use GradebookEntry directly via ensureGradebookEntryForAssignment().
 
+
+```text
+Date: 2026-06-03
+Agent: Claude Code (Sonnet 4.6)
+Task: Student-player regressions G–J: video checkpoint resume, image zoom, sidebar cleanup, fullscreen telemetry
+
+WHAT CHANGED:
+
+src/components/StudentPortal/FocusedPlayer.tsx:
+  Task G — Video checkpoint resume behavior:
+    - Added checkpointResumeTimestampRef (useRef<number>(0)) to store video.currentTime when a
+      checkpoint opens.
+    - handleVideoTimeUpdate: sets checkpointResumeTimestampRef.current = video.currentTime before
+      calling setActiveCheckpoint(), so the exact pause position is preserved.
+    - Continue button onClick: seeks videoRef.current.currentTime to checkpointResumeTimestampRef.current
+      before calling play(). This ensures the video resumes at the checkpoint timestamp, not from 0.
+    - onLoadedMetadata: if activeCheckpoint is active and a resume timestamp is stored, seeks back
+      to that position. Guards against the rare case where the video src reloads mid-checkpoint
+      (e.g., a Firebase Storage signed-URL expiry refresh), which would otherwise reset currentTime
+      to 0 and cause the video to restart.
+    - Checkpoint re-trigger guard: unchanged — handleVideoTimeUpdate checks !hasSubmittedAll before
+      setting activeCheckpoint; once all questions in a checkpoint are submitted, the checkpoint
+      cannot reopen on that video block.
+    - Anti-skip and required checkpoint logic: preserved. furthestMaxTimestamp tracking and
+      seek_attempt_blocked signals unchanged.
+
+  Task I — Remove duplicate sidebar collapse button:
+    - Removed the desktop inline-flex collapse/expand button from the student top bar
+      (was: "hidden md:inline-flex" button next to the VERITAS Learn logo).
+    - Sidebar collapse control is now exclusively in the sidebar:
+        • Expanded sidebar header: "Collapse lesson timeline" button (PanelLeftClose)
+        • Collapsed desktop rail: "Expand lesson timeline" button (PanelLeftOpen)
+    - Mobile drawer toggle (List icon, md:hidden) in the top bar is unchanged.
+    - Both PanelLeftClose and PanelLeftOpen icons are still imported (used by sidebar).
+    - Result: no duplicate accessible labels for the same collapse action; single source
+      of collapse control per state.
+
+  Task J — Fullscreen exit overlay and telemetry:
+    - Renamed telemetry event from "fullscreen_exited" → "fullscreen_exit" (canonical name).
+    - fullscreen_exit telemetry now includes extended metadata: lessonId, assignmentId,
+      lessonVersionId from attemptData (in addition to the existing attemptId, blockId,
+      videoTimestamp, studentId, timestamp from the server).
+    - Overlay message updated to: "Please return to fullscreen to continue." (calmer, concise).
+    - handleFullscreenChange now calls setIsFullscreenLocked(false) when isFull becomes true,
+      so the overlay auto-dismisses when the student re-enters fullscreen by any means (F11,
+      OS shortcut, etc.) — not only when clicking the in-app "Enter full screen" button.
+
+src/components/RichContent/RichContentRenderer.tsx:
+  Task H — Image click-to-zoom:
+    - Added useState<{src,alt}|null>(null) for zoom state.
+    - Added useCallback click handler using React event delegation on the container div;
+      checks e.target.tagName === "IMG" and sets zoom state. No unsafe global hacks; scoped
+      to the renderer container; cleaned up automatically on unmount via React.
+    - Added useEffect for Esc key close (document-level keydown, added only when zoom is
+      active, cleaned up on close/unmount).
+    - Zoom modal: fixed inset-0, z-[9999], bg-slate-900/80 backdrop-blur (light content on
+      dark overlay — standard light-mode zoom pattern). Close button is bg-white with
+      aria-label="Close image zoom". Clicking the backdrop also closes. Clicking the zoomed
+      image stops propagation to prevent unintended close.
+    - Images in the content get cursor-zoom-in via Tailwind arbitrary variant [&_img]:cursor-zoom-in.
+    - autoFocus on the Close button for keyboard accessibility.
+    - Preserved alt text: zoom.alt is passed to the zoomed <img>.
+    - Does NOT affect RichContentEditor or ImageNode teacher editing controls
+      (those use Lexical's decorate() path, not RichContentRenderer).
+
+server.ts:
+  Task J — Support both fullscreen_exit and fullscreen_exited in integrity signal handler:
+    - POST /api/integrity-signals now treats both event names as fullscreen exit events:
+        isFullscreenExitEvent = eventType === "fullscreen_exit" || eventType === "fullscreen_exited"
+    - exitCount filter counts both names to correctly accumulate historical events.
+    - Backward compatible: old signals stored as "fullscreen_exited" continue to trigger
+      thresholds and lockouts correctly.
+
+src/components/TeacherDashboard/LiveMonitor.tsx:
+  Task J — Teacher statistics for fullscreen_exit:
+    - getAttemptSignalSummary now counts both "fullscreen_exit" and "fullscreen_exited".
+    - signalEventLabel map includes both names (both display as "Fullscreen exit").
+    - isAttemptNeedsReview uses getAttemptSignalSummary.fullscreenExits (unchanged, but
+      now includes both event names via the summary function).
+
+src/components/TeacherDashboard/StudentDossierModal.tsx:
+  Task J — Student dossier fullscreen count:
+    - screens filter updated to count both "fullscreen_exit" and "fullscreen_exited".
+
+src/types.ts:
+  Task J — Type system:
+    - Added 'fullscreen_exit' to SecuritySignal.eventType union (alongside 'fullscreen_exited').
+
+scripts/verify-student-ui.ts:
+  - Added 4 new sections (G, H, I, J) with 29 new checks.
+  - Updated "collapse control has an accessible label" check to match new behavior
+    (static "Collapse lesson timeline" / "Expand lesson timeline" labels in sidebar,
+    rather than the dynamic aria-label that was on the removed top-bar button).
+  - Total: 71 checks (was 42).
+
+CONSTRAINTS RESPECTED:
+  - Did not reintroduce "Assessment Check" / "Practice Check" checkpoint headers.
+  - Did not reintroduce "Answer the check question to continue." above the checkpoint card.
+  - Did not add persistent warning text above the Next button.
+  - Did not change Firebase Auth, core grading logic, or immutable LessonVersion behavior.
+  - Did not weaken assignment-aware access control or student-safe sanitization.
+  - Did not expose assessment scores, correctness, model answers, rubrics, or teacher-only
+    fields to students.
+  - Did not remove AI grading, AI rubric generation, image upload, lesson draft autosave,
+    student preview, or any previously merged teacher persistence fixes.
+
+VIDEO CHECKPOINT RESUME BEHAVIOR (Rule for future agents):
+  When a video checkpoint opens (handleVideoTimeUpdate sets activeCheckpoint), the current
+  video.currentTime is saved to checkpointResumeTimestampRef. On checkpoint Continue, the
+  video is explicitly seeked to this saved timestamp before play() is called. This prevents
+  the video from ever starting at 0 after a checkpoint. The video element has no key prop
+  that would force a remount when checkpoint state changes.
+
+CLICK-TO-ZOOM IMAGE BEHAVIOR (Rule for future agents):
+  RichContentRenderer uses React event delegation (onClick on the container div) to detect
+  img clicks and open a zoom modal. This is safe with dangerouslySetInnerHTML because React's
+  synthetic event system bubbles through the DOM. Do NOT add unsafe global onclick handlers
+  or inline onclick attributes in the sanitized HTML — those would be stripped by DOMPurify
+  and would constitute a security issue.
+
+SINGLE SIDEBAR COLLAPSE-CONTROL RULE (Rule for future agents):
+  There must be exactly ONE collapse control per sidebar state:
+    - Expanded: the button in the sidebar header (PanelLeftClose, "Collapse lesson timeline")
+    - Collapsed: the button in the collapsed rail (PanelLeftOpen, "Expand lesson timeline")
+  Do NOT add a second collapse toggle in the top bar. Having two controls for the same action
+  creates duplicate accessible labels (WCAG violation) and UI confusion.
+
+FULLSCREEN EXIT OVERLAY BEHAVIOR (Rule for future agents):
+  When the student exits fullscreen (and fullscreen is required by the assignment):
+    1. The video pauses (existing behavior).
+    2. An overlay appears with: "Please return to fullscreen to continue."
+    3. The student can click the in-app button OR use OS/browser fullscreen controls.
+    4. Regaining fullscreen (by any means) auto-dismisses the overlay via handleFullscreenChange
+       setting setIsFullscreenLocked(false) when document.fullscreenElement is truthy.
+    5. Enough violations escalate to teacher-lock (existing behavior).
+  Do NOT use frightening or accusatory language in the overlay.
+
+FULLSCREEN_EXIT TELEMETRY EVENT NAME (Rule for future agents):
+  The canonical event type is "fullscreen_exit" (not "fullscreen_exited").
+  The FocusedPlayer frontend fires "fullscreen_exit".
+  The server, LiveMonitor, and StudentDossierModal accept both names for backward compat.
+  New code should always emit and check for "fullscreen_exit".
+  Historical "fullscreen_exited" signals remain valid for aggregation.
+
+TEACHER STATISTICS INCLUSION (Rule for future agents):
+  fullscreen_exit events appear in:
+    - LiveMonitor: getAttemptSignalSummary.fullscreenExits (grid card "Security signals" row
+      and table view signal count); isAttemptNeedsReview flags any attempt with fullscreenExits > 0.
+    - StudentDossierModal: "screens" count in the Focus & Activity Log section.
+  Both locations count both "fullscreen_exit" and "fullscreen_exited" for backward compat.
+
+CHECKPOINT/NEXT-BUTTON COMMENTARY PROHIBITION (Rule for future agents):
+  Do NOT add the following text anywhere in student-facing UI:
+    - "Assessment Check" (as a checkpoint header/title above the question card)
+    - "Practice Check" (as a checkpoint header/title above the question card)
+    - "Answer the check question to continue." (instruction paragraph above the card)
+    - "Answer all checkpoint questions to continue." (persistent text above Next button)
+  These were intentionally removed. Checkpoint progress is shown only via the "Question X of Y"
+  badge. Required-completion state is communicated via the navigation footer (disabled Next +
+  inline reason) and via toast-on-click when applicable.
+
+Verification:
+  Commands run:
+    - npm install (fresh environment, no node_modules present)
+    - npx vite build → PASS (✓ built in 7.26s)
+    - npx tsx scripts/verify-student-ui.ts → PASS (71 checks, 0 failures)
+    - npx tsx scripts/verify-slice.ts → PASS (20 checks, 0 failures)
+    - npx tsx scripts/verify-workflow.ts → PASS (61 checks, 0 failures)
+    - npx tsx scripts/verify-teacher-state.ts → PASS (12 checks, 0 failures)
+    - npx tsx scripts/verify-hardening.ts → PASS (all tests passed)
+  Note: verify-builder.ts has pre-existing symbol-redeclaration errors (unrelated to this PR).
+        verify-image-formatting.ts has a pre-existing ERR_MODULE_NOT_FOUND (unrelated).
+        npm run lint (tsc --noEmit) has pre-existing server.ts Node/Express type errors
+        (no @types/node in tsconfig) that pre-date this PR.
+
+Known issues / remaining work:
+  - Image click-to-zoom uses a fixed overlay (z-[9999]). If the app ever uses a native
+    fullscreen element (not document.documentElement), the fixed overlay will be relative
+    to the fullscreen container, which is correct behavior for in-fullscreen zoom.
+  - The zoom modal renders inline in RichContentRenderer's output fragment. If needed in
+    the future, a React portal could be used to ensure the modal is appended to document.body.
+  - Tailwind v4 arbitrary variant [&_img]:cursor-zoom-in is used for zoom-in cursor on images.
+    This is included in the compiled CSS when vite build runs (verified above).
+  - Remaining manual browser checklist (see below):
+      • Watch a video to a checkpoint timestamp → verify overlay appears
+      • Answer the checkpoint question → click Continue → verify video resumes at ~checkpoint time
+      • Click an image in a reading block → verify zoom modal opens
+      • Press Esc → verify modal closes
+      • Click backdrop → verify modal closes
+      • Collapse sidebar using sidebar header button → verify layout responds
+      • Expand sidebar using collapsed rail button → verify layout responds
+      • Confirm no second collapse button in the top bar (desktop only)
+      • Exit fullscreen while on video block → verify "Please return to fullscreen" overlay
+      • Re-enter fullscreen via F11 or OS controls → verify overlay dismisses automatically
+      • Check LiveMonitor "Security signals" cell shows fullscreen exit count
+
+Future-agent warning:
+  - checkpointResumeTimestampRef MUST be set when checkpoint opens and read when Continue is
+    clicked. Do not remove this ref without providing an equivalent mechanism.
+  - The "fullscreen_exit" rename is complete in the frontend. The server accepts both names.
+    Do not revert to "fullscreen_exited" in new frontend code.
+  - The duplicate top-bar collapse button MUST NOT be re-added. The sidebar owns its own
+    collapse control.
+```
