@@ -155,6 +155,7 @@ const DB_COLLECTIONS = [
   "gradebookEntries",
   "gradebookResponseEntries",
   "lessonDrafts",
+  "lessonVersions",
   "approvedTeachers",
 ] as const;
 
@@ -1158,6 +1159,169 @@ const requireTeacher = async (req: express.Request, res: express.Response, next:
   next();
 };
 
+// ==========================================
+// Course Ownership & Assignment Availability Helpers
+// ==========================================
+
+/**
+ * Returns true when userId may manage (read/write assignments for) a course.
+ * Checks both course.teacherId (single primary owner) and course.teacherIds (optional
+ * multi-teacher array), so either ownership form is honoured without breakage.
+ * SuperAdmins bypass ownership checks.
+ */
+function teacherCanManageCourse(userId: string, course: any, isSuperAdmin = false): boolean {
+  if (!course) return false;
+  if (isSuperAdmin) return true;
+  if (course.teacherId === userId) return true;
+  if (Array.isArray(course.teacherIds) && course.teacherIds.includes(userId)) return true;
+  return false;
+}
+
+/** Computed availability state for a single assignment at a given time. */
+type AssignmentAvailabilityState = 'not_open' | 'open' | 'due_passed' | 'closed' | 'unavailable';
+
+function getAssignmentAvailabilityState(asg: any, now: Date): AssignmentAvailabilityState {
+  if (!asg) return 'unavailable';
+  const opensAt  = asg.opensAt  ? new Date(asg.opensAt)  : null;
+  const dueAt    = asg.dueAt    ? new Date(asg.dueAt)    : null;
+  const closesAt = asg.closesAt ? new Date(asg.closesAt) : null;
+
+  if (opensAt  && now < opensAt)  return 'not_open';
+  if (closesAt && now > closesAt) return 'closed';
+  if (dueAt    && now > dueAt)    return 'due_passed';
+  return 'open';
+}
+
+/**
+ * Returns true when a student is enrolled in the assignment's course AND
+ * the assignment has opened (not_open → blocked).
+ */
+function canStudentViewAssignment(asg: any, studentId: string, db: any, now: Date): boolean {
+  if (!asg) return false;
+  const state = getAssignmentAvailabilityState(asg, now);
+  if (state === 'not_open') return false;
+  return (db.enrollments || []).some(
+    (e: any) => e.courseId === asg.courseId && e.studentId === studentId && e.status === 'active'
+  );
+}
+
+/**
+ * Returns {ok,error} for attempt creation eligibility (open + enrolled).
+ * Delegates to getAssignmentAvailabilityState for date logic.
+ */
+function canStudentStartAttemptWithDates(asg: any, studentId: string, db: any, now: Date): { ok: boolean; error?: string } {
+  if (!asg) return { ok: false, error: 'Assignment not found.' };
+  const state = getAssignmentAvailabilityState(asg, now);
+  if (state === 'not_open') return { ok: false, error: 'This lesson is not open yet.' };
+  if (state === 'closed')   return { ok: false, error: 'This assignment is closed. Ask your teacher for help.' };
+  const enrolled = (db.enrollments || []).some(
+    (e: any) => e.courseId === asg.courseId && e.studentId === studentId && e.status === 'active'
+  );
+  if (!enrolled) return { ok: false, error: 'You are not enrolled in the course for this assignment.' };
+  return { ok: true };
+}
+
+/**
+ * Returns {ok,error} for resuming an in-progress attempt.
+ * Closed assignments block resumption unless there is an existing completed attempt (review).
+ */
+function canStudentResumeAttempt(asg: any, attempt: any, studentId: string, now: Date): { ok: boolean; error?: string } {
+  if (attempt.studentId !== studentId) return { ok: false, error: 'Access denied.' };
+  if (!asg) return { ok: true }; // Legacy attempt with no assignment — allow resume
+  const state = getAssignmentAvailabilityState(asg, now);
+  if (state === 'not_open') return { ok: false, error: 'This assignment is not open yet.' };
+  if (state === 'closed')   return { ok: false, error: 'This assignment is closed. Ask your teacher for help.' };
+  return { ok: true };
+}
+
+// ==========================================
+// Lesson Version Snapshot Helpers
+// ==========================================
+
+/**
+ * Creates an immutable LessonVersion snapshot from the current lesson metadata + blocks.
+ * Returns the new version object (already pushed into db.lessonVersions).
+ * MUST be called within a commitDb write cycle.
+ * Idempotent by checksum: if content is identical to the latest version, returns existing.
+ */
+function createLessonVersionSnapshot(
+  lesson: any,
+  blocks: any[],
+  createdBy: string,
+  db: any,
+  publishNotes?: string
+): any {
+  if (!db.lessonVersions) db.lessonVersions = [];
+
+  const sortedBlocks = [...blocks].sort((a: any, b: any) => a.order - b.order);
+  const checksum = simpleHash(JSON.stringify({
+    title: lesson.title,
+    description: lesson.description,
+    settings: lesson.settings,
+    blocks: sortedBlocks,
+  }));
+
+  // Check for an existing published version with the same checksum (idempotent re-publish)
+  const existing = db.lessonVersions.find(
+    (v: any) => v.lessonId === lesson.id && v.status === 'published' && v.checksum === checksum
+  );
+  if (existing) {
+    return existing;
+  }
+
+  // Increment version number
+  const existingForLesson = db.lessonVersions.filter((v: any) => v.lessonId === lesson.id);
+  const maxVersion = existingForLesson.reduce((max: number, v: any) => Math.max(max, v.versionNumber || 0), 0);
+  const versionNumber = maxVersion + 1;
+
+  const newVersion: any = {
+    id: 'lv_' + Math.random().toString(36).substring(2, 9),
+    lessonId: lesson.id,
+    versionNumber,
+    title: lesson.title,
+    description: lesson.description,
+    blocksSnapshot: JSON.parse(JSON.stringify(sortedBlocks)), // deep copy
+    settings: JSON.parse(JSON.stringify(lesson.settings)),
+    createdBy,
+    createdAt: new Date().toISOString(),
+    sourceLessonUpdatedAt: lesson.updatedAt || new Date().toISOString(),
+    publishNotes: publishNotes || undefined,
+    status: 'published',
+    checksum,
+  };
+
+  db.lessonVersions.push(newVersion);
+  return newVersion;
+}
+
+/**
+ * Find a block and question in a version's blocksSnapshot.
+ * Returns { block, rawOriginal } or null if not found.
+ */
+function resolveQuestionFromVersion(
+  version: any,
+  blockId: string,
+  checkpointId: string | undefined,
+  questionId: string
+): { block: any; rawOriginal: any } | null {
+  if (!version || !Array.isArray(version.blocksSnapshot)) return null;
+  const block = version.blocksSnapshot.find((b: any) => b.id === blockId);
+  if (!block) return null;
+
+  let rawOriginal: any = null;
+  if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+    const cp = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+    if (cp) rawOriginal = (cp.questions || []).find((q: any) => q.id === questionId);
+  } else {
+    rawOriginal =
+      block.singleQuestion ||
+      (block.questionPool && block.questionPool.questions.find((q: any) => q.id === questionId));
+  }
+
+  if (!rawOriginal) return null;
+  return { block, rawOriginal };
+}
+
 // Multer Storage Configuration for academic video uploads using Memory Storage for Firebase Storage direct stream
 const uploadStorage = multer.memoryStorage();
 
@@ -1434,20 +1598,29 @@ app.get("/api/lessons", requireAuth, (req, res) => {
   if (user.role === "student") {
     // Students only see lessons that are assigned to a course they are actively enrolled in.
     // "Published" means available for teachers to assign — it does NOT grant global student visibility.
+    // Additionally, only show lessons where at least one assignment has OPENED (opensAt <= now).
+    // Upcoming-only lessons are not shown (no content before open date).
+    const now = new Date();
     const activeEnrollments = (db.enrollments || []).filter(
       (e: any) => e.studentId === user.id && e.status === "active"
     );
     const enrolledCourseIds = new Set(activeEnrollments.map((e: any) => e.courseId));
 
-    // Collect the lesson IDs that have at least one assignment pointing to an enrolled course.
-    const assignedLessonIds = new Set(
+    // Collect lesson IDs where at least one assignment for the student has opened or is open.
+    // Upcoming assignments (not_open) do not make the lesson visible.
+    const openAssignedLessonIds = new Set(
       (db.lessonAssignments || [])
-        .filter((asg: any) => enrolledCourseIds.has(asg.courseId))
+        .filter((asg: any) => {
+          if (!enrolledCourseIds.has(asg.courseId)) return false;
+          const state = getAssignmentAvailabilityState(asg, now);
+          // Include open, due_passed, closed (already opened). Exclude not_open (upcoming).
+          return state !== 'not_open' && state !== 'unavailable';
+        })
         .map((asg: any) => asg.lessonId)
     );
 
     targetLessons = db.lessons.filter(
-      (l: any) => l.isPublished && assignedLessonIds.has(l.id)
+      (l: any) => l.isPublished && openAssignedLessonIds.has(l.id)
     );
   } else {
     // Teachers see all their lessons regardless of publish status.
@@ -1479,24 +1652,44 @@ app.get("/api/lessons/:id", requireAuth, (req, res) => {
   }
 
   if (user.role === "student") {
-    // Students must have an active assignment connecting this lesson to a course they are enrolled in.
+    // Students must have an active assignment connecting this lesson to a course they are enrolled in,
+    // AND that assignment must have opened (opensAt <= now). Upcoming assignments don't grant access.
     // Return 404 regardless of the real reason to avoid leaking whether the lesson exists.
     if (!lesson.isPublished) {
       res.status(404).json({ error: "Lesson not found." });
       return;
     }
 
+    const now = new Date();
     const activeEnrollments = (db.enrollments || []).filter(
       (e: any) => e.studentId === user.id && e.status === "active"
     );
     const enrolledCourseIds = new Set(activeEnrollments.map((e: any) => e.courseId));
 
-    const hasAssignment = (db.lessonAssignments || []).some(
+    const studentAssignments = (db.lessonAssignments || []).filter(
       (asg: any) => asg.lessonId === id && enrolledCourseIds.has(asg.courseId)
     );
 
-    if (!hasAssignment) {
+    if (studentAssignments.length === 0) {
       res.status(404).json({ error: "Lesson not found." });
+      return;
+    }
+
+    // Check that at least one assignment has opened (not_open = upcoming → blocked)
+    const hasOpenedAssignment = studentAssignments.some((asg: any) => {
+      const state = getAssignmentAvailabilityState(asg, now);
+      return state !== 'not_open' && state !== 'unavailable';
+    });
+
+    if (!hasOpenedAssignment) {
+      // All assignments are upcoming — don't expose lesson content
+      const earliestOpen = studentAssignments
+        .filter((asg: any) => asg.opensAt)
+        .sort((a: any, b: any) => new Date(a.opensAt).getTime() - new Date(b.opensAt).getTime())[0];
+      const openDateMsg = earliestOpen
+        ? ` It will be available on ${new Date(earliestOpen.opensAt).toLocaleDateString()}.`
+        : '';
+      res.status(403).json({ error: `This lesson is not open yet.${openDateMsg}`, code: 'NOT_OPEN' });
       return;
     }
   }
@@ -1577,6 +1770,20 @@ app.post("/api/lessons", requireTeacher, async (req, res) => {
       });
     }
 
+    // If publishing for the first time, create an immutable version snapshot.
+    if (willPublish) {
+      const savedBlocks = db.blocks.filter((b: any) => b.lessonId === newLesson.id);
+      const user = (req as any).user;
+      const version = createLessonVersionSnapshot(newLesson, savedBlocks, user.id, db);
+      const lessonIdx = db.lessons.findIndex((l: any) => l.id === newLesson.id);
+      if (lessonIdx !== -1) {
+        db.lessons[lessonIdx].currentPublishedVersionId = version.id;
+        db.lessons[lessonIdx].publishedVersionCount = (db.lessonVersions || []).filter(
+          (v: any) => v.lessonId === newLesson.id && v.status === 'published'
+        ).length;
+      }
+    }
+
     await commitDb(db);
     const savedBlocks = db.blocks.filter((b: any) => b.lessonId === newLesson.id);
     res.status(201).json({ success: true, lesson: newLesson, blocks: savedBlocks });
@@ -1646,12 +1853,124 @@ app.put("/api/lessons/:id", requireTeacher, async (req, res) => {
       });
     }
 
+    // When publishing (isPublished set to true), create an immutable version snapshot.
+    // Idempotent: if content hasn't changed, reuses the existing version (checksum match).
+    if (willPublish) {
+      const user = (req as any).user;
+      const updatedBlocksForVersion = db.blocks.filter((b: any) => b.lessonId === id);
+      const version = createLessonVersionSnapshot(db.lessons[lessonIdx], updatedBlocksForVersion, user.id, db);
+      db.lessons[lessonIdx].currentPublishedVersionId = version.id;
+      db.lessons[lessonIdx].publishedVersionCount = (db.lessonVersions || []).filter(
+        (v: any) => v.lessonId === id && v.status === 'published'
+      ).length;
+    }
+
     await commitDb(db);
     const updatedBlocks = db.blocks.filter((b: any) => b.lessonId === id);
     res.json({ success: true, lesson: db.lessons[lessonIdx], blocks: updatedBlocks });
   } catch (err) {
     sendAppError(res, err);
   }
+});
+
+// Teacher: Explicitly publish a lesson — always creates a new version snapshot.
+// Use this when you want to force a new version even if content hasn't changed.
+app.post("/api/lessons/:id/publish", requireTeacher, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { publishNotes } = req.body;
+    const user = (req as any).user;
+    const db = readDb();
+
+    const lessonIdx = db.lessons.findIndex((l: any) => l.id === id);
+    if (lessonIdx === -1) {
+      fail(res, "NOT_FOUND", "Lesson not found.");
+      return;
+    }
+
+    const lesson = db.lessons[lessonIdx];
+    const blocks = db.blocks.filter((b: any) => b.lessonId === id);
+
+    // Validate readiness before creating a version
+    try {
+      validateLessonBlocks(blocks);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || "Lesson has validation errors. Fix them before publishing." });
+      return;
+    }
+
+    // Force a new version (bypass checksum idempotency by clearing any cached checksum match)
+    if (!db.lessonVersions) db.lessonVersions = [];
+    const sortedBlocks = [...blocks].sort((a: any, b: any) => a.order - b.order);
+
+    const existingVersions = db.lessonVersions.filter((v: any) => v.lessonId === id);
+    const maxVersion = existingVersions.reduce((max: number, v: any) => Math.max(max, v.versionNumber || 0), 0);
+    const versionNumber = maxVersion + 1;
+    const checksum = simpleHash(JSON.stringify({
+      title: lesson.title, description: lesson.description, settings: lesson.settings, blocks: sortedBlocks,
+    }));
+
+    const newVersion: any = {
+      id: 'lv_' + Math.random().toString(36).substring(2, 9),
+      lessonId: id,
+      versionNumber,
+      title: lesson.title,
+      description: lesson.description,
+      blocksSnapshot: JSON.parse(JSON.stringify(sortedBlocks)),
+      settings: JSON.parse(JSON.stringify(lesson.settings)),
+      createdBy: user.id,
+      createdAt: new Date().toISOString(),
+      sourceLessonUpdatedAt: lesson.updatedAt || new Date().toISOString(),
+      publishNotes: publishNotes || undefined,
+      status: 'published',
+      checksum,
+    };
+
+    db.lessonVersions.push(newVersion);
+
+    db.lessons[lessonIdx] = {
+      ...lesson,
+      isPublished: true,
+      currentPublishedVersionId: newVersion.id,
+      publishedVersionCount: (db.lessonVersions || []).filter(
+        (v: any) => v.lessonId === id && v.status === 'published'
+      ).length,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await commitDb(db);
+    res.json({ success: true, lesson: db.lessons[lessonIdx], version: newVersion });
+  } catch (err) {
+    sendAppError(res, err);
+  }
+});
+
+// Teacher: List all version snapshots for a lesson
+app.get("/api/lessons/:id/versions", requireTeacher, (req, res) => {
+  const { id } = req.params;
+  const db = readDb();
+
+  const lesson = db.lessons.find((l: any) => l.id === id);
+  if (!lesson) {
+    res.status(404).json({ error: "Lesson not found." });
+    return;
+  }
+
+  const versions = (db.lessonVersions || [])
+    .filter((v: any) => v.lessonId === id)
+    .sort((a: any, b: any) => a.versionNumber - b.versionNumber)
+    .map((v: any) => ({
+      id: v.id,
+      versionNumber: v.versionNumber,
+      title: v.title,
+      createdBy: v.createdBy,
+      createdAt: v.createdAt,
+      publishNotes: v.publishNotes,
+      status: v.status,
+      blockCount: Array.isArray(v.blocksSnapshot) ? v.blocksSnapshot.length : 0,
+    }));
+
+  res.json({ versions });
 });
 
 // Teacher: Duplicate a lesson
@@ -2359,8 +2678,8 @@ app.post("/api/assignments", requireTeacher, async (req, res) => {
       return;
     }
 
-    // Validate teacher owns or has access to this course
-    if (course.teacherId !== user.id && !user.isSuperAdmin) {
+    // Validate teacher owns or has access to this course (supports single teacherId OR teacherIds array)
+    if (!teacherCanManageCourse(user.id, course, !!user.isSuperAdmin)) {
       res.status(403).json({ error: "You do not have access to this course." });
       return;
     }
@@ -2382,12 +2701,30 @@ app.post("/api/assignments", requireTeacher, async (req, res) => {
       return;
     }
 
+    // Bind the assignment to the current published version (immutable after creation).
+    // If no version exists yet (legacy lesson published before versioning), create one now.
+    let lessonVersionId: string | null = lesson.currentPublishedVersionId || null;
+    if (!lessonVersionId) {
+      const blocks = db.blocks.filter((b: any) => b.lessonId === lessonId);
+      const version = createLessonVersionSnapshot(lesson, blocks, user.id, db);
+      lessonVersionId = version.id;
+      const lessonIdx2 = db.lessons.findIndex((l: any) => l.id === lessonId);
+      if (lessonIdx2 !== -1) {
+        db.lessons[lessonIdx2].currentPublishedVersionId = lessonVersionId;
+        db.lessons[lessonIdx2].publishedVersionCount = (db.lessonVersions || []).filter(
+          (v: any) => v.lessonId === lessonId && v.status === 'published'
+        ).length;
+      }
+    }
+
     const now = new Date().toISOString();
     const compiledPolicy = compileIntegrityPolicy(integrityPolicy || { preset: "open" });
 
     const newAssignment: any = {
       id: "asg_" + Math.random().toString(36).substring(2, 9),
       lessonId,
+      lessonVersionId,
+      teacherId: user.id,
       courseId,
       section: section || "",
       opensAt,
@@ -2698,6 +3035,8 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
     let resolvedLessonId: string = lessonId;
     let resolvedAssignmentId: string | null = null;
 
+    const nowDate = new Date();
+
     if (user.role === "student") {
       const lessonAssignments = db.lessonAssignments || [];
 
@@ -2707,22 +3046,10 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
           fail(res, "NOT_FOUND", "Assignment not found.");
           return;
         }
-        if (asg.opensAt && asg.opensAt > nowIso) {
-          fail(res, "FORBIDDEN", "This assignment has not opened yet.");
-          return;
-        }
-        if (asg.closesAt && asg.closesAt < nowIso) {
-          fail(res, "FORBIDDEN", "This assignment is no longer accepting submissions.");
-          return;
-        }
-
-        // Enrollment check: student must be enrolled in the course for this assignment.
-        // This applies regardless of whether the course appears in the courses collection.
-        const enrolled = (db.enrollments || []).some(
-          (e: any) => e.courseId === asg.courseId && e.studentId === user.id && e.status === "active"
-        );
-        if (!enrolled) {
-          fail(res, "FORBIDDEN", "You are not enrolled in the course for this assignment.");
+        // Use centralized helper for date + enrollment check
+        const eligibility = canStudentStartAttemptWithDates(asg, user.id, db, nowDate);
+        if (!eligibility.ok) {
+          fail(res, "FORBIDDEN", eligibility.error || "You cannot start this assignment.");
           return;
         }
 
@@ -2733,21 +3060,17 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
         // Enrollment is still required — there is no unknown-course bypass.
         const openAsg = lessonAssignments.find((a: any) => {
           if (a.lessonId !== (lessonId || resolvedLessonId)) return false;
-          if (a.opensAt && a.opensAt > nowIso) return false;
-          if (a.closesAt && a.closesAt < nowIso) return false;
-          return true;
+          const state = getAssignmentAvailabilityState(a, nowDate);
+          return state === 'open' || state === 'due_passed';
         });
         if (!openAsg) {
           fail(res, "FORBIDDEN", "No open assignment found for this lesson. Begin from your assignment dashboard.");
           return;
         }
 
-        // Enrollment check for the legacy path: student must be enrolled in the assignment's course.
-        const enrolled = (db.enrollments || []).some(
-          (e: any) => e.courseId === openAsg.courseId && e.studentId === user.id && e.status === "active"
-        );
-        if (!enrolled) {
-          fail(res, "FORBIDDEN", "You are not enrolled in the course for this assignment.");
+        const legacyEligibility = canStudentStartAttemptWithDates(openAsg, user.id, db, nowDate);
+        if (!legacyEligibility.ok) {
+          fail(res, "FORBIDDEN", legacyEligibility.error || "You cannot start this assignment.");
           return;
         }
 
@@ -2786,11 +3109,42 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
       return;
     }
 
+    // Resolve the LessonVersion for this attempt.
+    // Use the assignment's pinned lessonVersionId so grading is version-stable.
+    let resolvedVersionId: string | null = null;
+    let versionBlocks: any[] | null = null;
+
+    if (resolvedAssignmentId) {
+      const resolvedAsg = (db.lessonAssignments || []).find((a: any) => a.id === resolvedAssignmentId);
+      if (resolvedAsg?.lessonVersionId) {
+        const ver = (db.lessonVersions || []).find((v: any) => v.id === resolvedAsg.lessonVersionId);
+        if (ver && Array.isArray(ver.blocksSnapshot)) {
+          resolvedVersionId = ver.id;
+          versionBlocks = ver.blocksSnapshot;
+        } else {
+          console.warn(`VERITAS Learn - Assignment ${resolvedAssignmentId} references version ${resolvedAsg.lessonVersionId} which was not found. Falling back to db.blocks.`);
+        }
+      } else if (resolvedAsg) {
+        // Assignment exists but has no version — create a legacy snapshot now for forward compat
+        const liveBlocks = db.blocks.filter((b: any) => b.lessonId === resolvedLessonId);
+        const ver = createLessonVersionSnapshot(lesson, liveBlocks, lesson.courseId || 'system', db, 'Auto-created legacy snapshot at attempt start');
+        resolvedVersionId = ver.id;
+        versionBlocks = ver.blocksSnapshot;
+        // Back-fill the assignment's lessonVersionId
+        const asgIdx = (db.lessonAssignments || []).findIndex((a: any) => a.id === resolvedAssignmentId);
+        if (asgIdx !== -1) {
+          db.lessonAssignments[asgIdx].lessonVersionId = ver.id;
+        }
+        console.log(`VERITAS Learn - Created legacy version snapshot ${ver.id} (v${ver.versionNumber}) for assignment ${resolvedAssignmentId}.`);
+      }
+    }
+
     const seed = Math.floor(Math.random() * 900000) + 100000;
-    const newAttempt = {
+    const newAttempt: any = {
       id: "attempt_" + Math.random().toString(36).substring(2, 9),
       lessonId: resolvedLessonId,
       assignmentId: resolvedAssignmentId,
+      lessonVersionId: resolvedVersionId,
       studentId: user.id,
       seed,
       startedAt: nowIso,
@@ -2804,9 +3158,12 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
     db.attempts.push(newAttempt);
 
     // Generate and lock deterministic, sanitized question assignments.
+    // Use the version's blocksSnapshot (immutable) when available; fall back to db.blocks.
     const randFn = lcg(seed);
     const randomize = !!lesson.settings.randomizeChoices;
-    const lessonBlocks = db.blocks.filter((b: any) => b.lessonId === resolvedLessonId);
+    const lessonBlocks = versionBlocks
+      ? versionBlocks
+      : db.blocks.filter((b: any) => b.lessonId === resolvedLessonId);
 
     lessonBlocks.forEach((block: any) => {
       if (block.type === "question") {
@@ -3236,21 +3593,43 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       return;
     }
 
-    const block = db.blocks.find((b: any) => b.id === blockId);
-    if (!block) {
-      fail(res, "NOT_FOUND", "Block not found.");
-      return;
-    }
-
+    // Resolve the block and question from the version snapshot (immutable, grading-stable).
+    // Fall back to db.blocks only for legacy attempts that predate versioning.
+    let block: any = null;
     let checkpoint: any = null;
     let rawOriginal: any = null;
-    if (checkpointId && Array.isArray(block.videoCheckpoints)) {
-      checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
-      if (checkpoint) rawOriginal = (checkpoint.questions || []).find((q: any) => q.id === questionId);
-    } else {
-      rawOriginal =
-        block.singleQuestion ||
-        (block.questionPool && block.questionPool.questions.find((q: any) => q.id === questionId));
+
+    if (attempt.lessonVersionId) {
+      const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
+      const resolved = resolveQuestionFromVersion(version, blockId, checkpointId, questionId);
+      if (resolved) {
+        block = resolved.block;
+        rawOriginal = resolved.rawOriginal;
+        // Re-derive checkpoint for isPractice / questionType fields
+        if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+          checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+        }
+      } else {
+        console.warn(`VERITAS Learn - Question ${questionId} not found in version ${attempt.lessonVersionId} for attempt ${id}. Falling back to db.blocks.`);
+      }
+    }
+
+    // Fallback: use db.blocks (legacy attempts or version not found)
+    if (!block) {
+      block = db.blocks.find((b: any) => b.id === blockId);
+      if (!block) {
+        fail(res, "NOT_FOUND", "Block not found.");
+        return;
+      }
+
+      if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+        checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+        if (checkpoint) rawOriginal = (checkpoint.questions || []).find((q: any) => q.id === questionId);
+      } else {
+        rawOriginal =
+          block.singleQuestion ||
+          (block.questionPool && block.questionPool.questions.find((q: any) => q.id === questionId));
+      }
     }
 
     if (!rawOriginal) {
