@@ -233,6 +233,88 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     }
   };
 
+  const flushVideoProgress = async (customTimestamp?: number) => {
+    const video = videoRef.current;
+    const block = blocks[currentBlockIndex];
+    if (!block || block.type !== "video") return;
+
+    const duration = block.duration ?? block.videoDuration ?? 0;
+    let timestampToSend = video ? Math.floor(video.currentTime) : 0;
+    
+    if (customTimestamp !== undefined) {
+      timestampToSend = customTimestamp;
+    } else if (video) {
+      if ((video.ended || video.currentTime >= duration - 1) && duration > 0) {
+        timestampToSend = Math.floor(duration);
+      }
+    }
+
+    try {
+      const authHeader = await getAuthHeader();
+      const resp = await fetch(`/api/attempts/${attemptId}/progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify({
+          blockId: block.id,
+          timestamp: timestampToSend,
+          activeTime: activeTimeRef.current,
+          inactiveTime: inactiveTimeRef.current,
+          playbackRate: currentSpeed,
+        }),
+      });
+      
+      const data = await resp.json();
+      activeTimeRef.current = 0;
+      inactiveTimeRef.current = 0;
+
+      if (data.success && data.furthestMaxTimestamp !== undefined) {
+        setFurthestMaxTimestamp(data.furthestMaxTimestamp);
+        setAttemptData((prev: any) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            furthestVideoTimestamps: {
+              ...(prev.furthestVideoTimestamps || {}),
+              [block.id]: data.furthestMaxTimestamp
+            }
+          };
+        });
+      }
+
+      if (data.lockState === null && isTeacherLockedRef.current) {
+        setIsTeacherLocked(false);
+        isTeacherLockedRef.current = false;
+        const requireFullscreenOpt = attemptData?.lesson?.settings?.requireFullscreen ?? true;
+        if (requireFullscreenOpt) requestFullscreen();
+      } else if (data.lockState === "locked_awaiting_teacher" && !isTeacherLockedRef.current) {
+        setIsTeacherLocked(true);
+        isTeacherLockedRef.current = true;
+      }
+    } catch (e) {
+      console.error("Failed to flush video progress:", e);
+    }
+  };
+
+  const handleVideoEnded = async () => {
+    const block = blocks[currentBlockIndex];
+    if (!block || block.type !== "video") return;
+    const duration = block.duration ?? block.videoDuration ?? 0;
+    if (duration > 0) {
+      setFurthestMaxTimestamp(duration);
+      setAttemptData((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          furthestVideoTimestamps: {
+            ...(prev.furthestVideoTimestamps || {}),
+            [block.id]: duration
+          }
+        };
+      });
+      await flushVideoProgress(Math.floor(duration));
+    }
+  };
+
   // Integrity event listeners
   useEffect(() => {
     if (loading || !attemptData) return;
@@ -394,33 +476,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     }, 1000);
 
     const syncInterval = setInterval(() => {
-      getAuthHeader().then((authHeader) => {
-        fetch(`/api/attempts/${attemptId}/progress`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeader },
-          body: JSON.stringify({
-            blockId: blocks[currentBlockIndex]?.id,
-            timestamp: videoRef.current ? Math.floor(videoRef.current.currentTime) : 0,
-            activeTime: activeTimeRef.current,
-            inactiveTime: inactiveTimeRef.current,
-            playbackRate: currentSpeed,
-          }),
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            activeTimeRef.current = 0;
-            inactiveTimeRef.current = 0;
-            if (data.lockState === null && isTeacherLockedRef.current) {
-              setIsTeacherLocked(false);
-              isTeacherLockedRef.current = false;
-              if (requireFullscreenOpt) requestFullscreen();
-            } else if (data.lockState === "locked_awaiting_teacher" && !isTeacherLockedRef.current) {
-              setIsTeacherLocked(true);
-              isTeacherLockedRef.current = true;
-            }
-          })
-          .catch(() => {});
-      });
+      flushVideoProgress();
     }, 10000);
 
     return () => {
@@ -455,6 +511,24 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     const block = blocks[currentBlockIndex];
     const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
     const currentTime = video.currentTime;
+    const duration = block.duration ?? block.videoDuration ?? 0;
+
+    // Check near-ended tolerance
+    if (duration > 0 && currentTime >= duration - 1) {
+      if (furthestMaxTimestamp < duration) {
+        setFurthestMaxTimestamp(duration);
+        setAttemptData((prev: any) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            furthestVideoTimestamps: {
+              ...(prev.furthestVideoTimestamps || {}),
+              [block.id]: duration
+            }
+          };
+        });
+      }
+    }
 
     if (restrictSeeking) {
       const allowedGap = 3;
@@ -814,14 +888,6 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       if (anyUnsubmitted) return "Submit your response to continue.";
     }
     if (activeBlock.type === "video") {
-      const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
-      const duration = activeBlock.duration ?? activeBlock.videoDuration;
-      if (restrictSeeking && duration) {
-        const requiredSeconds = duration * 0.9;
-        if (furthestMaxTimestamp < requiredSeconds) {
-          return "video_incomplete";
-        }
-      }
       if (activeBlock.videoCheckpoints && activeBlock.videoCheckpoints.length > 0) {
         const anyCpIncomplete = activeBlock.videoCheckpoints.some((cp: any) => {
           if (cp.isRequired) {
@@ -831,7 +897,17 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           return false;
         });
         if (anyCpIncomplete) {
-          return "Answer all required checkpoint questions to continue.";
+          return "Answer all checkpoint questions to continue.";
+        }
+      }
+
+      const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
+      const duration = activeBlock.duration ?? activeBlock.videoDuration;
+      if (restrictSeeking && duration) {
+        const requiredSeconds = duration * 0.9;
+        const isEndedLocally = videoRef.current && (videoRef.current.ended || videoRef.current.currentTime >= duration - 1);
+        if (furthestMaxTimestamp < requiredSeconds && !isEndedLocally) {
+          return "Finish the video to continue.";
         }
       }
     }
@@ -870,8 +946,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const duration = block.duration ?? block.videoDuration;
       if (restrictSeeking && duration) {
         const requiredSeconds = duration * 0.9;
+        const isEndedLocally = idx === currentBlockIndex && videoRef.current && (videoRef.current.ended || videoRef.current.currentTime >= duration - 1);
         const furthestWatch = (attemptData?.furthestVideoTimestamps?.[block.id]) || (idx === currentBlockIndex ? furthestMaxTimestamp : 0);
-        if (furthestWatch < requiredSeconds) {
+        if (furthestWatch < requiredSeconds && !isEndedLocally) {
           isThisBlockComplete = false;
         }
       }
@@ -906,8 +983,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         const duration = precBlock.duration ?? precBlock.videoDuration;
         if (restrictSeeking && duration) {
           const requiredSeconds = duration * 0.9;
+          const isEndedLocally = i === currentBlockIndex && videoRef.current && (videoRef.current.ended || videoRef.current.currentTime >= duration - 1);
           const furthestWatch = (attemptData?.furthestVideoTimestamps?.[precBlock.id]) || (i === currentBlockIndex ? furthestMaxTimestamp : 0);
-          if (furthestWatch < requiredSeconds) {
+          if (furthestWatch < requiredSeconds && !isEndedLocally) {
             precComplete = false;
           }
         }
@@ -1360,6 +1438,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   onContextMenu={(e) => e.preventDefault()}
                   onPlay={handleVideoPlay}
                   onTimeUpdate={handleVideoTimeUpdate}
+                  onEnded={handleVideoEnded}
                   onRateChange={() => {
                     if (videoRef.current) {
                       setCurrentSpeed(videoRef.current.playbackRate);
@@ -1766,22 +1845,32 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                 </button>
 
                 <div className="flex flex-col items-end gap-1">
-                  {nextBlockedReason && nextBlockedReason !== "video_incomplete" && (
-                    <p className="text-[11px] text-slate-500 text-right max-w-[200px]">{nextBlockedReason}</p>
+                  {nextBlockedReason && (
+                    <p className="text-[11px] text-amber-600 text-right max-w-[200px] font-medium">{nextBlockedReason}</p>
                   )}
 
                   {!isLastBlock ? (
                     <button
-                      onClick={() => {
-                        if (nextBlockedReason === "video_incomplete") {
-                          setNavigationError("You must finish watching the video before proceeding.");
+                      onClick={async () => {
+                        const reasonBefore = getNextBlockedReason();
+                        if (reasonBefore) {
+                          setNavigationError(reasonBefore);
                           return;
                         }
-                        handleBlockNavigation(currentBlockIndex + 1);
+                        if (activeBlock?.type === "video") {
+                          setNavigationError("Saving your video progress. Try again in a moment.");
+                          await flushVideoProgress();
+                          setNavigationError(null);
+                        }
+                        const reasonAfter = getNextBlockedReason();
+                        if (reasonAfter) {
+                          setNavigationError(reasonAfter);
+                          return;
+                        }
+                        await handleBlockNavigation(currentBlockIndex + 1);
                       }}
-                      disabled={isNavigating || (!!nextBlockedReason && nextBlockedReason !== "video_incomplete")}
-                      title={nextBlockedReason === "video_incomplete" ? undefined : (nextBlockedReason || undefined)}
-                      className="flex items-center gap-1.5 text-sm font-bold text-white bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-5 py-2 rounded-lg transition"
+                      disabled={isNavigating}
+                      className="flex items-center gap-1.5 text-sm font-bold text-white bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-5 py-2 rounded-lg transition cursor-pointer"
                     >
                       {isNavigating ? (
                         <>
@@ -1795,15 +1884,26 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                     </button>
                   ) : (
                     <button
-                      onClick={() => {
-                        if (nextBlockedReason === "video_incomplete") {
-                          setNavigationError("You must finish watching the video before proceeding.");
+                      onClick={async () => {
+                        const reasonBefore = getNextBlockedReason();
+                        if (reasonBefore) {
+                          setNavigationError(reasonBefore);
+                          return;
+                        }
+                        if (activeBlock?.type === "video") {
+                          setNavigationError("Saving your video progress. Try again in a moment.");
+                          await flushVideoProgress();
+                          setNavigationError(null);
+                        }
+                        const reasonAfter = getNextBlockedReason();
+                        if (reasonAfter) {
+                          setNavigationError(reasonAfter);
                           return;
                         }
                         handleCompleteLessonAttempt();
                       }}
-                      disabled={!!nextBlockedReason && nextBlockedReason !== "video_incomplete"}
-                      className="flex items-center gap-2 text-sm font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2 rounded-lg transition"
+                      disabled={isNavigating}
+                      className="flex items-center gap-2 text-sm font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2 rounded-lg transition cursor-pointer"
                     >
                       <Flag className="w-4 h-4" /> Submit assignment
                     </button>

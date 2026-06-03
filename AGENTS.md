@@ -3031,3 +3031,108 @@ FILES CHANGED:
 VERIFICATION:
 - `npm run lint`: PASS (100% clean)
 - `npm run build`: PASS (Production build built successfully)
+
+---
+
+### Step 34: Robust Teacher Question State & Data-Loss Corrective Alignment
+
+Date: 2026-06-02
+Agent: Google AI Studio Coding Agent
+Task: Fix teacher question state/data-loss bugs in the Lessons Builder. Ensure that when adding new multiple-choice questions or checkpoints, switching question types, or adding options/choices, existing fields or rich-text values are never lost, duplicated, or reset.
+
+FILES CHANGED:
+- `src/components/TeacherDashboard/QuestionEditor.tsx`:
+  - Extended component interface to accept `lessonId`, `blockId`, and `checkpointId` props to track hierarchical context identity.
+  - Revamped the `documentKey` property construction for all `RichContentEditor` instances (Prompt/Stem, Student Instructions, Choice Options, Model Answers, Explanations, AI Grading Guidance, Rubric category descriptions, and Teacher Notes). By prefixing each key with its parental hierarchy (e.g. `${lessonPart}${blockPart}${cpPart}`), Lexical editor caches can never collide, get cross-copied, or blank out.
+- `src/components/TeacherDashboard/AIReview.tsx`:
+  - Assigned a stable, user-specific `documentKey={`review-notes-${res.id}`}` to the custom grade override RichContentEditor.
+- `src/components/TeacherDashboard/LessonsBuilder.tsx`:
+  - Modified `ensureQuestionForBlock` and `ensureQuestionForCheckpoint` to execute clean, deep-cloned immutable normalization. Generated robust, stable unique IDs for modern question blocks and checkpoint entries.
+  - Refactored `convertQuestionType` converter to fully deep-clone the incoming question payload, preserving stems, points, stable choice items, and rubric descriptors securely without mutating parental objects.
+  - Destructured `selectedLessonId` inside `BlockEditor` props.
+  - Propagated positional indicators (`lessonId`, `blockId`, `checkpointId`) to child `QuestionEditor` instances so child key namespaces are fully insulated.
+  - Set the reading block `RichContentEditor` `documentKey` to a stable positional string (`${selectedLessonId}_${block.id}_reading`).
+  - Switched the question block type selector `onChange` handler to call `onBlockMultipleChanges` atomically to prevent asynchronous React race conditions.
+
+VERIFICATION:
+- `npm run lint`: PASS (TypeScript tsc --noEmit: 0 warnings, 0 errors)
+- `npm run build`: PASS (Production compilation succeeded flawlessly)
+
+---
+
+### Step 35: Standardized and Hardened AI Rubric Generation and Auto-Repair
+
+Date: 2026-06-03
+Agent: Google AI Studio Coding Agent
+Task: Resolve "AI returned invalid JSON" failures during short-answer question rubric generation and revision by implementing structured Gemini schema configurations, tolerant fallback parsing, automated single-shot correction/repair, and safe UI state management that preserves existing teacher edits.
+
+FILES CHANGED:
+- `server.ts`:
+  - Implemented `getRubricResponseSchema()` which generates strict Google GenAI JSON structures for schema validation.
+  - Developed a highly tolerant `cleanAndParseJson()` fallback function that extracts markdown-fenced json blocks, isolates balanced braces/brackets from prose prefixes, and repairs common trailing comma issues.
+  - Formulated a robust, single-shot `generateRubricWithSchemaAndRetry()` action. It first attempts schema-enforced generation, catches malformed output, triggers a structured single-shot JSON repair retry, validates essential fields (`modelAnswer`, `aiScoringGuidance`, `rubricCategories`), and preserves points through automated normalization.
+  - Transitioned the endpoints `/api/ai/generate-short-answer-rubric` and `/api/ai/revise-rubric` to use the hardened retry engine.
+- `src/components/TeacherDashboard/QuestionEditor.tsx`:
+  - Enhanced the `AiStatus` type definition with a dedicated `"repairing"` phase.
+  - Implemented dynamic UI timer triggers inside `generateRubric` and `reviseRubric` that transition status loaders to `"Repairing AI output…"` after 4.5 seconds of execution.
+  - Updated action buttons to disable interaction during `"generating"` and `"repairing"`.
+  - Added safe error catches that display friendly, precise messaging under the authoring controls without clearing any manually typed question details or properties.
+- `scripts/verify-hardening.ts` (new):
+  - Penned a comprehensive unit and validation suite confirming that clean objects, fenced blocks, prose-surrounded text, trailing-comma values, and schema omissions are perfectly processed and caught.
+
+VERIFICATION:
+- `npm run lint`: PASS (100% clean)
+- `npm run build`: PASS (Production build succeeded)
+- `npx tsx scripts/verify-hardening.ts`: PASS (JSON repair and schema validations fully verified)
+- `npx tsx scripts/verify-slice.ts`: PASS (20 slice assertions passed, 0 failures)
+- `npx tsx scripts/verify-workflow.ts`: PASS (61 workflow assertions passed, 0 failures)
+
+---
+
+### Step 36: Teacher-Controlled Image Resizing and Alignment in Rich Content
+
+Date: 2026-06-03
+Agent: Google AI Studio Coding Agent
+Task: Implement interactive image resizing, horizontal alignment alignment (left, center, right), alt-text accessibility modification, and clean, persistent serialization in rich text editor content.
+
+FILES CHANGED:
+- `/src/components/RichContent/ImageNode.tsx`:
+  - Upgraded Lexical custom `ImageNode` to manage serializing, deserializing, formatting, and rendering of layout attributes (`width`, `height`, `alignment`, `alt`).
+  - Added property modification getters/setters (`getAlignment()`, `setAlignment()`, `getWidth()`, `setWidth()`, `getAlt()`, `setAlt()`).
+  - Embedded an interactive float-docked formatting overlay (`useLexicalComposerContext` listener integration) visible in group-hover state of fully editable rich components. Includes sizing steps scaling multipliers, absolute layout alignment selections, alt text editor model context, and responsive resets.
+  - Hardened legacy inputs fallback defaulting unaligned formats safely to `'center'`.
+  - Configured custom `exportDOM()` mapping the serializing `ImageNode` inside an aligned `<p style="text-align: left|center|right">` block which safely survives HTML output parsing and HTML DOMPurify sanitizer.
+  - Implemented multi-level parent tag traversal inside `convertImageElement()` DOM import decoder to properly reconstruct alignment state upon reloading formatted html posts.
+- `/package.json`:
+  - Registered helper validator script shortcut entry `"verify:image"`.
+- `/scripts/verify-image-formatting.ts` (new):
+  - Created a robust verification script testing proper node initialization, property mutation, default center fallback, serialization/deserialization integrity, paragraph-wrapping export forms, DOMPurify retention, and backwards compatibility.
+
+VERIFICATION:
+- `npm run lint`: PASS (100% clean)
+- `npm run build`: PASS (Production build succeeded)
+- `npx tsx scripts/verify-image-formatting.ts`: PASS (7 criteria cleanly verified)
+- `npx tsx scripts/verify-slice.ts`: PASS (20 slice assertions passed, 0 failures)
+- `npx tsx scripts/verify-workflow.ts`: PASS (61 workflow assertions passed, 0 failures)
+
+---
+
+### Step 37: Student Video Checkpoint Progression Bug Fix
+
+Date: 2026-06-03
+Agent: Google AI Studio Coding Agent
+Task: Fix student progression block where video blocks containing required checkpoints would prevent forward navigation after completion.
+
+FILES CHANGED:
+- `/src/components/StudentPortal/FocusedPlayer.tsx`:
+  - Implemented an `onEnded` event listener on the standard `<video>` tag that marks the current video block complete locally immediately and flushes the final progress state to the server.
+  - Developed a unified `flushVideoProgress` helper function to synchronize video timestamp checkpoints to the backend instantly (removing raw timed interval overhead and duplicate polling logic).
+  - Configured a near-ended tolerance threshold (1-second boundary window) within `handleVideoTimeUpdate` and status trackers to treat near-finished video playbacks as finished.
+  - Refined error reporting and user messages: replaced ambiguous completion blocks with custom active messages ("Saving your video progress. Try again in a moment." and "Finish the video to continue.").
+  - Restructured the "Next" / "Submit assignment" button action handlers to execute a secure pre-navigation progress flush, verifying actual block complete indices securely.
+
+VERIFICATION:
+- `npm run lint`: PASS (No runtime source errors)
+- `npm run build`: PASS (Vite bundles successfully, esbuild completes, standalone development servers boot)
+
+

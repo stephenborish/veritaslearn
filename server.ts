@@ -916,11 +916,13 @@ function parseAiGradingJson(rawText: string): any {
     return JSON.parse(text);
   } catch (e) {}
 
-  // try extracting markdown JSON fences anywhere in the string
+  // Try extracting markdown JSON fences anywhere in the string
   const innerFenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   if (innerFenceMatch) {
     try {
-      return JSON.parse(innerFenceMatch[1].trim());
+      const content = innerFenceMatch[1].trim();
+      const cleaned = content.replace(/,\s*([}\]])/g, "$1");
+      return JSON.parse(cleaned);
     } catch (e) {}
   }
 
@@ -929,7 +931,9 @@ function parseAiGradingJson(rawText: string): any {
   const lastBrace = text.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
     try {
-      return JSON.parse(text.substring(firstBrace, lastBrace + 1));
+      const content = text.substring(firstBrace, lastBrace + 1);
+      const cleaned = content.replace(/,\s*([}\]])/g, "$1");
+      return JSON.parse(cleaned);
     } catch (e) {}
   }
 
@@ -938,9 +942,17 @@ function parseAiGradingJson(rawText: string): any {
   const lastBracket = text.lastIndexOf(']');
   if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
     try {
-      return JSON.parse(text.substring(firstBracket, lastBracket + 1));
+      const content = text.substring(firstBracket, lastBracket + 1);
+      const cleaned = content.replace(/,\s*([}\]])/g, "$1");
+      return JSON.parse(cleaned);
     } catch (e) {}
   }
+
+  // Final try: strip trailing commas in the raw string
+  try {
+    const cleaned = text.replace(/,\s*([}\]])/g, "$1");
+    return JSON.parse(cleaned);
+  } catch (e) {}
 
   return JSON.parse(rawText);
 }
@@ -4027,6 +4039,212 @@ function buildRubricRevisionPrompt(input: {
     .join("\n");
 }
 
+function validateRubricFields(parsed: any): void {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("AI output is not a valid JSON object.");
+  }
+  if (typeof parsed.modelAnswer !== "string" || parsed.modelAnswer.trim().length === 0) {
+    throw new Error("Missing or empty field: 'modelAnswer'");
+  }
+  if (typeof parsed.aiScoringGuidance !== "string" || parsed.aiScoringGuidance.trim().length === 0) {
+    throw new Error("Missing or empty field: 'aiScoringGuidance'");
+  }
+  if (!Array.isArray(parsed.rubricCategories) || parsed.rubricCategories.length === 0) {
+    throw new Error("Missing or empty array: 'rubricCategories'");
+  }
+
+  parsed.rubricCategories.forEach((cat: any, i: number) => {
+    if (!cat || typeof cat !== "object") {
+      throw new Error(`Rubric category at index ${i} is not a valid object.`);
+    }
+    if (typeof cat.name !== "string" || cat.name.trim().length === 0) {
+      throw new Error(`Rubric category at index ${i} is missing 'name'`);
+    }
+    if (cat.maxPoints === undefined || cat.maxPoints === null) {
+      throw new Error(`Rubric category '${cat.name || i}' is missing 'maxPoints'`);
+    }
+    const maxPts = Number(cat.maxPoints);
+    if (!Number.isFinite(maxPts) || maxPts < 1) {
+      throw new Error(`Rubric category '${cat.name || i}' has invalid 'maxPoints' (${cat.maxPoints})`);
+    }
+    if (typeof cat.description !== "string" || cat.description.trim().length === 0) {
+      throw new Error(`Rubric category '${cat.name || i}' is missing 'description'`);
+    }
+    if (typeof cat.fullCreditExample !== "string" || cat.fullCreditExample.trim().length === 0) {
+      throw new Error(`Rubric category '${cat.name || i}' is missing 'fullCreditExample'`);
+    }
+    if (typeof cat.partialCreditExample !== "string" || cat.partialCreditExample.trim().length === 0) {
+      throw new Error(`Rubric category '${cat.name || i}' is missing 'partialCreditExample'`);
+    }
+    if (typeof cat.noCreditExample !== "string" || cat.noCreditExample.trim().length === 0) {
+      throw new Error(`Rubric category '${cat.name || i}' is missing 'noCreditExample'`);
+    }
+  });
+}
+
+function getRubricResponseSchema() {
+  return {
+    type: Type.OBJECT,
+    properties: {
+      modelAnswer: {
+        type: Type.STRING,
+        description: "A complete, correct, scientific, and student-ready exemplary response that would earn 100% full credit.",
+      },
+      aiScoringGuidance: {
+        type: Type.STRING,
+        description: "Teacher and AI-facing key points, constraints, and edge cases to look for when grading.",
+      },
+      rubricCategories: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.OBJECT,
+          properties: {
+            name: {
+              type: Type.STRING,
+              description: "The name of this metric or dimension (e.g., 'Claim', 'Evidence').",
+            },
+            maxPoints: {
+              type: Type.INTEGER,
+              description: "Positive integer representing maximum points allocated for this category.",
+            },
+            description: {
+              type: Type.STRING,
+              description: "Specific academic standard and details of how to earn these points.",
+            },
+            fullCreditExample: {
+              type: Type.STRING,
+              description: "A concrete example of a high-quality student response that gets full credit in this category.",
+            },
+            partialCreditExample: {
+              type: Type.STRING,
+              description: "A concrete example of a flawed student response that gets partial credit in this category.",
+            },
+            noCreditExample: {
+              type: Type.STRING,
+              description: "A concrete example of a poor student response that earns 0 points in this category.",
+            },
+          },
+          required: [
+            "name",
+            "maxPoints",
+            "description",
+            "fullCreditExample",
+            "partialCreditExample",
+            "noCreditExample"
+          ],
+        },
+        description: "The set of specific grading dimensions composing the rubric.",
+      },
+      commonMisconceptions: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.STRING,
+        },
+        description: "2 to 5 specific, concrete student errors or misconceptions on this topic.",
+      },
+      studentFeedbackStyle: {
+        type: Type.STRING,
+        description: "Guidance on how feedback should be phrased for students without giving the answer away.",
+      },
+    },
+    required: [
+      "modelAnswer",
+      "aiScoringGuidance",
+      "rubricCategories",
+      "commonMisconceptions",
+      "studentFeedbackStyle"
+    ],
+  };
+}
+
+function buildJsonRepairPrompt(originalResponse: string, errorMsg: string): string {
+  return [
+    `You are a strict data-cleaning assistant.`,
+    `The user attempted to parse the previous AI generation as a JSON object matching a specific rubric schema, but the parse or validation failed.`,
+    ``,
+    `PREVIOUS RAW AI OUTPUT:`,
+    `---`,
+    originalResponse,
+    `---`,
+    ``,
+    `ERROR ENCOUNTERED during parse/validation:`,
+    `"${errorMsg}"`,
+    ``,
+    `YOUR TASK:`,
+    `Convert or repair the previous raw output into a strictly valid JSON object.`,
+    `Do not add commentary, footnotes, or formatting fences other than standard JSON format.`,
+    `Ensure the returned fields strictly adhere to the requested schema. Ensure point values are positive integers.`,
+    `If essential fields are missing from the raw input, synthesize reasonable values that align with the context of the question.`
+  ].join("\n");
+}
+
+async function generateRubricWithSchemaAndRetry(
+  prompt: string,
+  points: number,
+  systemInstruction: string,
+  isRevision: boolean = false
+): Promise<{ result: any; warnings: string[] }> {
+  const model = process.env.AI_GRADING_MODEL || "gemini-3.5-flash";
+  const ai = getAI();
+  const schema = getRubricResponseSchema();
+
+  let lastRawText = "";
+  let lastError: any = null;
+
+  // Try 1
+  try {
+    const aiResponse = await ai.models.generateContent({
+      model,
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: schema,
+      },
+    });
+
+    lastRawText = (aiResponse.text || "").trim();
+    const parsed = parseAiGradingJson(lastRawText);
+    validateRubricFields(parsed);
+    return normalizeGeneratedRubric(parsed, points);
+  } catch (err: any) {
+    lastError = err;
+    console.warn("VERITAS Learn - First rubric generation try failed. Attempting JSON repair retry...", err);
+  }
+
+  // Try 2 (JSON-repair)
+  try {
+    const repairPrompt = buildJsonRepairPrompt(
+      lastRawText || (lastError && lastError.message) || "No previous output available.",
+      lastError ? lastError.message : "Unknown verification or structure error"
+    );
+
+    const repairSystemInstruction = isRevision
+      ? "You are a strict JSON data-repair assistant. Based on the teacher's revision instruction, correct and rebuild the rubric JSON to conform 100% to the requested schema."
+      : "You are a strict JSON data-repair assistant. Correct and rebuild the rubric JSON to conform 100% to the requested schema.";
+
+    const aiResponse = await ai.models.generateContent({
+      model,
+      contents: repairPrompt,
+      config: {
+        systemInstruction: repairSystemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: schema,
+      },
+    });
+
+    const repairRawText = (aiResponse.text || "").trim();
+    const parsed = parseAiGradingJson(repairRawText);
+    validateRubricFields(parsed);
+    return normalizeGeneratedRubric(parsed, points);
+  } catch (repairErr: any) {
+    console.error("VERITAS Learn - Rubric generation AND repair failed:", repairErr);
+    throw new Error(
+      `AI rubric generation failed after repair effort. Reason: ${repairErr.message || "Invalid JSON structure parsed."}`
+    );
+  }
+}
+
 function normalizeGeneratedRubric(
   parsed: any,
   requestedPoints: number
@@ -4142,34 +4360,22 @@ app.post("/api/ai/generate-short-answer-rubric", requireTeacher, async (req, res
       existingTeacherNotes: existingTeacherNotes ? String(existingTeacherNotes).trim() : undefined,
     });
 
-    const ai = getAI();
-    const aiResponse = await ai.models.generateContent({
-      model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        systemInstruction:
-          "You are an expert academic rubric designer. Output strictly valid JSON only. No markdown fences, no commentary. Produce rubrics that are specific, practical, and classroom-ready.",
-        responseMimeType: "application/json",
-      },
-    });
+    const systemInstruction = 
+      "You are an expert academic rubric designer. Output strictly valid JSON only conforming to the response schema. No markdown fences, no commentary. Produce rubrics that are specific, practical, and classroom-ready.";
 
-    const rawText = (aiResponse.text || "").trim();
-    let parsed: any;
-    try {
-      parsed = parseAiGradingJson(rawText);
-    } catch {
-      res.status(502).json({
-        error: "AI returned invalid JSON. Please retry.",
-        rawPreview: rawText.substring(0, 300),
-      });
-      return;
-    }
+    const { result, warnings } = await generateRubricWithSchemaAndRetry(
+      prompt,
+      Math.round(pointsNum),
+      systemInstruction,
+      false
+    );
 
-    const { result, warnings } = normalizeGeneratedRubric(parsed, Math.round(pointsNum));
     res.json({ ...result, ...(warnings.length > 0 ? { warnings } : {}) });
-  } catch (err) {
+  } catch (err: any) {
     console.error("VERITAS Learn - Rubric generation error:", err);
-    sendAppError(res, err);
+    res.status(502).json({
+      error: err.message || "Rubric generation failed after repair effort."
+    });
   }
 });
 
@@ -4216,34 +4422,22 @@ app.post("/api/ai/revise-rubric", requireTeacher, async (req, res) => {
       desiredDifficulty: desiredDifficulty ? String(desiredDifficulty).trim() : undefined,
     });
 
-    const ai = getAI();
-    const aiResponse = await ai.models.generateContent({
-      model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
-      contents: prompt,
-      config: {
-        systemInstruction:
-          "You are an expert academic rubric designer. Apply the teacher's revision instruction faithfully. Output strictly valid JSON only. No markdown fences, no commentary.",
-        responseMimeType: "application/json",
-      },
-    });
+    const systemInstruction =
+      "You are an expert academic rubric designer. Apply the teacher's revision instruction faithfully. Output strictly valid JSON only conforming to the response schema. No markdown fences, no commentary.";
 
-    const rawText = (aiResponse.text || "").trim();
-    let parsed: any;
-    try {
-      parsed = parseAiGradingJson(rawText);
-    } catch {
-      res.status(502).json({
-        error: "AI returned invalid JSON. Please retry.",
-        rawPreview: rawText.substring(0, 300),
-      });
-      return;
-    }
+    const { result, warnings } = await generateRubricWithSchemaAndRetry(
+      prompt,
+      Math.round(pointsNum),
+      systemInstruction,
+      true
+    );
 
-    const { result, warnings } = normalizeGeneratedRubric(parsed, Math.round(pointsNum));
     res.json({ ...result, ...(warnings.length > 0 ? { warnings } : {}) });
-  } catch (err) {
+  } catch (err: any) {
     console.error("VERITAS Learn - Rubric revision error:", err);
-    sendAppError(res, err);
+    res.status(502).json({
+      error: err.message || "Rubric revision failed after repair effort."
+    });
   }
 });
 

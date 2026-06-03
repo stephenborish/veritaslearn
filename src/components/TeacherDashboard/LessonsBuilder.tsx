@@ -124,7 +124,24 @@ export default function LessonsBuilder({
 
   const ensureQuestionForBlock = (block: any): any => {
     if (block.type !== "question") return block;
-    if (block.singleQuestion && block.singleQuestion.id) return block;
+    if (block.singleQuestion) {
+      const q = block.singleQuestion;
+      const normalizedQ = {
+        ...q,
+        id: q.id || uid("q"),
+        choices: Array.isArray(q.choices)
+          ? q.choices.map((c: any) => ({ ...c, id: c.id || uid("choice"), text: c.text ?? "" }))
+          : [],
+        rubricCategories: Array.isArray(q.rubricCategories)
+          ? q.rubricCategories.map((r: any) => ({ ...r, id: r.id || uid("rub") }))
+          : []
+      };
+      return {
+        ...block,
+        questionType: block.questionType || normalizedQ.type || "mc",
+        singleQuestion: normalizedQ
+      };
+    }
     return {
       ...block,
       questionType: block.questionType || "mc",
@@ -134,7 +151,24 @@ export default function LessonsBuilder({
 
   const ensureQuestionForCheckpoint = (cp: any): any => {
     const questions = cp.questions || [];
-    if (questions[0] && questions[0].id) return cp;
+    if (questions[0]) {
+      const q = questions[0];
+      const normalizedQ = {
+        ...q,
+        id: q.id || uid("q"),
+        choices: Array.isArray(q.choices)
+          ? q.choices.map((c: any) => ({ ...c, id: c.id || uid("choice"), text: c.text ?? "" }))
+          : [],
+        rubricCategories: Array.isArray(q.rubricCategories)
+          ? q.rubricCategories.map((r: any) => ({ ...r, id: r.id || uid("rub") }))
+          : []
+      };
+      return {
+        ...cp,
+        questionType: cp.questionType || normalizedQ.type || "mc",
+        questions: [normalizedQ, ...questions.slice(1)]
+      };
+    }
     return {
       ...cp,
       questionType: cp.questionType || "mc",
@@ -151,7 +185,7 @@ export default function LessonsBuilder({
       return out;
     });
 
-  // Type-safe question type converter — preserves id, stem, points
+  // Type-safe question type converter — preserves id, stem, points and nested data
   const convertQuestionType = (existing: any, nextType: "mc" | "sa"): any => {
     const q = existing || {};
     const base = {
@@ -168,6 +202,12 @@ export default function LessonsBuilder({
           { id: uid("choice"), text: "" },
           { id: uid("choice"), text: "" },
         ];
+      } else {
+        choices = choices.map((c: any) => ({
+          ...c,
+          id: c.id || uid("choice"),
+          text: c.text ?? ""
+        }));
       }
       const correctChoiceId = q.correctChoiceId || (choices[0] && choices[0].id) || "";
       return { ...base, choices, correctChoiceId, explanation: q.explanation ?? "" };
@@ -177,7 +217,9 @@ export default function LessonsBuilder({
         modelAnswer: q.modelAnswer ?? "",
         aiScoringGuidance: q.aiScoringGuidance ?? "",
         teacherNotes: q.teacherNotes ?? "",
-        rubricCategories: q.rubricCategories ?? [],
+        rubricCategories: Array.isArray(q.rubricCategories)
+          ? q.rubricCategories.map((r: any) => ({ ...r, id: r.id || uid("rub") }))
+          : [],
         studentInstructions: q.studentInstructions ?? ""
       };
     }
@@ -2028,7 +2070,21 @@ interface BlockEditorProps {
   lessonTitle?: string;
 }
 
-function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMultipleChanges, addCheckpoint, updateCheckpoint, updateCheckpointQuestion, deleteCheckpoint, convertQuestionType, newQuestionTemplate, lessonTitle }: BlockEditorProps) {
+function BlockEditor({
+  block,
+  index,
+  restrictSeeking,
+  onBlockChange,
+  onBlockMultipleChanges,
+  addCheckpoint,
+  updateCheckpoint,
+  updateCheckpointQuestion,
+  deleteCheckpoint,
+  convertQuestionType,
+  newQuestionTemplate,
+  selectedLessonId,
+  lessonTitle
+}: BlockEditorProps) {
   const typeLabel = block.type === "video" ? "Video" : block.type === "reading" ? "Reading Passage" : "Question";
 
   return (
@@ -2200,6 +2256,9 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                       graded={!cp.isPractice}
                       onChange={(uq) => updateCheckpointQuestion(index, cp.id, uq)}
                       lessonContext={{ lessonTitle, blockTitle: block.title }}
+                      lessonId={selectedLessonId}
+                      blockId={block.id}
+                      checkpointId={cp.id}
                     />
                   ) : (
                     <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
@@ -2220,6 +2279,7 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
               value={block.content || ""}
               onChange={(val: any) => onBlockChange(index, "content", val)}
               mode="full"
+              documentKey={(selectedLessonId ? `${selectedLessonId}_` : "") + `${block.id}_reading`}
             />
           </div>
         )}
@@ -2235,8 +2295,10 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                   onChange={(e) => {
                     const t = e.target.value as "mc" | "sa";
                     const converted = convertQuestionType(block.singleQuestion, t);
-                    onBlockChange(index, "questionType", t);
-                    onBlockChange(index, "singleQuestion", converted);
+                    onBlockMultipleChanges(index, {
+                      questionType: t,
+                      singleQuestion: converted
+                    });
                   }}
                   className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-slate-800 focus:outline-none"
                 >
@@ -2282,6 +2344,8 @@ function BlockEditor({ block, index, restrictSeeking, onBlockChange, onBlockMult
                 graded={!block.isPractice}
                 onChange={(uq) => onBlockChange(index, "singleQuestion", uq)}
                 lessonContext={{ lessonTitle, blockTitle: block.title }}
+                lessonId={selectedLessonId}
+                blockId={block.id}
               />
             ) : (
               <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">

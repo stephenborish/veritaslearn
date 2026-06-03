@@ -316,6 +316,7 @@ export default function AIReview({ students, lessons, blocks, attempts, response
                             onChange={(val) => setOverrideNotes({ ...overrideNotes, [res.id]: val.html })}
                             mode="inline"
                             placeholder="Reason for change..."
+                            documentKey={`review-notes-${res.id}`}
                           />
                         </div>
                       </div>

@@ -125,11 +125,23 @@ interface QuestionEditorProps {
   graded: boolean;
   onChange: (q: AnyQuestion) => void;
   lessonContext?: LessonContext;
+  lessonId?: string;
+  blockId?: string;
+  checkpointId?: string;
 }
 
-type AiStatus = "idle" | "generating" | "error";
+type AiStatus = "idle" | "generating" | "repairing" | "error";
 
-export default function QuestionEditor({ question, type, graded, onChange, lessonContext }: QuestionEditorProps) {
+export default function QuestionEditor({
+  question,
+  type,
+  graded,
+  onChange,
+  lessonContext,
+  lessonId,
+  blockId,
+  checkpointId,
+}: QuestionEditorProps) {
   const [showPreview, setShowPreview] = useState(false);
   const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
   const [aiError, setAiError] = useState<string | null>(null);
@@ -140,6 +152,11 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
 
   const q = question || {};
   const patch = (partial: any) => onChange({ ...q, ...partial });
+
+  const lessonPart = lessonId ? `${lessonId}_` : "";
+  const blockPart = blockId ? `${blockId}_` : "";
+  const cpPart = checkpointId ? `${checkpointId}_` : "";
+  const qIdStr = q.id || "new";
 
   // ---- MC choice helpers ----
   const choices: any[] = Array.isArray(q.choices) ? q.choices : [];
@@ -207,6 +224,10 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
     setAiStatus("generating");
     setAiError(null);
 
+    const timer = setTimeout(() => {
+      setAiStatus("repairing");
+    }, 4500);
+
     try {
       const token = await getToken();
       if (!token) {
@@ -245,6 +266,8 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
     } catch (err: any) {
       setAiStatus("error");
       setAiError(err.message || "Generation failed. Please try again.");
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -269,6 +292,10 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
 
     setAiStatus("generating");
     setAiError(null);
+
+    const timer = setTimeout(() => {
+      setAiStatus("repairing");
+    }, 4500);
 
     try {
       const token = await getToken();
@@ -306,6 +333,8 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
     } catch (err: any) {
       setAiStatus("error");
       setAiError(err.message || "Revision failed. Please try again.");
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -329,7 +358,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
             onChange={(val) => patch({ stem: val })}
             mode="compact"
             placeholder="Enter the question students will see..."
-            documentKey={`qstem-${q.id || "new"}`}
+            documentKey={`${lessonPart}${blockPart}${cpPart}qstem-${qIdStr}`}
           />
         </div>
 
@@ -341,7 +370,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
               onChange={(val) => patch({ studentInstructions: val })}
               mode="compact"
               placeholder="e.g. Respond in 3–5 complete sentences."
-              documentKey={`qinst-${q.id || "new"}`}
+              documentKey={`${lessonPart}${blockPart}${cpPart}qinst-${qIdStr}`}
             />
           </div>
         )}
@@ -492,7 +521,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
                         allowMath={true}
                         allowChemistry={true}
                         placeholder={`Choice ${CHOICE_LETTERS[idx] ?? idx + 1} — supports bold, subscript, images, math…`}
-                        documentKey={`choice-${c.id}`}
+                        documentKey={`${lessonPart}${blockPart}${cpPart}choice-${c.id}`}
                       />
                     ) : (
                       <input
@@ -522,7 +551,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
               onChange={(val) => { patch({ modelAnswer: val }); setAiDraftActive(false); }}
               mode="compact"
               placeholder="A strong, full-credit answer."
-              documentKey={`qmodel-${q.id || "new"}`}
+              documentKey={`${lessonPart}${blockPart}${cpPart}qmodel-${qIdStr}`}
             />
           </div>
         )}
@@ -544,7 +573,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
               onChange={(val) => patch({ explanation: val })}
               mode="compact"
               placeholder="Why is the correct answer correct? Shown as practice feedback if enabled."
-              documentKey={`qexp-${q.id || "new"}`}
+              documentKey={`${lessonPart}${blockPart}${cpPart}qexp-${qIdStr}`}
             />
           </div>
         )}
@@ -562,12 +591,14 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
-                  disabled={aiStatus === "generating"}
+                  disabled={aiStatus === "generating" || aiStatus === "repairing"}
                   onClick={generateRubric}
                   className="flex items-center gap-1 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
                 >
                   {aiStatus === "generating" && !showRevise ? (
                     <><RotateCcw className="w-3 h-3 animate-spin" /> Generating…</>
+                  ) : aiStatus === "repairing" && !showRevise ? (
+                    <><RotateCcw className="w-3 h-3 animate-spin" /> Repairing AI output…</>
                   ) : (
                     <><Wand2 className="w-3 h-3" /> Generate ideal answer + rubric</>
                   )}
@@ -575,7 +606,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
 
                 <button
                   type="button"
-                  disabled={aiStatus === "generating"}
+                  disabled={aiStatus === "generating" || aiStatus === "repairing"}
                   onClick={() => { setShowRevise((v) => !v); setAiError(null); }}
                   className="flex items-center gap-1 bg-white hover:bg-violet-50 disabled:opacity-50 border border-violet-300 text-violet-700 px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
                 >
@@ -596,12 +627,14 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
                   <div className="flex gap-1.5">
                     <button
                       type="button"
-                      disabled={aiStatus === "generating" || !revisionInstruction.trim()}
+                      disabled={aiStatus === "generating" || aiStatus === "repairing" || !revisionInstruction.trim()}
                       onClick={reviseRubric}
                       className="flex items-center gap-1 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 text-white px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider transition"
                     >
                       {aiStatus === "generating" && showRevise ? (
                         <><RotateCcw className="w-3 h-3 animate-spin" /> Applying…</>
+                      ) : aiStatus === "repairing" && showRevise ? (
+                        <><RotateCcw className="w-3 h-3 animate-spin" /> Repairing AI output…</>
                       ) : (
                         <>Apply revision</>
                       )}
@@ -618,7 +651,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
               )}
 
               {/* AI draft review banner */}
-              {aiDraftActive && aiStatus !== "generating" && (
+              {aiDraftActive && aiStatus !== "generating" && aiStatus !== "repairing" && (
                 <div className="flex items-start gap-2 bg-violet-100 border border-violet-300 rounded px-2.5 py-1.5 text-[10px] text-violet-800">
                   <Wand2 className="w-3 h-3 mt-0.5 shrink-0" />
                   <span className="flex-1">
@@ -637,7 +670,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
               )}
 
               {/* AI warnings */}
-              {aiWarnings.length > 0 && aiStatus !== "generating" && (
+              {aiWarnings.length > 0 && aiStatus !== "generating" && aiStatus !== "repairing" && (
                 <div className="space-y-0.5">
                   {aiWarnings.map((w, i) => (
                     <div key={i} className="flex items-start gap-1.5 text-[10px] text-amber-700">
@@ -662,7 +695,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
                 onChange={(val) => { patch({ aiScoringGuidance: val }); setAiDraftActive(false); }}
                 mode="compact"
                 placeholder="Key points the AI grader should look for and how to weight them."
-                documentKey={`qscoring-${q.id || "new"}`}
+                documentKey={`${lessonPart}${blockPart}${cpPart}qscoring-${qIdStr}`}
               />
             </div>
 
@@ -705,7 +738,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
                       onChange={(val) => updateRubric(r.id, { description: val })}
                       mode="compact"
                       placeholder="What earns credit in this category?"
-                      documentKey={`qrub-${r.id}`}
+                      documentKey={`${lessonPart}${blockPart}${cpPart}qrub-${r.id}`}
                     />
                     <div className="grid grid-cols-1 gap-1">
                       <input type="text" value={textOf(r.fullCreditExample)} onChange={(e) => updateRubric(r.id, { fullCreditExample: e.target.value })} placeholder="Full-credit example (optional)" className={inputCls} />
@@ -729,7 +762,7 @@ export default function QuestionEditor({ question, type, graded, onChange, lesso
                 onChange={(val) => patch({ teacherNotes: val })}
                 mode="compact"
                 placeholder="Private notes for graders — not sent to AI or students."
-                documentKey={`qnotes-${q.id || "new"}`}
+                documentKey={`${lessonPart}${blockPart}${cpPart}qnotes-${qIdStr}`}
               />
             </div>
           </>
