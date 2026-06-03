@@ -42,6 +42,13 @@ const mc = read("src/components/StudentPortal/LearnMCQuestion.tsx");
 const sa = read("src/components/StudentPortal/LearnSAQuestion.tsx");
 const css = read("src/index.css");
 
+const checkpointOverlayStart = focusedPlayer.indexOf("{/* Checkpoint panel");
+const checkpointOverlayEnd = focusedPlayer.indexOf("{/* QUESTION BLOCK */", checkpointOverlayStart);
+const checkpointOverlay =
+  checkpointOverlayStart >= 0 && checkpointOverlayEnd > checkpointOverlayStart
+    ? focusedPlayer.slice(checkpointOverlayStart, checkpointOverlayEnd)
+    : "";
+
 // ============================================================================
 console.log("\n=== SECURITY: assessment responses never leak to students ===");
 
@@ -148,8 +155,15 @@ check(
   ),
 );
 check("no dark checkpoint/full-screen overlay color remains", !/#0A192F/i.test(focusedPlayer));
+check("checkpoint overlay source was found", checkpointOverlay.length > 0);
 check("checkpoint panel uses a bright surface", focusedPlayer.includes("bg-slate-50/95 backdrop-blur-sm"));
 check("checkpoint shows clear progress (Question X of Y)", focusedPlayer.includes("Question {step + 1} of {total}"));
+check("checkpoint overlay has no Practice Check header", !checkpointOverlay.includes("Practice Check"));
+check("checkpoint overlay has no Assessment Check header", !checkpointOverlay.includes("Assessment Check"));
+check(
+  "checkpoint overlay has no instruction paragraph above the card",
+  !checkpointOverlay.includes("Answer the check question to continue."),
+);
 check("checkpoint offers a Continue action", focusedPlayer.includes("Continue <ChevronRight"));
 
 // ============================================================================
