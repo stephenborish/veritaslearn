@@ -179,5 +179,14 @@ service cloud.firestore {
       allow read: if isTeacher();
       allow write: if isTeacher();
     }
+
+    // 15. Lesson Versions — teacher read only; system writes only via Admin SDK.
+    // Version snapshots contain teacher-only data (rubrics, correctChoiceId, model answers).
+    // Students access version content only through sanitized Express API routes.
+    // Versions must NEVER be mutated by client-side code — immutability is enforced here.
+    match /lessonVersions/{versionId} {
+      allow read: if isTeacher();
+      allow write: if false; // Only the Admin SDK (server) may write versions
+    }
   }
 }

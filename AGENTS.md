@@ -1582,6 +1582,184 @@ Current status:
 ```text
 Date: 2026-06-03
 Agent: Claude Code (Sonnet 4.6)
+Task: Immutable lesson versioning, assignment-date enforcement, multi-teacher ownership
+
+WHAT CHANGED:
+
+src/types.ts:
+  - Added LessonVersion interface: id, lessonId, versionNumber, title, description,
+    blocksSnapshot (deep copy including teacher-only data), settings, createdBy, createdAt,
+    sourceLessonUpdatedAt, publishNotes, status ('published'|'archived'), checksum.
+  - Updated Lesson: added currentPublishedVersionId?, publishedVersionCount?.
+  - Updated Course: added teacherIds?: string[] (multi-teacher support).
+  - Updated Assignment: added lessonVersionId?, teacherId?.
+  - Updated LessonAttempt: added lessonVersionId?: string | null.
+  - Updated DatabaseSchema: added lessonVersions?: LessonVersion[].
+
+server.ts (helper functions added):
+  - teacherCanManageCourse(userId, course, isSuperAdmin): checks both course.teacherId
+    and course.teacherIds[] for multi-teacher course ownership.
+  - getAssignmentAvailabilityState(asg, now): returns 'not_open'|'open'|'due_passed'|
+    'closed'|'unavailable' based on opensAt/closesAt date comparison.
+  - canStudentViewAssignment(asg, studentId, db, now): enrollment + state check.
+  - canStudentStartAttemptWithDates(asg, studentId, db, now): full eligibility including dates.
+  - canStudentResumeAttempt(asg, attempt, studentId, now): resume eligibility check.
+  - createLessonVersionSnapshot(lesson, blocks, createdBy, db, publishNotes?):
+      Deep-copies all blocks (including teacher-only fields) into a LessonVersion document.
+      Computes simpleHash(JSON.stringify({title,description,settings,blocks})) checksum.
+      Idempotent: if checksum matches latest version, returns existing version (no duplicate).
+      Only creates a new version when content has actually changed.
+  - resolveQuestionFromVersion(version, blockId, checkpointId, questionId):
+      Looks up a question from a version's blocksSnapshot (for grading).
+
+server.ts (endpoint changes):
+  - POST /api/lessons: creates version snapshot when willPublish === true.
+  - PUT /api/lessons/:id: creates version snapshot (checksum-guarded) when willPublish === true;
+    updates lesson.currentPublishedVersionId and publishedVersionCount.
+  - POST /api/lessons/:id/publish (new): force-creates a new version regardless of checksum;
+    validates blocks before creating.
+  - GET /api/lessons/:id/versions (new, teacher-only): returns version list with metadata
+    (no blocksSnapshot exposed to client — teacher-only metadata only).
+  - GET /api/lessons (student path): now filters using getAssignmentAvailabilityState — only
+    returns lessons with at least one assignment that is NOT 'not_open'. Upcoming-only lessons
+    are excluded from the student listing.
+  - GET /api/lessons/:id (student path): blocks access if ALL assignments are 'not_open';
+    returns 403 { error: "This lesson is not open yet.", code: 'NOT_OPEN', opensAt } with the
+    soonest upcoming open date.
+  - POST /api/assignments: replaces single-field course.teacherId check with
+    teacherCanManageCourse() (supports teacherIds[]); binds lessonVersionId to the assignment
+    (creates a retroactive snapshot if no version exists); stores teacherId on assignment.
+  - POST /api/attempts:
+      Uses canStudentStartAttemptWithDates() for eligibility (replaces manual date checks).
+      Resolves lessonVersionId from assignment; creates legacy snapshot for old assignments.
+      Stores lessonVersionId on new attempt object.
+      Uses version's blocksSnapshot for question assignment generation when available
+      (falls back to db.blocks for legacy attempts without a version).
+  - POST /api/attempts/:id/submit:
+      Resolves block and question from version snapshot via resolveQuestionFromVersion()
+      when attempt.lessonVersionId is set. Falls back to db.blocks for legacy attempts.
+      Warning logged when falling back to db.blocks for a version-aware attempt (degraded state).
+
+firestore.rules:
+  - Added rule for /lessonVersions/{versionId}:
+      allow read: if isTeacher();
+      allow write: if false;  // Only Admin SDK (server) may write versions
+  - Versions are immutable from the client side; all version creation/archival goes through
+    the Express API using the Admin SDK.
+
+scripts/verify-versioning.ts (new):
+  13-section test script covering:
+    1. Version creation (v1, blocksSnapshot content, teacher-only data preserved)
+    2. Idempotent publish (same checksum → reuse version, no duplicate)
+    3. New version on content change (v2 created, v1 unchanged)
+    4. Assignment binds lessonVersionId
+    5. Attempt binds lessonVersionId and resolves version blocks
+    6. Grading resolves from version (not mutable db.blocks)
+    7. Student payload sanitization of version snapshot
+    8. Legacy attempt backward compat (null lessonVersionId → db.blocks fallback)
+    9. Multi-teacher course ownership (teacherIds array support)
+    10. Assignment date enforcement (not_open/open/due_passed/closed)
+    11. GET /api/lessons student date filter
+    12. GET /api/lessons/:id student date gate
+    13. Firestore rules static analysis (lessonVersions rule)
+
+scripts/verify-api-only.ts (new):
+  5-section static analysis script confirming frontend (src/) makes no direct Firestore writes:
+    1. No setDoc/addDoc/updateDoc/deleteDoc/writeBatch/runTransaction calls in src/
+    2. 'db' (Firestore client) not imported in any frontend file
+    3. firebase/firestore imports in src/ are type-only or read-only
+    4. firebase.ts exports 'db' but no component imports it
+    5. Frontend uses /api routes for sensitive write operations
+
+package.json:
+  Added: "verify:versioning": "tsx scripts/verify-versioning.ts"
+  Added: "verify:api-only": "tsx scripts/verify-api-only.ts"
+
+LESSON VERSIONING MODEL:
+  Publishing a lesson creates an immutable LessonVersion snapshot (blocksSnapshot is a deep copy
+  of all blocks at publish time including teacher-only fields). The snapshot is never mutated.
+  Checksum-based idempotency prevents duplicate versions when LessonsBuilder auto-saves an
+  already-published lesson (which calls PUT with isPublished: true on every save).
+  Teacher edits after publishing update the mutable lesson and blocks, but do NOT retroactively
+  affect: (a) existing assignments (they keep their lessonVersionId), (b) in-progress attempts
+  (grading resolves from the version snapshot stored on the attempt), or (c) completed attempts.
+
+ASSIGNMENT-TO-VERSION RELATIONSHIP:
+  When a teacher creates an assignment, the server binds it to the lesson's current published
+  version (currentPublishedVersionId). If no version exists yet, a retroactive snapshot is
+  created. This ensures every assignment references a stable, immutable content snapshot.
+
+ATTEMPT-TO-VERSION RELATIONSHIP:
+  When a student starts an attempt, the server copies lessonVersionId from the assignment to
+  the attempt. Question selection (for pools) uses the version's blocksSnapshot. Grading
+  resolves questions from the version snapshot, not the mutable db.blocks.
+
+BACKWARD COMPATIBILITY:
+  Assignments and attempts created before versioning (no lessonVersionId) fall back to db.blocks
+  for both question selection and grading. A retroactive snapshot is created when such an
+  assignment is used to start a new attempt, backfilling lessonVersionId on the assignment.
+
+MULTI-TEACHER OWNERSHIP:
+  teacherCanManageCourse() checks course.teacherId (legacy single-teacher) AND course.teacherIds[]
+  (new multi-teacher array). Teachers in either field can manage the course's assignments.
+
+ASSIGNMENT DATE ENFORCEMENT:
+  GET /api/lessons (student): excludes lessons where all assignments are 'not_open' (future).
+  GET /api/lessons/:id (student): returns 403 with opensAt when all assignments are 'not_open'.
+  POST /api/attempts: uses canStudentStartAttemptWithDates() which enforces opensAt and closesAt.
+  Students cannot view or start assignments before the open date.
+
+FRONTEND API-ONLY PRINCIPLE (verified):
+  No src/ file imports 'db' from firebase.ts or calls any Firestore write function.
+  The only firebase/firestore import in src/ is Timestamp (type-only) in RichContent/types.ts.
+  All sensitive data operations (attempts, responses, gradebook) go through Express API routes.
+  Firestore rules act as the enforcement safety net for this architectural boundary.
+
+FIRESTORE EMULATOR:
+  This repo has no Firestore emulator test suite. Rules are verified statically via:
+    - verify-access-control.ts: parses firestore.rules text for expected patterns
+    - verify-versioning.ts: checks the lessonVersions rule
+  To run the emulator locally:
+    1. Install: npm install -g firebase-tools
+    2. Start emulator: firebase emulators:start --only firestore
+    3. Point the app at the emulator by setting FIRESTORE_EMULATOR_HOST=localhost:8080
+  Full emulator test coverage is a future work item (no automated emulator tests exist yet).
+
+Verification:
+  Commands run: npm run build; npm run verify:slice; npm run verify:hardening;
+                npm run verify:workflow; npm run verify:access-control;
+                npm run verify:versioning; npm run verify:api-only
+  Results: see separate verification run results below.
+
+Known issues / remaining work:
+  - Firestore emulator integration tests do not exist; rules are verified statically only.
+  - POST /api/lessons/:id/publish endpoint is new — the teacher UI (LessonsBuilder) already
+    calls PUT with willPublish=true, which handles versioning. The explicit /publish endpoint
+    is available for future UI use if a separate "Publish" vs "Save" flow is desired.
+  - Version archival (marking old versions as 'archived') is not yet implemented. Old versions
+    remain in status 'published'. Archival can be added when needed for storage management.
+  - GET /api/lessons/:id/versions returns version metadata without blocksSnapshot. A future
+    teacher-only endpoint could expose the full snapshot for version comparison/rollback.
+
+Future-agent warning:
+  - LessonVersion snapshots are IMMUTABLE. Never modify a lessonVersions document once created.
+    Server helpers enforce this (write: if false in firestore.rules; server only creates, never
+    updates versions). If content changes are needed, a new version must be created.
+  - Grading for version-aware attempts MUST resolve questions from attempt.lessonVersionId →
+    lessonVersions blocksSnapshot, NOT from db.blocks. Falling back to db.blocks for a
+    version-aware attempt is a degraded state that should be investigated and prevented.
+  - The checksum-based idempotency in createLessonVersionSnapshot() is critical: the
+    LessonsBuilder calls PUT /api/lessons/:id with isPublished:true on EVERY auto-save for
+    published lessons. Without the checksum guard, a new version would be created on every save.
+  - Do NOT expose blocksSnapshot (teacher-only content) to students through any API route.
+    The /api/lessons/:id/versions endpoint returns metadata only (no blocksSnapshot).
+  - teacherCanManageCourse() must be used for ALL course ownership checks. Never use a raw
+    course.teacherId === userId comparison — it would break multi-teacher courses.
+```
+
+```text
+Date: 2026-06-03
+Agent: Claude Code (Sonnet 4.6)
 Task: Assignment-aware access control hardening
 
 WHAT CHANGED:

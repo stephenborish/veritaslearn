@@ -32,6 +32,10 @@ export interface Lesson {
   createdAt: string;
   updatedAt?: string;
   settings: LessonSettings;
+  /** ID of the most recently created LessonVersion for this lesson. */
+  currentPublishedVersionId?: string;
+  /** Total number of published versions created for this lesson. */
+  publishedVersionCount?: number;
 }
 
 export interface LessonDraftPayload {
@@ -52,6 +56,35 @@ export interface LessonDraft {
   createdAt: string;
   updatedAt: string;
   status: "active" | "restored" | "discarded" | "published";
+}
+
+/**
+ * Immutable snapshot of a lesson at publish time.
+ * Once created, a LessonVersion must NOT be mutated.
+ * Assignments and attempts reference a specific versionId; grading resolves
+ * questions from the snapshot, not from the mutable working draft in db.blocks.
+ */
+export interface LessonVersion {
+  id: string;
+  lessonId: string;
+  versionNumber: number;
+  title: string;
+  description: string | RichContent;
+  /**
+   * Deep copy of all lesson blocks at publish time.
+   * Includes teacher-only data (correctChoiceId, rubricCategories, modelAnswer, etc.)
+   * needed for grading. Student-facing APIs MUST sanitize before delivery.
+   */
+  blocksSnapshot: LessonBlock[];
+  settings: LessonSettings;
+  createdBy: string;
+  createdAt: string;
+  /** lesson.updatedAt at the time the snapshot was taken */
+  sourceLessonUpdatedAt: string;
+  publishNotes?: string;
+  status: 'published' | 'archived';
+  /** Simple hash of title+description+blocks for idempotent publish detection. */
+  checksum?: string;
 }
 
 export type BlockType = 'video' | 'reading' | 'question';
@@ -136,6 +169,11 @@ export interface LessonAttempt {
   lessonId: string;
   /** The lesson assignment this attempt is tied to. Absent for legacy attempts created before assignment-awareness. */
   assignmentId?: string | null;
+  /**
+   * The LessonVersion snapshot this attempt is bound to. Grading resolves questions
+   * from this version, not from the mutable working draft. Absent for legacy attempts.
+   */
+  lessonVersionId?: string | null;
   studentId: string;
   seed: number;
   startedAt: string;
@@ -283,6 +321,11 @@ export interface Course {
   /** Display name of the course, e.g. "AP Biology" */
   name: string;
   teacherId: string;
+  /**
+   * Optional array of additional teacher user IDs who can manage this course.
+   * teacherCanManageCourse() checks both teacherId (primary) and teacherIds (additional).
+   */
+  teacherIds?: string[];
   /** Legacy freeform code field. New records use joinCode instead. */
   code?: string;
   /** Optional section/period label, e.g. "Period 3" */
@@ -338,7 +381,11 @@ export interface IntegrityPolicy {
 export interface Assignment {
   id: string;
   lessonId: string;
+  /** ID of the LessonVersion snapshot this assignment references. Immutable after creation. */
+  lessonVersionId?: string;
   courseId: string;
+  /** ID of the teacher who created this assignment. */
+  teacherId?: string;
   /** Deprecated freeform section label; new records should use the course's sectionName */
   section?: string;
   opensAt: string;
@@ -441,4 +488,9 @@ export interface DatabaseSchema {
   gradebookEntries?: GradebookEntry[];
   gradebookResponseEntries?: GradebookResponseEntry[];
   lessonDrafts?: LessonDraft[];
+  /**
+   * Immutable lesson version snapshots created at publish time.
+   * Never mutated after creation. Assignments and attempts reference a versionId.
+   */
+  lessonVersions?: LessonVersion[];
 }
