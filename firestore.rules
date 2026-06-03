@@ -41,22 +41,27 @@ service cloud.firestore {
       allow delete: if isTeacher();
     }
 
-    // 2. Courses collection — teachers read/write, students cannot access directly
+    // 2. Courses collection — teachers read/write only.
+    // Students access course info through /api/enrollments and /api/assignments (Express API).
     match /courses/{courseId} {
       allow read: if isTeacher();
       allow write: if isTeacher();
     }
 
     // 2b. Enrollments — students can read their own; teachers read/write all.
-    // Students CANNOT create enrollments client-side; enrollment goes through the API server.
+    // Students CANNOT create or modify enrollments client-side; enrollment goes through the API server.
     match /enrollments/{enrollmentId} {
       allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
       allow write: if isTeacher();
     }
 
-    // 3. Lessons collection — teachers read/write all; students can read published lessons only
+    // 3. Lessons collection — teachers read/write only.
+    // Students must access lesson content through sanitized Express API routes (/api/lessons and
+    // /api/lessons/:id). Direct Firestore reads would bypass the assignment-aware access control
+    // and payload sanitization (answer keys, rubrics, model answers are stored on blocks/questions).
+    // "Published" means a lesson is available for teachers to assign — not globally readable by students.
     match /lessons/{lessonId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.isPublished == true);
+      allow read: if isTeacher();
       allow write: if isTeacher();
     }
 
@@ -70,42 +75,46 @@ service cloud.firestore {
       allow write: if isTeacher();
     }
 
-    // 5. Lesson Attempts — students own their attempts; teachers read all
+    // 5. Lesson Attempts — teachers read all; students read their own through the API.
+    // Students cannot create or update attempts directly — all attempt lifecycle operations
+    // must go through the Express API (/api/attempts) which enforces assignment-aware
+    // eligibility, enrollment checks, and retake policy.
     match /attempts/{attemptId} {
       allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-      allow create: if isSignedIn() && request.resource.data.studentId == request.auth.uid;
-      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow create: if isTeacher();
+      allow update: if isTeacher();
       allow delete: if isTeacher();
     }
 
     // 6. Question Assignments (deterministic randomized question sets per attempt)
-    // Students can read their own question assignments; teachers read all.
-    // Students cannot read the teacher-only fields (correctChoiceId etc.) — those are excluded server-side.
+    // Teacher-only direct reads. Students receive question assignments through the attempt route
+    // (/api/attempts/:id) where question data is sanitized server-side. Although the stored
+    // selectedQuestion snapshot is already sanitized, direct student reads are denied to
+    // enforce the API-only principle and prevent enumeration of other students' assignments.
     match /questionAssignments/{assignmentId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-      allow create: if isSignedIn() && request.resource.data.studentId == request.auth.uid;
+      allow read: if isTeacher();
+      allow create: if isTeacher();
       allow update: if isTeacher();
       allow delete: if isTeacher();
     }
 
-    // Legacy: assignments collection (used by current code for question assignments)
+    // Legacy: assignments collection (used by older code for question assignments)
+    // Teacher-only — students must not create, read, or write this collection directly.
     match /assignments/{assignmentId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-      allow create: if isSignedIn();
-      allow update: if isTeacher();
-      allow delete: if isTeacher();
+      allow read: if isTeacher();
+      allow write: if isTeacher();
     }
 
-    // 7. Student Responses — students own their responses; teachers read all for grading
+    // 7. Student Responses — teachers read all for grading; students may NOT read or write directly.
+    // All response operations (save draft, submit, retrieve) go through the Express API which
+    // enforces ownership, grading logic, and sanitization (isCorrect, autoScore, aiSuggestedScore,
+    // teacherOverrideScore, finalScore must not be readable by students through Firestore directly).
     match /responses/{responseId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
-      allow create: if isSignedIn() && request.resource.data.studentId == request.auth.uid;
-      // Students can only update their own unsubmitted responses (draft saves)
-      allow update: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid && resource.data.submittedAt == null);
-      allow delete: if isTeacher();
+      allow read: if isTeacher();
+      allow write: if isTeacher();
     }
 
-    // 8. Integrity Signals — students can create signals for their own attempts; teachers read/manage all
+    // 8. Integrity Signals — students can create signals for their own attempts; teachers read/manage all.
     // Students cannot edit or delete signals once created.
     match /integritySignals/{signalId} {
       allow read: if isTeacher();
@@ -113,53 +122,62 @@ service cloud.firestore {
       allow update, delete: if isTeacher();
     }
 
-    // Legacy: securitySignals collection (used by current code)
+    // Legacy: securitySignals collection
     match /securitySignals/{signalId} {
       allow read: if isTeacher();
-      allow create: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.studentId == request.auth.uid;
       allow update, delete: if isTeacher();
     }
 
-    // 9. AI Grading Records — teacher-only; students cannot read AI grading internals
-    // unless feedback has been explicitly released (feedbackReleasedAt is set).
+    // 9. AI Grading Records — teacher-only. Students never receive AI grading internals directly;
+    // sanitized feedback (when released) is delivered through the submit/feedback API routes.
     match /aiGradingRecords/{recordId} {
-      allow read: if isTeacher() ||
-        (isSignedIn() && resource.data.feedbackReleasedAt != null &&
-         exists(/databases/$(database)/documents/responses/$(resource.data.responseId)) &&
-         get(/databases/$(database)/documents/responses/$(resource.data.responseId)).data.studentId == request.auth.uid);
+      allow read: if isTeacher();
       allow write: if isTeacher();
     }
 
-    // 10. Lesson Assignments (teacher-created assignment records) — teachers write; students read only via API.
-    // Direct student reads are allowed here so offline-capable clients can cache; the server still
-    // filters to enrolled courses before delivering the payload.
+    // 10. Lesson Assignments (teacher-created assignment records) — teachers only.
+    // Students receive assignment lists through the Express API (/api/assignments) which filters
+    // to enrolled courses and computes access state. Direct student reads are denied because
+    // they would bypass enrollment and availability checks.
     match /lessonAssignments/{assignmentId} {
-      allow read: if isTeacher() || isSignedIn();
+      allow read: if isTeacher();
       allow write: if isTeacher();
     }
 
-    // 11. Gradebook Entries — teacher read/write; student can read their own entry
+    // 11. Gradebook Entries — teacher read/write only.
+    // Students must not read raw gradebook entries directly (they contain rawScore, finalScore,
+    // percent, aiPendingCount, teacherReviewRequired). Student-facing grade info is delivered
+    // through API routes according to the assignment's feedback policy.
     match /gradebookEntries/{entryId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow read: if isTeacher();
       allow write: if isTeacher();
     }
 
-    // 11b. Gradebook Response Entries — teacher read/write; student can read their own response grade record
+    // 11b. Gradebook Response Entries — teacher read/write only.
+    // Contains per-response scores, feedback, and grading status that must not be read
+    // directly by students (must go through the API with feedback-policy enforcement).
     match /gradebookResponseEntries/{entryId} {
-      allow read: if isTeacher() || (isSignedIn() && resource.data.studentId == request.auth.uid);
+      allow read: if isTeacher();
       allow write: if isTeacher();
     }
 
-    // 11. Audit Logs — teacher/admin read; system writes only (no client writes)
+    // 12. Audit Logs — teacher/admin read; system writes only (no client writes)
     match /auditLogs/{logId} {
       allow read: if isTeacher();
       allow write: if false;
     }
 
-    // 12. Approved Teachers — teacher/admin read; system writes only via Admin SDK
+    // 13. Approved Teachers — teacher read only; system writes only via Admin SDK
     match /approvedTeachers/{teacherId} {
-      allow read: if isTeacher() || isSignedIn();
+      allow read: if isTeacher();
       allow write: if false;
+    }
+
+    // 14. Lesson Drafts — teacher only; students cannot access lesson draft content.
+    match /lessonDrafts/{draftId} {
+      allow read: if isTeacher();
+      allow write: if isTeacher();
     }
   }
 }

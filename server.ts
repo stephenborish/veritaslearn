@@ -1429,11 +1429,29 @@ app.delete("/api/admin/teachers", requireSuperAdmin, async (req, res) => {
 app.get("/api/lessons", requireAuth, (req, res) => {
   const user = (req as any).user;
   const db = readDb();
-  
-  let targetLessons = db.lessons;
+
+  let targetLessons: any[];
   if (user.role === "student") {
-    // Only published lessons for students
-    targetLessons = db.lessons.filter((l: any) => l.isPublished);
+    // Students only see lessons that are assigned to a course they are actively enrolled in.
+    // "Published" means available for teachers to assign — it does NOT grant global student visibility.
+    const activeEnrollments = (db.enrollments || []).filter(
+      (e: any) => e.studentId === user.id && e.status === "active"
+    );
+    const enrolledCourseIds = new Set(activeEnrollments.map((e: any) => e.courseId));
+
+    // Collect the lesson IDs that have at least one assignment pointing to an enrolled course.
+    const assignedLessonIds = new Set(
+      (db.lessonAssignments || [])
+        .filter((asg: any) => enrolledCourseIds.has(asg.courseId))
+        .map((asg: any) => asg.lessonId)
+    );
+
+    targetLessons = db.lessons.filter(
+      (l: any) => l.isPublished && assignedLessonIds.has(l.id)
+    );
+  } else {
+    // Teachers see all their lessons regardless of publish status.
+    targetLessons = db.lessons;
   }
 
   // Gather blocks structure count
@@ -1460,9 +1478,27 @@ app.get("/api/lessons/:id", requireAuth, (req, res) => {
     return;
   }
 
-  if (user.role === "student" && !lesson.isPublished) {
-    res.status(403).json({ error: "Lesson is currently archived or secret." });
-    return;
+  if (user.role === "student") {
+    // Students must have an active assignment connecting this lesson to a course they are enrolled in.
+    // Return 404 regardless of the real reason to avoid leaking whether the lesson exists.
+    if (!lesson.isPublished) {
+      res.status(404).json({ error: "Lesson not found." });
+      return;
+    }
+
+    const activeEnrollments = (db.enrollments || []).filter(
+      (e: any) => e.studentId === user.id && e.status === "active"
+    );
+    const enrolledCourseIds = new Set(activeEnrollments.map((e: any) => e.courseId));
+
+    const hasAssignment = (db.lessonAssignments || []).some(
+      (asg: any) => asg.lessonId === id && enrolledCourseIds.has(asg.courseId)
+    );
+
+    if (!hasAssignment) {
+      res.status(404).json({ error: "Lesson not found." });
+      return;
+    }
   }
 
   let blocks = db.blocks
@@ -2190,22 +2226,16 @@ app.get("/api/assignments", requireAuth, (req, res) => {
 
   let list = db.lessonAssignments || [];
 
-  // For students: filter to assignments in courses they are enrolled in.
-  // Legacy assignments without a matching enrollment (no real courseId) are
-  // preserved for backward compatibility — show them if courseId is absent/unknown.
+  // For students: filter strictly to assignments in courses they are actively enrolled in.
+  // There is no unknown-course fallback — assignments are only visible when the student
+  // has a real active enrollment in the assignment's course.
   if (user.role === "student") {
     const activeEnrollments = (db.enrollments || []).filter(
       (e: any) => e.studentId === user.id && e.status === "active"
     );
     const enrolledCourseIds = new Set(activeEnrollments.map((e: any) => e.courseId));
-    const knownCourseIds = new Set(db.courses.map((c: any) => c.id));
 
-    list = list.filter((asg: any) => {
-      // Legacy assignment: courseId not in courses collection → show it (backward compat)
-      if (!knownCourseIds.has(asg.courseId)) return true;
-      // New assignment: only show if student is enrolled
-      return enrolledCourseIds.has(asg.courseId);
-    });
+    list = list.filter((asg: any) => enrolledCourseIds.has(asg.courseId));
   }
 
   const enrichedList = list.map((asg: any) => {
@@ -2313,6 +2343,7 @@ app.get("/api/assignments", requireAuth, (req, res) => {
 // Teacher: Create a new lesson assignment
 app.post("/api/assignments", requireTeacher, async (req, res) => {
   try {
+    const user = (req as any).user;
     const db = readDb();
     const { lessonId, courseId, section, opensAt, dueAt, closesAt, integrityPolicy } = req.body;
 
@@ -2321,9 +2352,33 @@ app.post("/api/assignments", requireTeacher, async (req, res) => {
       return;
     }
 
-    const lessonExists = db.lessons.some((l: any) => l.id === lessonId);
-    if (!lessonExists) {
+    // Validate that courseId refers to a real course (no free-text or unknown course ids)
+    const course = db.courses.find((c: any) => c.id === courseId);
+    if (!course) {
+      res.status(400).json({ error: "The selected course does not exist." });
+      return;
+    }
+
+    // Validate teacher owns or has access to this course
+    if (course.teacherId !== user.id && !user.isSuperAdmin) {
+      res.status(403).json({ error: "You do not have access to this course." });
+      return;
+    }
+
+    // Validate course is not archived
+    if (course.archivedAt) {
+      res.status(400).json({ error: "Cannot assign to an archived course." });
+      return;
+    }
+
+    // Validate the lesson exists and is published before assigning
+    const lesson = db.lessons.find((l: any) => l.id === lessonId);
+    if (!lesson) {
       res.status(404).json({ error: "Selected lesson not found." });
+      return;
+    }
+    if (!lesson.isPublished) {
+      res.status(400).json({ error: "Only published lessons can be assigned. Publish the lesson first." });
       return;
     }
 
@@ -2661,22 +2716,21 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
           return;
         }
 
-        // Enrollment check: student must be enrolled in the course for new-style assignments.
-        const knownCourse = db.courses.find((c: any) => c.id === asg.courseId);
-        if (knownCourse) {
-          const enrolled = (db.enrollments || []).some(
-            (e: any) => e.courseId === asg.courseId && e.studentId === user.id && e.status === "active"
-          );
-          if (!enrolled) {
-            fail(res, "FORBIDDEN", "You are not enrolled in the course for this assignment.");
-            return;
-          }
+        // Enrollment check: student must be enrolled in the course for this assignment.
+        // This applies regardless of whether the course appears in the courses collection.
+        const enrolled = (db.enrollments || []).some(
+          (e: any) => e.courseId === asg.courseId && e.studentId === user.id && e.status === "active"
+        );
+        if (!enrolled) {
+          fail(res, "FORBIDDEN", "You are not enrolled in the course for this assignment.");
+          return;
         }
 
         resolvedLessonId = asg.lessonId;
         resolvedAssignmentId = asg.id;
       } else {
         // Legacy path: lessonId only — find the first open assignment for this lesson.
+        // Enrollment is still required — there is no unknown-course bypass.
         const openAsg = lessonAssignments.find((a: any) => {
           if (a.lessonId !== (lessonId || resolvedLessonId)) return false;
           if (a.opensAt && a.opensAt > nowIso) return false;
@@ -2687,6 +2741,16 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
           fail(res, "FORBIDDEN", "No open assignment found for this lesson. Begin from your assignment dashboard.");
           return;
         }
+
+        // Enrollment check for the legacy path: student must be enrolled in the assignment's course.
+        const enrolled = (db.enrollments || []).some(
+          (e: any) => e.courseId === openAsg.courseId && e.studentId === user.id && e.status === "active"
+        );
+        if (!enrolled) {
+          fail(res, "FORBIDDEN", "You are not enrolled in the course for this assignment.");
+          return;
+        }
+
         resolvedLessonId = openAsg.lessonId;
         resolvedAssignmentId = openAsg.id;
       }

@@ -16,7 +16,8 @@
     "verify:allowlist": "tsx scripts/verify-allowlist.ts",
     "verify:image": "tsx scripts/verify-image-formatting.ts",
     "verify:hardening": "tsx scripts/verify-hardening.ts",
-    "verify:student-ui": "tsx scripts/verify-student-ui.ts"
+    "verify:student-ui": "tsx scripts/verify-student-ui.ts",
+    "verify:access-control": "tsx scripts/verify-access-control.ts"
   },
   "dependencies": {
     "@ckeditor/ckeditor5-react": "^11.1.2",

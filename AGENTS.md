@@ -1580,6 +1580,163 @@ Future-agent warning:
 Current status:
 
 ```text
+Date: 2026-06-03
+Agent: Claude Code (Sonnet 4.6)
+Task: Assignment-aware access control hardening
+
+WHAT CHANGED:
+
+server.ts — GET /api/lessons (student path):
+  Previously: returned all published lessons to any authenticated student.
+  Now: returns only lessons that are (a) published AND (b) have an active assignment
+    pointing to a course the student is actively enrolled in.
+  "Published" now means "available for teachers to assign" — NOT "globally visible to students."
+
+server.ts — GET /api/lessons/:id (student path):
+  Previously: allowed access to any published lesson by ID.
+  Now: requires the lesson to be published AND have an active assignment for a course the student
+    is enrolled in. Returns 404 (not 403) for unauthorized access to avoid leaking lesson existence.
+
+server.ts — GET /api/assignments (student path):
+  Previously: had an "unknown-course fallback" that showed assignments with unrecognized courseIds
+    to all students (backward-compat artifact).
+  Now: fallback removed. Students only see assignments whose courseId matches an active enrollment.
+
+server.ts — POST /api/assignments (teacher validation):
+  Previously: only validated that the lesson existed; did not validate course ownership, course
+    existence, or whether the lesson was published.
+  Now: validates all of:
+    - courseId must reference a real course in the courses collection
+    - Teacher must own the course (teacherId === user.id) or be a SuperAdmin
+    - Course must not be archived (archivedAt must be absent)
+    - Lesson must exist and be published before it can be assigned
+
+server.ts — POST /api/attempts (student eligibility):
+  Previously (assignmentId path): enrollment check only ran when the course was found in db.courses;
+    unknown-course assignments bypassed the enrollment requirement.
+  Previously (legacy lessonId-only path): no enrollment check at all.
+  Now: enrollment is required in both paths regardless of whether the course appears in db.courses.
+
+firestore.rules:
+  Hardened to enforce the API-only principle for students. Direct Firestore client reads are now
+  denied for all collections that contain teacher-only data or that bypass the server's
+  assignment-aware filtering:
+    - lessons: deny student reads (was: allow signed-in users to read published lessons)
+    - responses: deny student reads and writes (was: allow own read/write)
+    - attempts: deny student creates and updates (was: allow own create/update, bypassing eligibility)
+    - questionAssignments: deny student reads (was: allow own read)
+    - assignments (legacy): deny student reads/writes (was: allow own read + create)
+    - lessonAssignments: deny student reads (was: allow any signed-in read)
+    - gradebookEntries: deny student reads (was: allow own read)
+    - gradebookResponseEntries: deny student reads (was: allow own read)
+    - aiGradingRecords: remove student release-pathway exception (simplified to teacher-only)
+    - approvedTeachers: restrict to teacher-only (was: any signed-in user)
+    - lessonDrafts: add explicit teacher-only rule (was: caught by global deny, now explicit)
+    Kept:
+    - users/{userId}: student can still read own profile
+    - enrollments/{enrollmentId}: student can still read own enrollment
+    - integritySignals, securitySignals: student can still create own signals
+
+scripts/verify-access-control.ts (new):
+  58 unit-verified checks covering:
+    - Student lesson listing (enrollment+assignment filter)
+    - Student lesson detail access by ID
+    - Attempt start/resume (both assignmentId and legacy lessonId paths)
+    - Assignment creation validation (course existence, ownership, archive, publish status)
+    - Unknown-course fallback removal
+    - Teacher access preserved
+    - Student-facing payload sanitization (re-runs sanitize module checks)
+    - Firestore rules static analysis for sensitive collections
+
+package.json: added "verify:access-control" script
+
+PUBLISHED vs ASSIGNED DISTINCTION:
+  "Published" = the lesson is finalized and available for teachers to assign.
+    It does NOT mean globally visible to all signed-in students.
+  "Assigned" = a teacher has created a lessonAssignment record linking the lesson to a course.
+    A student sees a lesson only when they are enrolled in the assigned course.
+  This distinction is now enforced at every student-facing data boundary:
+    GET /api/lessons, GET /api/lessons/:id, GET /api/assignments, POST /api/attempts.
+
+STUDENT LESSON ACCESS MODEL (after hardening):
+  A student can see/access a lesson only when ALL of these are true:
+    1. The lesson is published (isPublished === true)
+    2. A lessonAssignment record exists linking that lessonId to a courseId
+    3. The student has an active enrollment (status === "active") in that courseId
+    4. The assignment window is open (opensAt <= now <= closesAt) for attempt creation
+  Direct Firestore reads bypass all of these checks and are therefore denied.
+
+ASSIGNMENT CREATION VALIDATION (after hardening):
+  A teacher can create an assignment only when ALL of these are true:
+    1. courseId refers to a real course in db.courses
+    2. course.teacherId === teacher's userId (or SuperAdmin bypass)
+    3. course.archivedAt is absent (course is not archived)
+    4. lessonId refers to a real lesson that is published (isPublished === true)
+  Result: no unknown course IDs, no orphaned assignments, no draft-lesson assignments.
+
+FIRESTORE RAW-READ RESTRICTIONS (after hardening):
+  Students cannot directly read:
+    - lessons (raw, contains teacher-only courseId, description, etc.)
+    - blocks (contains answer keys, rubrics, model answers, teacher notes)
+    - responses (contains isCorrect, autoScore, aiSuggestedScore, finalScore)
+    - attempts (bypass of eligibility check on create; bypass of ownership on update)
+    - questionAssignments (even though selectedQuestion is sanitized, direct reads bypass API)
+    - assignments / lessonAssignments (bypass of enrollment+availability filter)
+    - gradebookEntries (contains rawScore, finalScore, percent, teacherReviewRequired)
+    - gradebookResponseEntries (per-response scores/feedback before teacher releases)
+    - aiGradingRecords (AI rationale, rubric breakdown, confidence, teacher notes)
+    - lessonDrafts (teacher-only draft content)
+    - approvedTeachers (teacher identity information)
+  Students CAN read through the Express API which:
+    - filters to enrolled+assigned lessons before returning them
+    - sanitizes all blocks and questions (no answer keys, rubrics, model answers)
+    - enforces feedback policy before releasing grading details
+    - verifies attempt ownership and assignment eligibility
+
+STUDENT-SAFE API-ONLY PRINCIPLE:
+  All student-facing data flows must go through Express API routes, not direct Firestore SDK reads.
+  Firestore rules act as a safety net that enforces this architectural boundary.
+  The Admin SDK (used by the server) bypasses rules — this is by design for server-side operations.
+
+Verification:
+  Commands run: npm run build; npm run verify:slice; npm run verify:hardening;
+                npm run verify:workflow; npm run verify:access-control
+  Results:
+    - build (vite + esbuild): PASS
+    - verify:slice (20 checks): 20 passed / 0 failed
+    - verify:hardening (6 checks): 6 passed / 0 failed
+    - verify:workflow (61 checks): 61 passed / 0 failed
+    - verify:access-control (58 checks): 58 passed / 0 failed — new script covers the full
+        assignment-aware access model: listing, detail, attempts, assignment creation, unknown-course
+        fallback, teacher access, sanitization, and Firestore rules static analysis.
+  Note: npm run lint (tsc --noEmit) has pre-existing failures in scripts added by other agents
+    (verify-allowlist.ts, verify-builder.ts, verify-image-formatting.ts, etc.) due to missing
+    Node types in tsconfig. These errors pre-date this PR and are not caused by this change.
+    My new verify-access-control.ts follows the same pattern as those existing scripts.
+
+Known issues / remaining work:
+  - Firestore emulator tests do not exist in this repo; Firestore rules are verified via
+    static analysis in verify-access-control.ts only.
+  - Direct-to-Firestore student writes (creates/updates on attempts, responses) must go through
+    API — if any frontend code uses the Firestore client SDK for these operations it must be
+    updated to use API routes. Based on code review, the frontend appears to use API routes only.
+  - The lessonAssignment.opensAt/closesAt availability check is not yet enforced in
+    GET /api/lessons or GET /api/lessons/:id (listing shows assigned lessons regardless of
+    open/close dates). Attempt creation correctly enforces the window. Consider adding
+    availability filtering to the listing routes in a future PR.
+  - Teacher ownership check uses course.teacherId (single field). The data model supports
+    teacherIds (array). If multi-teacher support is added, update the ownership check in
+    POST /api/assignments accordingly.
+
+Future-agent warning:
+  - Do NOT re-add the unknown-course fallback in GET /api/assignments.
+  - Do NOT allow students to directly read lessons/blocks/responses/attempts from Firestore.
+  - Do NOT allow students to create or update attempts/responses directly from Firestore.
+  - The published-but-not-assigned distinction is intentional and must be preserved in all
+    student-facing routes.
+```
+
+```text
 Date: 2026-05-31
 Agent: Claude Code (Opus 4.8)
 Task: Make the core vertical slice real — Teacher authors MC + short-answer questions ->
