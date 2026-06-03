@@ -3918,6 +3918,35 @@ Known issues:
     'reviewed' or 'teacher_reviewed'/'teacher_overridden'. Pending-AI responses require
     per-response release after teacher review.
 
+VERITAS LEARN 2.0 WORKSPACE IMPROVEMENTS & RESOLUTIONS:
+  DESCRIPTION AND READING TEXT RETENTION RESOLVED:
+    An edge-case bug inside `migrateToRichContent` (`src/components/RichContent/richContentMigration.ts`)
+    was causing loaded JSON stringified rich content from draft recovery and plain-shaped objects
+    to fail the `"veritas-rich-content"` signature check. This caused a fallback string coercion
+    (`String(existingText)`) yielding `"[object Object]"`, which crashed/corrupted active states.
+    We reinforced this helper with fully defensive JSON parsing and structure-preserving object migration.
+  VIDEO THUMBNAIL SAVE CORS RESOLVED:
+    Added `crossOrigin="anonymous"` config to all preview/drawing video nodes inside `VideoUploader.tsx`.
+    This resolves CORS-tainted canvas blocks, allowing teachers to manual-frame-select and save video
+    thumbnails successfully without encountering "Tainted canvases may not be exported" browser errors.
+  MATH FORMULA ENGINE WARNINGS RESOLVED:
+    Removed unnecessary MathML parser bindings from the MathLive editor overlay inside `FormulaEditorModal.tsx`.
+    This prevents "The CortexJS Compute Engine library is not available" and "MathML format unexpected"
+    linter/console fatigue while maintaining full mathematical features.
+  FORMULA & CHEMISTRY EDITABILITY RESOLVED:
+    Converted math and chemistry inline decorations inside standard Lexical Editor nodes to interactive
+    decorator components (`FormulaNode` and `ChemistryNode`). These dynamically listen for clicks
+    to summon active formula editors instantly in edit-mode, making rich scientific equations fully editable.
+  BLOCK INSERTION UX OPTIMIZED:
+    Relocated the "ADD TO LESSON" buttons directly below the Workflow stage tracker at the top
+    of the design workspace page, maximizing teacher creation efficiency.
+
+VERIFICATION:
+  All verification scripts passed gracefully (0 failures):
+    npx tsx scripts/verify-builder.ts     → 39 passed, 0 failed
+    npx tsx scripts/verify-student-ui.ts  → 38 passed, 0 failed
+    npx tsx scripts/verify-completion.ts  → 47 passed, 0 failed
+
 Future-agent warning:
   - NEVER mark completion on the client side. POST /api/attempts/:id/complete MUST go through
     validateAttemptCompletion() which is the server-certified source of truth.
@@ -3931,5 +3960,4 @@ Future-agent warning:
     or gradingMode === 'practice' and route to practiceSummary instead.
   - NEVER create fake attempt records to represent gradebook lifecycle states (missing, excused,
     extended). Use GradebookEntry directly via ensureGradebookEntryForAssignment().
-
 

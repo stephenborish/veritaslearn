@@ -1,5 +1,8 @@
 import { DecoratorNode, DOMConversionMap, DOMConversionOutput, DOMExportOutput, LexicalNode, NodeKey, SerializedLexicalNode, Spread } from 'lexical';
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { $getNodeByKey } from 'lexical';
+import { ChemistryFormulaModal } from './ChemistryFormulaModal';
 
 export type SerializedChemistryNode = Spread<
   {
@@ -7,6 +10,58 @@ export type SerializedChemistryNode = Spread<
   },
   SerializedLexicalNode
 >;
+
+function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: NodeKey }) {
+  const [editor] = useLexicalComposerContext();
+  const [isEditable, setIsEditable] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
+
+  useEffect(() => {
+    setIsEditable(editor.isEditable());
+    return editor.registerEditableListener((editable) => {
+      setIsEditable(editable);
+    });
+  }, [editor]);
+
+  const handleUpdate = (newFormula: string) => {
+    editor.update(() => {
+      const node = $getNodeByKey(nodeKey);
+      if ($isChemistryNode(node)) {
+        node.setFormula(newFormula);
+      }
+    });
+    setShowEditor(false);
+  };
+
+  return (
+    <span 
+      className={`inline-flex items-center mx-1 bg-emerald-50 text-emerald-800 rounded px-1.5 py-0.5 border border-emerald-200 transition select-none ${
+        isEditable ? 'cursor-pointer hover:bg-emerald-100' : ''
+      }`}
+      onClick={(e) => {
+        if (isEditable) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowEditor(true);
+        }
+      }}
+      title={isEditable ? "Click to edit chemistry" : ""}
+    >
+      {/* @ts-ignore */}
+      <math-field readonly="true" style={{ fontSize: '0.9em', background: 'transparent', border: 'none', outline: 'none' }}>
+        {formula}
+      </math-field>
+
+      {showEditor && (
+        <ChemistryFormulaModal 
+          initialFormula={formula} 
+          onSave={handleUpdate} 
+          onClose={() => setShowEditor(false)} 
+        />
+      )}
+    </span>
+  );
+}
 
 export class ChemistryNode extends DecoratorNode<React.JSX.Element> {
   __formula: string;
@@ -30,6 +85,11 @@ export class ChemistryNode extends DecoratorNode<React.JSX.Element> {
 
   updateDOM(): false {
     return false;
+  }
+
+  setFormula(formula: string): void {
+    const writable = this.getWritable();
+    writable.__formula = formula;
   }
 
   getFormula(): string {
@@ -86,14 +146,7 @@ export class ChemistryNode extends DecoratorNode<React.JSX.Element> {
   }
 
   decorate(): React.JSX.Element {
-    return (
-      <span className="inline-flex items-center mx-1 bg-emerald-50 text-emerald-800 rounded px-1.5 border border-emerald-200">
-        {/* @ts-ignore */}
-        <math-field readonly="true" style={{ fontSize: '0.85em', background: 'transparent', border: 'none', outline: 'none' }}>
-          {this.__formula}
-        </math-field>
-      </span>
-    );
+    return <ChemistryComponent formula={this.__formula} nodeKey={this.__key} />;
   }
 }
 

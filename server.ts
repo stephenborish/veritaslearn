@@ -1205,6 +1205,7 @@ async function getSessionUser(req: express.Request) {
         name: decodedToken.name || email.split("@")[0].replace(/[._]/g, " "),
         email,
         role: isTeacher ? "teacher" : "student",
+        photoURL: decodedToken.picture || null,
         createdAt: new Date().toISOString()
       };
       if (email === "stephenborish@gmail.com") {
@@ -1216,6 +1217,10 @@ async function getSessionUser(req: express.Request) {
       let changed = false;
       if (user.id !== decodedToken.uid) {
         user.id = decodedToken.uid;
+        changed = true;
+      }
+      if (decodedToken.picture && user.photoURL !== decodedToken.picture) {
+        user.photoURL = decodedToken.picture;
         changed = true;
       }
       const isTeacher = isUserTeacher(email, db);

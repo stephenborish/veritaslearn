@@ -232,7 +232,7 @@ export default function AIReview({
   };
 
   // Derived counts for filter tabs
-  const saQueueCount = Object.values(counts).reduce((a, b) => a + b, 0);
+  const saQueueCount = (Object.values(counts) as number[]).reduce((a, b) => a + b, 0);
   const filterCounts: Record<ReviewFilter, number> = {
     all: saQueueCount + studentSignalEntries.length + anomalies.length,
     pending_ai: counts["pending_ai"] || 0,

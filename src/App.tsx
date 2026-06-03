@@ -540,6 +540,18 @@ export default function App() {
             <div className="flex flex-col items-end">
               <span className="text-[12px] leading-[15px] font-semibold">{currentUser.name}</span>
             </div>
+            {currentUser.photoURL ? (
+              <img 
+                src={currentUser.photoURL} 
+                alt={currentUser.name} 
+                referrerPolicy="no-referrer"
+                className="w-9 h-9 rounded-full object-cover border-2 border-white/20 shrink-0"
+              />
+            ) : (
+              <div className="w-9 h-9 rounded-full border-2 border-white/20 flex items-center justify-center font-bold text-xs uppercase bg-gradient-to-tr from-blue-700 to-indigo-800 text-white shrink-0">
+                {currentUser.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)}
+              </div>
+            )}
             <button
               onClick={handleLogout}
               className="p-1.5 text-white/60 hover:text-white hover:bg-white/10 rounded transition cursor-pointer"
@@ -624,9 +636,18 @@ export default function App() {
             <span className="text-[12px] leading-[15px] font-semibold">{currentUser.name}</span>
             <span className="text-[10px] text-white/60 font-medium">Faculty</span>
           </div>
-          <div className="w-9 h-9 rounded-full border-2 border-white/20 flex items-center justify-center font-bold text-xs uppercase bg-gradient-to-tr from-blue-700 to-indigo-800 text-white shrink-0">
-            {currentUser.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)}
-          </div>
+          {currentUser.photoURL ? (
+            <img 
+              src={currentUser.photoURL} 
+              alt={currentUser.name} 
+              referrerPolicy="no-referrer"
+              className="w-9 h-9 rounded-full object-cover border-2 border-white/20 shrink-0"
+            />
+          ) : (
+            <div className="w-9 h-9 rounded-full border-2 border-white/20 flex items-center justify-center font-bold text-xs uppercase bg-gradient-to-tr from-blue-700 to-indigo-800 text-white shrink-0">
+              {currentUser.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)}
+            </div>
+          )}
           <button
             onClick={handleLogout}
             className="p-1.5 text-white/60 hover:text-white hover:bg-white/10 rounded transition cursor-pointer"
@@ -757,19 +778,6 @@ export default function App() {
                 <p className="text-xs text-slate-500 mt-0.5 font-medium">
                   {activeTab === "live" && <>{students.length} students registered &bull; Asynchronous assignment progress</>}
                 </p>
-              </div>
-
-              <div className="flex gap-3">
-                <div className="flex flex-col items-center border-l border-slate-200 px-4">
-                  <span className="text-lg font-bold text-slate-700">84%</span>
-                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Avg. Accuracy</span>
-                </div>
-                <div className="flex flex-col items-center border-l border-slate-200 px-4">
-                  <span className="text-lg font-bold text-amber-600">
-                    {signals.filter((s: any) => s.severity === 'high').length}
-                  </span>
-                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Integrity Signals</span>
-                </div>
               </div>
             </header>
           )}

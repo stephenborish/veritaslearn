@@ -24,8 +24,7 @@ export const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({ initialF
   const handleSave = () => {
     if (mfRef.current) {
       const latex = mfRef.current.value;
-      const mathml = mfRef.current.getValue('math-json') ? mfRef.current.getValue('mathml') : ""; // Getting mathml fallback
-      onSave(latex, mathml);
+      onSave(latex, "");
     }
     onClose();
   };

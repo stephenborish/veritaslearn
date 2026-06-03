@@ -1,5 +1,8 @@
 import { DecoratorNode, DOMConversionMap, DOMConversionOutput, DOMExportOutput, LexicalNode, NodeKey, SerializedLexicalNode, Spread } from 'lexical';
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { $getNodeByKey } from 'lexical';
+import { FormulaEditorModal } from './FormulaEditorModal';
 
 export type SerializedFormulaNode = Spread<
   {
@@ -7,6 +10,58 @@ export type SerializedFormulaNode = Spread<
   },
   SerializedLexicalNode
 >;
+
+function FormulaComponent({ formula, nodeKey }: { formula: string; nodeKey: NodeKey }) {
+  const [editor] = useLexicalComposerContext();
+  const [isEditable, setIsEditable] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
+
+  useEffect(() => {
+    setIsEditable(editor.isEditable());
+    return editor.registerEditableListener((editable) => {
+      setIsEditable(editable);
+    });
+  }, [editor]);
+
+  const handleUpdate = (newFormula: string) => {
+    editor.update(() => {
+      const node = $getNodeByKey(nodeKey);
+      if ($isFormulaNode(node)) {
+        node.setFormula(newFormula);
+      }
+    });
+    setShowEditor(false);
+  };
+
+  return (
+    <span 
+      className={`inline-flex items-center mx-1 bg-slate-100 rounded px-1.5 py-0.5 min-w-[30px] transition select-none ${
+        isEditable ? 'cursor-pointer hover:bg-slate-200 border border-slate-300' : ''
+      }`}
+      onClick={(e) => {
+        if (isEditable) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowEditor(true);
+        }
+      }}
+      title={isEditable ? "Click to edit formula" : ""}
+    >
+      {/* @ts-ignore */}
+      <math-field readonly="true" style={{ fontSize: '0.9em', background: 'transparent', border: 'none', outline: 'none' }}>
+        {formula}
+      </math-field>
+
+      {showEditor && (
+        <FormulaEditorModal 
+          initialFormula={formula} 
+          onSave={handleUpdate} 
+          onClose={() => setShowEditor(false)} 
+        />
+      )}
+    </span>
+  );
+}
 
 export class FormulaNode extends DecoratorNode<React.JSX.Element> {
   __formula: string;
@@ -88,14 +143,7 @@ export class FormulaNode extends DecoratorNode<React.JSX.Element> {
   }
 
   decorate(): React.JSX.Element {
-    return (
-      <span className="inline-flex items-center mx-1 bg-slate-100 rounded px-1 min-w-[20px]">
-        {/* @ts-ignore */}
-        <math-field readonly="true" style={{ fontSize: '0.85em', background: 'transparent', border: 'none', outline: 'none' }}>
-          {this.__formula}
-        </math-field>
-      </span>
-    );
+    return <FormulaComponent formula={this.__formula} nodeKey={this.__key} />;
   }
 }
 

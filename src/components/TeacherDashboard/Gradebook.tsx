@@ -331,7 +331,7 @@ export default function Gradebook({
           <table className="w-full text-left text-sm border-collapse gradebook-table">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase font-mono text-[9px] tracking-widest">
-                <th className="py-4 px-6 font-bold">Student Name / Email</th>
+                <th className="py-[10px] px-[15px] font-bold font-sans text-[11px] leading-[11px] text-left">Student Name / Email</th>
                 {lessons.map((lesson) => (
                   <th key={lesson.id} className="py-4 px-6 font-bold min-w-[220px]">
                     {lesson.title.length > 32 ? `${lesson.title.substring(0, 32)}...` : lesson.title}
@@ -511,7 +511,7 @@ export default function Gradebook({
             </tbody>
             <tfoot>
               <tr className="bg-slate-50 border-t-2 border-slate-200 font-sans">
-                <td className="py-3 px-6 text-[10px] font-bold uppercase tracking-widest text-slate-500 font-mono">
+                <td className="py-[10px] px-[15px] text-[10px] leading-[10px] font-bold uppercase tracking-widest text-slate-500 font-sans">
                   Class Average
                 </td>
                 {lessons.map((lesson) => {

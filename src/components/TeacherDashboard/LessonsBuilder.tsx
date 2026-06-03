@@ -1735,6 +1735,34 @@ export default function LessonsBuilder({
                 );
               })()}
 
+              {/* Add block buttons */}
+              <div className="border-b border-slate-100 p-3 space-y-1.5">
+                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Add to lesson</div>
+                <div className="grid grid-cols-1 gap-1.5">
+                  <button onClick={() => handleAddBlock("video")} className="w-full text-left flex items-start gap-2 text-blue-700 bg-blue-50/75 hover:bg-blue-100 border border-blue-200 px-2.5 py-1.5 rounded-lg transition group cursor-pointer">
+                    <Video className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span className="min-w-0">
+                      <span className="text-[11px] font-bold block">Add video</span>
+                      <span className="text-[9px] text-blue-500/90 block leading-tight">Play a clip and add checkpoints</span>
+                    </span>
+                  </button>
+                  <button onClick={() => handleAddBlock("reading")} className="w-full text-left flex items-start gap-2 text-purple-700 bg-purple-50/75 hover:bg-purple-100 border border-purple-200 px-2.5 py-1.5 rounded-lg transition group cursor-pointer">
+                    <FileText className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span className="min-w-0">
+                      <span className="text-[11px] font-bold block">Add reading</span>
+                      <span className="text-[9px] text-purple-500/90 block leading-tight">A passage for students to read</span>
+                    </span>
+                  </button>
+                  <button onClick={() => handleAddBlock("question")} className="w-full text-left flex items-start gap-2 text-emerald-700 bg-emerald-50/75 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1.5 rounded-lg transition group cursor-pointer">
+                    <HelpCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span className="min-w-0">
+                      <span className="text-[11px] font-bold block">Add question</span>
+                      <span className="text-[9px] text-emerald-600/90 block leading-tight">Practice or assessment check</span>
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               {/* Block sequence */}
               <div className="flex-1 p-3 space-y-1 overflow-y-auto">
                 <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-2">Lesson outline</div>
@@ -1801,22 +1829,6 @@ export default function LessonsBuilder({
                 )}
               </div>
 
-              {/* Add block buttons */}
-              <div className="border-t border-slate-100 p-3 space-y-1.5">
-                <div className="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Add to lesson</div>
-                <button onClick={() => handleAddBlock("video")} className="w-full text-left flex items-start gap-2 text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-2.5 py-2 rounded-lg transition group">
-                  <Video className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span className="min-w-0"><span className="text-[11px] font-bold block">Add video</span><span className="text-[9px] text-blue-500/90 block leading-tight">Play a clip and add checkpoints</span></span>
-                </button>
-                <button onClick={() => handleAddBlock("reading")} className="w-full text-left flex items-start gap-2 text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-2.5 py-2 rounded-lg transition group">
-                  <FileText className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span className="min-w-0"><span className="text-[11px] font-bold block">Add reading</span><span className="text-[9px] text-purple-500/90 block leading-tight">A passage for students to read</span></span>
-                </button>
-                <button onClick={() => handleAddBlock("question")} className="w-full text-left flex items-start gap-2 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-2 rounded-lg transition group">
-                  <HelpCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                  <span className="min-w-0"><span className="text-[11px] font-bold block">Add question</span><span className="text-[9px] text-emerald-600/90 block leading-tight">Practice or assessment check</span></span>
-                </button>
-              </div>
             </aside>
 
             {/* CENTER WORKSPACE */}

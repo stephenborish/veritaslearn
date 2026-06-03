@@ -43,9 +43,33 @@ export const migrateToRichContent = (existingText: string | RichContent | null |
     };
   }
 
-  // If already rich content
-  if (typeof existingText === "object" && existingText.format === "veritas-rich-content") {
-    return existingText;
+  // Handle JSON string input
+  if (typeof existingText === "string") {
+    const trimmed = existingText.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === "object") {
+          return migrateToRichContent(parsed);
+        }
+      } catch (e) {
+        // Fall back to plain string handling
+      }
+    }
+  }
+
+  // If it's already a RichContent object or any object (avoid converting with String() to "[object Object]")
+  if (typeof existingText === "object") {
+    const obj = existingText as any;
+    return {
+      version: obj.version || 1,
+      format: "veritas-rich-content",
+      html: obj.html || "",
+      plainText: obj.plainText || (obj.html ? obj.html.replace(/<[^>]*>/g, '') : ""),
+      assets: Array.isArray(obj.assets) ? obj.assets : [],
+      lexicalJson: obj.lexicalJson || null,
+      updatedAt: obj.updatedAt || new Date().toISOString()
+    };
   }
 
   const asString = String(existingText);

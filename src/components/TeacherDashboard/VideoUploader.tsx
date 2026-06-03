@@ -462,6 +462,7 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
               src={displayedVideoUrl} 
               controls 
               preload="metadata" 
+              crossOrigin="anonymous"
               className="w-full h-full max-h-[300px] rounded-lg object-contain"
               referrerPolicy="no-referrer"
               onLoadedMetadata={(e) => {
@@ -627,6 +628,7 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
                 src={displayedVideoUrl} 
                 controls 
                 autoPlay 
+                crossOrigin="anonymous"
                 className="w-full max-h-[60vh] rounded bg-black"
                 referrerPolicy="no-referrer"
               />
