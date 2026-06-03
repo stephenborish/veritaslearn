@@ -1571,22 +1571,13 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                       >
                         <div className="min-h-full flex items-start md:items-center justify-center p-4 md:p-8">
                           <div className="w-full max-w-[1000px] space-y-4">
-                            {/* Panel header */}
-                            <div className="flex flex-wrap items-center justify-between gap-3 px-1">
-                              <div>
-                                <h3 className="text-lg font-bold text-slate-900">
-                                  {cpIsPractice ? "Practice Check" : "Assessment Check"}
-                                </h3>
-                                <p className="text-sm text-slate-500 mt-0.5">
-                                  Answer the check question to continue.
-                                </p>
-                              </div>
-                              {total > 1 && (
+                            {total > 1 && (
+                              <div className="flex justify-end px-1">
                                 <span className="rounded-full bg-white border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">
                                   Question {step + 1} of {total}
                                 </span>
-                              )}
-                            </div>
+                              </div>
+                            )}
 
                             <AnimatePresence mode="wait">
                               <motion.div
