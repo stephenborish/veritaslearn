@@ -395,19 +395,38 @@ export default function LessonsBuilder({
   };
 
   const handleBlockChange = (index: number, key: string, val: any) => {
-    setCurrentBlocks((prev: any[]) => {
-      const updated = [...prev];
-      updated[index] = { ...updated[index], [key]: val };
-      return updated;
-    });
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => (idx === index ? { ...block, [key]: val } : block))
+    );
   };
 
   const handleBlockMultipleChanges = (index: number, changes: Record<string, any>) => {
-    setCurrentBlocks((prev: any[]) => {
-      const updated = [...prev];
-      updated[index] = { ...updated[index], ...changes };
-      return updated;
-    });
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => (idx === index ? { ...block, ...changes } : block))
+    );
+  };
+
+  const handleBlockQuestionChange = (index: number, nextQuestionOrUpdater: any) => {
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => {
+        if (idx !== index) return block;
+        const currentQuestion = block.singleQuestion || newQuestionTemplate(block.questionType || "mc");
+        const nextQuestion = typeof nextQuestionOrUpdater === "function"
+          ? nextQuestionOrUpdater(currentQuestion)
+          : nextQuestionOrUpdater;
+        return { ...block, singleQuestion: { ...currentQuestion, ...nextQuestion } };
+      })
+    );
+  };
+
+  const handleBlockQuestionTypeChange = (index: number, nextType: "mc" | "sa") => {
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => {
+        if (idx !== index) return block;
+        const converted = convertQuestionType(block.singleQuestion, nextType);
+        return { ...block, questionType: nextType, singleQuestion: converted };
+      })
+    );
   };
 
   const handleVideoUploaded = (index: number, url: string, thumbnail?: string, duration?: number, storagePath?: string) => {
@@ -446,37 +465,78 @@ export default function LessonsBuilder({
 
   // ---- Video checkpoint authoring ----
   const addCheckpoint = (blockIndex: number) => {
-    const block = currentBlocks[blockIndex];
-    const cps = Array.isArray(block.videoCheckpoints) ? block.videoCheckpoints : [];
-    const cp = {
-      id: uid("cp"),
-      timestamp: 30,
-      title: `Checkpoint ${cps.length + 1}`,
-      isRequired: true,
-      pauseVideo: true,
-      isPractice: false,
-      questionType: "mc",
-      numToSelect: 1,
-      questions: [newQuestionTemplate("mc")]
-    };
-    handleBlockChange(blockIndex, "videoCheckpoints", [...cps, cp]);
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => {
+        if (idx !== blockIndex) return block;
+        const cps = Array.isArray(block.videoCheckpoints) ? block.videoCheckpoints : [];
+        const cp = {
+          id: uid("cp"),
+          timestamp: 30,
+          title: `Checkpoint ${cps.length + 1}`,
+          isRequired: true,
+          pauseVideo: true,
+          isPractice: false,
+          questionType: "mc",
+          numToSelect: 1,
+          questions: [newQuestionTemplate("mc")]
+        };
+        return { ...block, videoCheckpoints: [...cps, cp] };
+      })
+    );
   };
 
   const updateCheckpoint = (blockIndex: number, cpId: string, partial: any) => {
-    const block = currentBlocks[blockIndex];
-    const cps = (block.videoCheckpoints || []).map((cp: any) => (cp.id === cpId ? { ...cp, ...partial } : cp));
-    handleBlockChange(blockIndex, "videoCheckpoints", cps);
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => {
+        if (idx !== blockIndex) return block;
+        const cps = (block.videoCheckpoints || []).map((cp: any) =>
+          cp.id === cpId ? { ...cp, ...partial } : cp
+        );
+        return { ...block, videoCheckpoints: cps };
+      })
+    );
   };
 
-  const updateCheckpointQuestion = (blockIndex: number, cpId: string, uq: any) => {
-    const block = currentBlocks[blockIndex];
-    const cps = (block.videoCheckpoints || []).map((cp: any) => (cp.id === cpId ? { ...cp, questions: [uq] } : cp));
-    handleBlockChange(blockIndex, "videoCheckpoints", cps);
+  const updateCheckpointQuestion = (blockIndex: number, cpId: string, nextQuestionOrUpdater: any) => {
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => {
+        if (idx !== blockIndex) return block;
+        const cps = (block.videoCheckpoints || []).map((cp: any) => {
+          if (cp.id !== cpId) return cp;
+          const questions = Array.isArray(cp.questions) ? cp.questions : [];
+          const currentQuestion = questions[0] || newQuestionTemplate(cp.questionType || "mc");
+          const nextQuestion = typeof nextQuestionOrUpdater === "function"
+            ? nextQuestionOrUpdater(currentQuestion)
+            : nextQuestionOrUpdater;
+          return { ...cp, questions: [{ ...currentQuestion, ...nextQuestion }, ...questions.slice(1)] };
+        });
+        return { ...block, videoCheckpoints: cps };
+      })
+    );
+  };
+
+  const updateCheckpointQuestionType = (blockIndex: number, cpId: string, nextType: "mc" | "sa") => {
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => {
+        if (idx !== blockIndex) return block;
+        const cps = (block.videoCheckpoints || []).map((cp: any) => {
+          if (cp.id !== cpId) return cp;
+          const questions = Array.isArray(cp.questions) ? cp.questions : [];
+          const converted = convertQuestionType(questions[0], nextType);
+          return { ...cp, questionType: nextType, questions: [converted, ...questions.slice(1)] };
+        });
+        return { ...block, videoCheckpoints: cps };
+      })
+    );
   };
 
   const deleteCheckpoint = (blockIndex: number, cpId: string) => {
-    const block = currentBlocks[blockIndex];
-    handleBlockChange(blockIndex, "videoCheckpoints", (block.videoCheckpoints || []).filter((cp: any) => cp.id !== cpId));
+    setCurrentBlocks((prev: any[]) =>
+      prev.map((block, idx) => {
+        if (idx !== blockIndex) return block;
+        return { ...block, videoCheckpoints: (block.videoCheckpoints || []).filter((cp: any) => cp.id !== cpId) };
+      })
+    );
   };
 
   // ---- Dirty state + auto-save draft ----
@@ -1967,9 +2027,10 @@ export default function LessonsBuilder({
                   addCheckpoint={addCheckpoint}
                   updateCheckpoint={updateCheckpoint}
                   updateCheckpointQuestion={updateCheckpointQuestion}
+                  updateCheckpointQuestionType={updateCheckpointQuestionType}
                   deleteCheckpoint={deleteCheckpoint}
-                  convertQuestionType={convertQuestionType}
-                  newQuestionTemplate={newQuestionTemplate}
+                  onBlockQuestionChange={handleBlockQuestionChange}
+                  onBlockQuestionTypeChange={handleBlockQuestionTypeChange}
                   selectedLessonId={selectedLesson?.id}
                   lessonTitle={title}
                 />
@@ -2273,9 +2334,10 @@ interface BlockEditorProps {
   addCheckpoint: (blockIndex: number) => void;
   updateCheckpoint: (blockIndex: number, cpId: string, partial: any) => void;
   updateCheckpointQuestion: (blockIndex: number, cpId: string, uq: any) => void;
+  updateCheckpointQuestionType: (blockIndex: number, cpId: string, nextType: "mc" | "sa") => void;
   deleteCheckpoint: (blockIndex: number, cpId: string) => void;
-  convertQuestionType: (existing: any, nextType: "mc" | "sa") => any;
-  newQuestionTemplate: (type: "mc" | "sa") => any;
+  onBlockQuestionChange: (index: number, uq: any) => void;
+  onBlockQuestionTypeChange: (index: number, nextType: "mc" | "sa") => void;
   selectedLessonId: string | undefined;
   lessonTitle?: string;
 }
@@ -2334,9 +2396,10 @@ function BlockEditor({
   addCheckpoint,
   updateCheckpoint,
   updateCheckpointQuestion,
+  updateCheckpointQuestionType,
   deleteCheckpoint,
-  convertQuestionType,
-  newQuestionTemplate,
+  onBlockQuestionChange,
+  onBlockQuestionTypeChange,
   selectedLessonId,
   lessonTitle
 }: BlockEditorProps) {
@@ -2459,9 +2522,7 @@ function BlockEditor({
                         value={cp.questionType || "mc"}
                         onChange={(e) => {
                           const t = e.target.value as "mc" | "sa";
-                          const existing = cp.questions?.[0] || null;
-                          const converted = convertQuestionType(existing, t);
-                          updateCheckpoint(index, cp.id, { questionType: t, questions: [converted] });
+                          updateCheckpointQuestionType(index, cp.id, t);
                         }}
                         className="w-full bg-white border border-slate-200 rounded px-2 py-1 focus:outline-none focus:border-slate-400"
                       >
@@ -2519,7 +2580,7 @@ function BlockEditor({
               value={block.content || ""}
               onChange={(val: any) => onBlockChange(index, "content", val)}
               mode="full"
-              documentKey={(selectedLessonId ? `${selectedLessonId}_` : "") + `${block.id}_reading`}
+              documentKey={`${selectedLessonId || "new"}_${block.id}_reading_content`}
             />
           </div>
         )}
@@ -2534,11 +2595,7 @@ function BlockEditor({
                   value={block.questionType || "mc"}
                   onChange={(e) => {
                     const t = e.target.value as "mc" | "sa";
-                    const converted = convertQuestionType(block.singleQuestion, t);
-                    onBlockMultipleChanges(index, {
-                      questionType: t,
-                      singleQuestion: converted
-                    });
+                    onBlockQuestionTypeChange(index, t);
                   }}
                   className="w-full bg-slate-50 border border-slate-200 rounded px-2 py-1.5 text-slate-800 focus:outline-none"
                 >
@@ -2560,7 +2617,7 @@ function BlockEditor({
                 question={block.singleQuestion}
                 type={(block.questionType || "mc") as "mc" | "sa"}
                 graded={!block.isPractice}
-                onChange={(uq) => onBlockChange(index, "singleQuestion", uq)}
+                onChange={(uq) => onBlockQuestionChange(index, uq)}
                 lessonContext={{ lessonTitle, blockTitle: block.title }}
                 lessonId={selectedLessonId}
                 blockId={block.id}

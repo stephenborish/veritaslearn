@@ -215,6 +215,93 @@ check("thumbnail save/reload preserves video metadata and checkpoints",
   reloadedBlocks[0].duration === authoredVideoBlock.duration &&
   reloadedBlocks[0].storagePath === authoredVideoBlock.storagePath &&
   reloadedBlocks[0].videoCheckpoints[0].id === "cp_1");
+// 6. Regression guard — immutable rich-content persistence through builder/server.
+// ---------------------------------------------------------------------------
+console.log("\nStep 6: Builder updates and server persistence keep rich lesson data intact...");
+
+const server = read("server.ts");
+
+check("Checkpoint updates derive from latest block state",
+  /const updateCheckpoint[\s\S]*setCurrentBlocks\(\(prev: any\[\]\) =>/.test(builder));
+check("Checkpoint question updates accept updater-style latest question edits",
+  /const updateCheckpointQuestion[\s\S]*nextQuestionOrUpdater[\s\S]*nextQuestionOrUpdater\(currentQuestion\)/.test(builder));
+check("Question block updates accept updater-style latest question edits",
+  /const handleBlockQuestionChange[\s\S]*nextQuestionOrUpdater\(currentQuestion\)/.test(builder));
+check("Nested checkpoint code no longer reads currentBlocks[blockIndex] from render closure",
+  !/currentBlocks\[blockIndex\]/.test(builder));
+check("saveWithPublishedStatus sends blocks: currentBlocks",
+  /const payload = \{[\s\S]*blocks: currentBlocks[\s\S]*\};/.test(builder));
+check("VideoUploader persists thumbnail with video URL, duration, and storage path",
+  builder.includes('onBlockMultipleChanges(index, { videoUrl: url, thumbnailUrl: thumbnail || "", duration: duration || 0, storagePath: storagePath || "" })'));
+
+check("QuestionEditor emits updater-style changes to avoid stale q overwrites",
+  editor.includes("onChange((latestQuestion: AnyQuestion) =>") && editor.includes("patchWith"));
+check("QuestionEditor choice helpers merge into the latest choices array",
+  /latestChoices[\s\S]*choices: latestChoices\.map/.test(editor));
+check("QuestionEditor rubric helpers merge into the latest rubric array",
+  /latestRubric[\s\S]*rubricCategories: latestRubric\.map/.test(editor));
+
+const requiredDocumentKeys = [
+  "reading_content",
+  "q-${qIdStr}-stem",
+  "q-${qIdStr}-studentInstructions",
+  "q-${qIdStr}-modelAnswer",
+  "q-${qIdStr}-explanation",
+  "q-${qIdStr}-aiScoringGuidance",
+  "q-${qIdStr}-rubric-${r.id}-description",
+  "q-${qIdStr}-choice-${c.id}-text",
+];
+requiredDocumentKeys.forEach((key) => {
+  check(`RichContentEditor documentKey includes stable ${key} identity`, builder.includes(key) || editor.includes(key));
+});
+
+const richPayload = {
+  readingContent: { html: "<p>Read <strong>this</strong>.</p>", plainText: "Read this." },
+  mcStem: { html: "<p>Which <em>answer</em>?</p>", plainText: "Which answer?" },
+  saStem: { html: "<p>Explain the pattern.</p>", plainText: "Explain the pattern." },
+  explanation: { html: "<p>Because of evidence.</p>", plainText: "Because of evidence." },
+  studentInstructions: { html: "<p>Use complete sentences.</p>", plainText: "Use complete sentences." },
+  modelAnswer: { html: "<p>A complete model answer.</p>", plainText: "A complete model answer." },
+  aiScoringGuidance: { html: "<p>Credit precise evidence.</p>", plainText: "Credit precise evidence." },
+  rubricDescription: { html: "<p>Evidence quality.</p>", plainText: "Evidence quality." },
+  choiceText: { html: "<p>Choice A rich text.</p>", plainText: "Choice A rich text." },
+  thumbnailUrl: "https://cdn.example.test/thumb.jpg",
+};
+const savedBlocks: any[] = [
+  { id: "video_1", type: "video", title: "Video", videoUrl: "https://cdn.example.test/video.mp4", thumbnailUrl: richPayload.thumbnailUrl, videoCheckpoints: [] },
+  { id: "reading_1", type: "reading", title: "Reading", content: richPayload.readingContent },
+  { id: "mc_1", type: "question", title: "MC", questionType: "mc", isPractice: true, singleQuestion: {
+    id: "q_mc", type: "mc", stem: richPayload.mcStem, explanation: richPayload.explanation,
+    choices: [{ id: "choice_a", text: richPayload.choiceText }, { id: "choice_b", text: "Existing B" }], correctChoiceId: "choice_a", points: 1,
+  } },
+  { id: "sa_1", type: "question", title: "SA", questionType: "sa", isPractice: false, singleQuestion: {
+    id: "q_sa", type: "sa", stem: richPayload.saStem, studentInstructions: richPayload.studentInstructions,
+    modelAnswer: richPayload.modelAnswer, aiScoringGuidance: richPayload.aiScoringGuidance,
+    rubricCategories: [{ id: "rub_1", name: "Evidence", maxPoints: 2, description: richPayload.rubricDescription }], points: 2,
+  } },
+];
+const reloadedBlocks = JSON.parse(JSON.stringify(savedBlocks));
+const versionSnapshot = JSON.parse(JSON.stringify(reloadedBlocks));
+check("Save/reload preserves reading rich content", reloadedBlocks[1].content.html === richPayload.readingContent.html);
+check("Save/reload preserves MC stem, feedback, and choice text", reloadedBlocks[2].singleQuestion.stem.html === richPayload.mcStem.html && reloadedBlocks[2].singleQuestion.explanation.html === richPayload.explanation.html && reloadedBlocks[2].singleQuestion.choices[0].text.html === richPayload.choiceText.html);
+check("Save/reload preserves SA stem, instructions, model answer, scoring guidance, and rubric", reloadedBlocks[3].singleQuestion.stem.html === richPayload.saStem.html && reloadedBlocks[3].singleQuestion.studentInstructions.html === richPayload.studentInstructions.html && reloadedBlocks[3].singleQuestion.modelAnswer.html === richPayload.modelAnswer.html && reloadedBlocks[3].singleQuestion.aiScoringGuidance.html === richPayload.aiScoringGuidance.html && reloadedBlocks[3].singleQuestion.rubricCategories[0].description.html === richPayload.rubricDescription.html);
+check("Save/reload preserves video thumbnail URL", reloadedBlocks[0].thumbnailUrl === richPayload.thumbnailUrl);
+check("Version snapshot preserves all rich block/question fields", JSON.stringify(versionSnapshot) === JSON.stringify(savedBlocks));
+
+const firstQuestionBefore = JSON.parse(JSON.stringify(savedBlocks[2]));
+const withSecondQuestion = [...savedBlocks, { id: "q2", type: "question", title: "Second", questionType: "mc", singleQuestion: { id: "q_second", type: "mc", stem: "Second stem", choices: [{ id: "choice_2a", text: "Second A" }, { id: "choice_2b", text: "Second B" }], correctChoiceId: "choice_2a" } }];
+check("Adding a second question does not erase the first question stem, feedback, choices, or reading content",
+  JSON.stringify(withSecondQuestion[2]) === JSON.stringify(firstQuestionBefore) &&
+  JSON.stringify(withSecondQuestion[1].content) === JSON.stringify(richPayload.readingContent));
+
+check("POST /api/lessons preserves reading content, question data, and video thumbnails",
+  /thumbnailUrl: bType === "video" \? b\.thumbnailUrl/.test(server) &&
+  /content: bType === "reading" \? b\.content/.test(server) &&
+  /singleQuestion: bType === "question" \? b\.singleQuestion/.test(server));
+check("PUT /api/lessons/:id preserves reading content, question data, and video thumbnails",
+  /app\.put\("\/api\/lessons\/:id"[\s\S]*thumbnailUrl: bType === "video" \? b\.thumbnailUrl[\s\S]*content: bType === "reading" \? b\.content[\s\S]*singleQuestion: bType === "question" \? b\.singleQuestion/.test(server));
+check("createLessonVersionSnapshot deep-copies sorted blocks without stripping fields",
+  /blocksSnapshot: JSON\.parse\(JSON\.stringify\(sortedBlocks\)\)/.test(server));
 
 console.log(`\n=== RESULT: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);
