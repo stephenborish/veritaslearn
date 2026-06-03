@@ -429,6 +429,40 @@ export default function LessonsBuilder({
     );
   };
 
+  const handleVideoUploaded = (index: number, url: string, thumbnail?: string, duration?: number, storagePath?: string) => {
+    setCurrentBlocks((prev: any[]) => {
+      if (!prev[index]) return prev;
+      const updated = [...prev];
+      const latestBlock = updated[index];
+      updated[index] = {
+        ...latestBlock,
+        videoUrl: url,
+        thumbnailUrl: thumbnail ?? latestBlock.thumbnailUrl ?? "",
+        duration: duration ?? latestBlock.duration ?? 0,
+        storagePath: storagePath ?? latestBlock.storagePath ?? "",
+        videoCheckpoints: Array.isArray(latestBlock.videoCheckpoints) ? latestBlock.videoCheckpoints : [],
+      };
+      return updated;
+    });
+  };
+
+  const handleVideoThumbnailSelected = (index: number, thumbnailUrl: string) => {
+    setCurrentBlocks((prev: any[]) => {
+      if (!prev[index]) return prev;
+      const updated = [...prev];
+      const latestBlock = updated[index];
+      updated[index] = {
+        ...latestBlock,
+        videoUrl: latestBlock.videoUrl ?? "",
+        thumbnailUrl,
+        duration: latestBlock.duration ?? 0,
+        storagePath: latestBlock.storagePath ?? "",
+        videoCheckpoints: Array.isArray(latestBlock.videoCheckpoints) ? latestBlock.videoCheckpoints : [],
+      };
+      return updated;
+    });
+  };
+
   // ---- Video checkpoint authoring ----
   const addCheckpoint = (blockIndex: number) => {
     setCurrentBlocks((prev: any[]) =>
@@ -1988,6 +2022,8 @@ export default function LessonsBuilder({
                   restrictSeeking={restrictSeeking}
                   onBlockChange={handleBlockChange}
                   onBlockMultipleChanges={handleBlockMultipleChanges}
+                  onVideoUploaded={handleVideoUploaded}
+                  onVideoThumbnailSelected={handleVideoThumbnailSelected}
                   addCheckpoint={addCheckpoint}
                   updateCheckpoint={updateCheckpoint}
                   updateCheckpointQuestion={updateCheckpointQuestion}
@@ -2293,6 +2329,8 @@ interface BlockEditorProps {
   restrictSeeking: boolean;
   onBlockChange: (index: number, key: string, val: any) => void;
   onBlockMultipleChanges: (index: number, changes: Record<string, any>) => void;
+  onVideoUploaded: (index: number, url: string, thumbnail?: string, duration?: number, storagePath?: string) => void;
+  onVideoThumbnailSelected: (index: number, thumbnailUrl: string) => void;
   addCheckpoint: (blockIndex: number) => void;
   updateCheckpoint: (blockIndex: number, cpId: string, partial: any) => void;
   updateCheckpointQuestion: (blockIndex: number, cpId: string, uq: any) => void;
@@ -2353,6 +2391,8 @@ function BlockEditor({
   restrictSeeking,
   onBlockChange,
   onBlockMultipleChanges,
+  onVideoUploaded,
+  onVideoThumbnailSelected,
   addCheckpoint,
   updateCheckpoint,
   updateCheckpointQuestion,
@@ -2408,7 +2448,10 @@ function BlockEditor({
               storagePath={block.storagePath}
               duration={block.duration}
               onVideoUploaded={(url, thumbnail, duration, storagePath) => {
-                onBlockMultipleChanges(index, { videoUrl: url, thumbnailUrl: thumbnail || "", duration: duration || 0, storagePath: storagePath || "" });
+                onVideoUploaded(index, url, thumbnail, duration, storagePath);
+              }}
+              onThumbnailSelected={(thumbnail) => {
+                onVideoThumbnailSelected(index, thumbnail);
               }}
             />
 

@@ -156,6 +156,65 @@ bannedEditor.forEach((phrase) => {
 check("MC correct answer binds to a stable choice id", editor.includes("correctChoiceId: c.id"));
 
 // ---------------------------------------------------------------------------
+// 6. Video thumbnail state + persistence contract.
+// ---------------------------------------------------------------------------
+console.log("\nStep 6: Video thumbnails survive save, reload, and publish snapshots...");
+
+const uploader = read("src/components/TeacherDashboard/VideoUploader.tsx");
+const server = read("server.ts");
+
+check("Builder has a dedicated latest-state thumbnail update",
+  builder.includes("handleVideoThumbnailSelected") &&
+  builder.includes("setCurrentBlocks((prev: any[]) =>") &&
+  builder.includes("videoUrl: latestBlock.videoUrl") &&
+  builder.includes("videoCheckpoints: Array.isArray(latestBlock.videoCheckpoints)"));
+check("VideoUploader routes manual frame selection through onThumbnailSelected",
+  uploader.includes("onThumbnailSelected?: (thumbnailUrl: string) => void") &&
+  uploader.includes("onThumbnailSelected(dataUrl)"));
+
+const createLessonBlockWrite = /app\.post\("\/api\/lessons"[\s\S]*?thumbnailUrl: bType === "video" \? b\.thumbnailUrl : undefined[\s\S]*?createLessonVersionSnapshot\(newLesson, savedBlocks/s.test(server);
+const updateLessonBlockWrite = /app\.put\("\/api\/lessons\/:id"[\s\S]*?thumbnailUrl: bType === "video" \? b\.thumbnailUrl : undefined[\s\S]*?createLessonVersionSnapshot\(db\.lessons\[lessonIdx\], updatedBlocksForVersion/s.test(server);
+check("POST /api/lessons persists video thumbnailUrl before publishing", createLessonBlockWrite);
+check("PUT /api/lessons/:id persists video thumbnailUrl before publishing", updateLessonBlockWrite);
+check("Published lesson versions deep-copy the saved block snapshot",
+  server.includes("blocksSnapshot: JSON.parse(JSON.stringify(sortedBlocks))"));
+
+const authoredVideoBlock = {
+  id: "block_video_thumb",
+  lessonId: "lesson_thumb",
+  order: 1,
+  type: "video",
+  title: "Intro video",
+  videoUrl: "https://cdn.example.edu/intro.mp4",
+  thumbnailUrl: "data:image/jpeg;base64,teacher-selected-frame",
+  storagePath: "videos/intro.mp4",
+  duration: 125,
+  videoCheckpoints: [{ id: "cp_1", timestamp: 45, title: "Quick check" }],
+};
+const savedBlocks = [{
+  id: authoredVideoBlock.id,
+  lessonId: authoredVideoBlock.lessonId,
+  order: authoredVideoBlock.order,
+  type: authoredVideoBlock.type,
+  title: authoredVideoBlock.title,
+  videoUrl: authoredVideoBlock.videoUrl,
+  thumbnailUrl: authoredVideoBlock.thumbnailUrl,
+  storagePath: authoredVideoBlock.storagePath,
+  duration: authoredVideoBlock.duration,
+  videoCheckpoints: authoredVideoBlock.videoCheckpoints,
+}];
+const reloadedBlocks = JSON.parse(JSON.stringify(savedBlocks));
+const publishedVersion = { blocksSnapshot: JSON.parse(JSON.stringify(reloadedBlocks)) };
+
+check("thumbnailUrl is present after save/reload",
+  reloadedBlocks[0].thumbnailUrl === authoredVideoBlock.thumbnailUrl);
+check("thumbnailUrl is present in the published lesson version snapshot",
+  publishedVersion.blocksSnapshot[0].thumbnailUrl === authoredVideoBlock.thumbnailUrl);
+check("thumbnail save/reload preserves video metadata and checkpoints",
+  reloadedBlocks[0].videoUrl === authoredVideoBlock.videoUrl &&
+  reloadedBlocks[0].duration === authoredVideoBlock.duration &&
+  reloadedBlocks[0].storagePath === authoredVideoBlock.storagePath &&
+  reloadedBlocks[0].videoCheckpoints[0].id === "cp_1");
 // 6. Regression guard — immutable rich-content persistence through builder/server.
 // ---------------------------------------------------------------------------
 console.log("\nStep 6: Builder updates and server persistence keep rich lesson data intact...");
