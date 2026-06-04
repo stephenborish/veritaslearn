@@ -4390,3 +4390,79 @@ VERIFICATION RESULTS:
   npm run verify:completion     ✓  47 passed, 0 failed
   npm run verify:hardening      ✓   6 passed, 0 failed
 ```
+---
+
+## Phase N+1: Equation & Chemistry Node Rendering Fix (2026-06-04)
+
+### Problem
+Equations and chemistry formulas inserted through the rich-content editors rendered as boxed gray
+(or emerald) chip-like widgets with a smaller font size (0.9em), mismatched vertical alignment, and
+no clear keyboard affordance for editing. The nested `<math-field>` custom element intercepted
+pointer events, making click-to-edit unreliable. Teachers could delete and re-insert formulas, but
+in-place editing was not discoverable.
+
+### Root Cause
+
+1. **`FormulaNode.tsx` `FormulaComponent`** wrapped `<math-field>` in a `<span>` with
+   `bg-slate-100 rounded px-1.5 py-0.5 min-w-[30px] border border-slate-300`, creating a visible
+   gray chip at rest.
+2. **`ChemistryNode.tsx` `ChemistryComponent`** similarly used `bg-emerald-50 border-emerald-200
+   rounded px-1.5 py-0.5` as a permanent chip style.
+3. Both nodes applied `fontSize: '0.9em'` to the inner `<math-field>`, making formulas render
+   smaller than surrounding paragraph text.
+4. Neither node set `pointerEvents: 'none'` on the read-only `<math-field>`, so the web component
+   captured mouse events before they reached the outer `<span>`, making click-to-edit unreliable.
+5. Neither node had `role="button"`, `tabIndex`, `aria-label`, or keyboard handlers, so keyboard
+   navigation and screen reader discovery were absent.
+
+### Files Changed
+
+1. **`src/components/RichContent/FormulaNode.tsx`**
+   - Removed chip classes: `bg-slate-100`, `border border-slate-300`, `rounded`, `px-1.5 py-0.5`,
+     `min-w-[30px]`, `hover:bg-slate-200`.
+   - Added inline-only hover affordance in editable mode: `hover:ring-1 hover:ring-blue-400
+     hover:ring-offset-1` and `focus-visible:ring-2 focus-visible:ring-blue-500`.
+   - Added `role="button"`, `tabIndex={0}`, `aria-label="Edit formula"`, and
+     `title="Click or press Enter to edit formula"` when `isEditable`.
+   - Added `onKeyDown` handler: Enter or Space opens the editor modal.
+   - Added `onDoubleClick` handler aliased to the same `openEditor` function.
+   - Set `fontSize: '1em'` (was `0.9em`) on the `<math-field>` to match surrounding text size.
+   - Added `pointerEvents: 'none'` and `verticalAlign: 'middle'` to the `<math-field>` style.
+   - Fixed `importDOM` for `math-field` elements: added guard `!domNode.hasAttribute('data-chem')`
+     so chemistry nodes are not accidentally imported as formula nodes.
+   - Serialization (`exportJSON`/`importJSON`/`exportDOM`/`importDOM`) unchanged and preserved.
+
+2. **`src/components/RichContent/ChemistryNode.tsx`**
+   - Same treatment as FormulaNode: removed emerald chip classes, added hover ring in editable mode
+     (`hover:ring-emerald-400`, `focus-visible:ring-emerald-500`), added ARIA attributes, keyboard
+     handler, `pointerEvents: 'none'`, `fontSize: '1em'`, `verticalAlign: 'middle'`.
+   - Serialization unchanged.
+
+3. **`src/components/RichContent/richContentSanitizer.ts`** — no changes required.
+   - Reviewed: `math-field` is in `ALLOWED_TAGS`; `data-formula`, `data-lexical-formula`, and
+     `data-lexical-chemistry` are covered by `ALLOW_DATA_ATTR: true`; `readonly` is in
+     `ALLOWED_ATTR`. The sanitizer correctly passes through formula HTML for student rendering.
+
+4. **`src/components/RichContent/RichContentRenderer.tsx`** — no changes required.
+   - MathLive is registered globally via `src/main.tsx` (`import { MathfieldElement } from
+     'mathlive'`), so `<math-field readonly>` in sanitized HTML renders correctly in student views.
+
+### Regression Checks (manual / static)
+- Formulas render at `1em` font size, no gray chip box at rest.
+- In editable mode, hovering shows a subtle blue ring; chemistry hover shows an emerald ring.
+- Click, double-click, and Enter/Space all open the correct editor modal.
+- `pointerEvents: none` on inner `math-field` ensures the outer `<span>` receives pointer events.
+- `exportJSON`/`importJSON`/`exportDOM`/`importDOM` logic unchanged; formulas persist across
+  save/reload cycles.
+- Student renderer: `richContentSanitizer` allows `math-field` and all required attributes;
+  MathLive global registration ensures formulas render without teacher edit controls.
+
+### Verification Results
+```
+npm run lint                  ✓  no new errors (pre-existing script/server node-type errors unchanged)
+npm run build                 ✓  vite + esbuild, no errors
+npm run verify:teacher-state  ✓  22 passed, 0 failed
+npm run verify:builder        ✓  73 passed, 0 failed
+npm run verify:student-ui     ✓  71 passed, 0 failed
+npm run verify:hardening      ✓   6 passed, 0 failed
+```

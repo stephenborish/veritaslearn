@@ -23,6 +23,13 @@ function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: No
     });
   }, [editor]);
 
+  const openEditor = (e?: React.SyntheticEvent) => {
+    if (!isEditable) return;
+    e?.preventDefault();
+    e?.stopPropagation();
+    setShowEditor(true);
+  };
+
   const handleUpdate = (newFormula: string) => {
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
@@ -34,29 +41,47 @@ function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: No
   };
 
   return (
-    <span 
-      className={`inline-flex items-center mx-1 bg-emerald-50 text-emerald-800 rounded px-1.5 py-0.5 border border-emerald-200 transition select-none ${
-        isEditable ? 'cursor-pointer hover:bg-emerald-100' : ''
+    <span
+      className={`inline-flex items-center select-none${
+        isEditable
+          ? ' cursor-pointer rounded hover:ring-1 hover:ring-emerald-400 hover:ring-offset-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1'
+          : ''
       }`}
-      onClick={(e) => {
-        if (isEditable) {
+      onClick={openEditor}
+      onDoubleClick={openEditor}
+      onKeyDown={(e) => {
+        if (isEditable && (e.key === 'Enter' || e.key === ' ')) {
           e.preventDefault();
           e.stopPropagation();
           setShowEditor(true);
         }
       }}
-      title={isEditable ? "Click to edit chemistry" : ""}
+      role={isEditable ? 'button' : undefined}
+      tabIndex={isEditable ? 0 : undefined}
+      aria-label={isEditable ? 'Edit chemistry formula' : undefined}
+      title={isEditable ? 'Click or press Enter to edit chemistry formula' : undefined}
     >
       {/* @ts-ignore */}
-      <math-field readonly="true" style={{ fontSize: '0.9em', background: 'transparent', border: 'none', outline: 'none' }}>
+      <math-field
+        readonly="true"
+        style={{
+          fontSize: '1em',
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          pointerEvents: 'none',
+          verticalAlign: 'middle',
+          display: 'inline-block',
+        }}
+      >
         {formula}
       </math-field>
 
       {showEditor && (
-        <ChemistryFormulaModal 
-          initialFormula={formula} 
-          onSave={handleUpdate} 
-          onClose={() => setShowEditor(false)} 
+        <ChemistryFormulaModal
+          initialFormula={formula}
+          onSave={handleUpdate}
+          onClose={() => setShowEditor(false)}
         />
       )}
     </span>
