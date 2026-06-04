@@ -463,7 +463,16 @@ function upsertResponseGradebookEntry(
   };
 
   if (entryIdx !== -1) {
-    entryData.createdAt = db.gradebookResponseEntries[entryIdx].createdAt || entryData.createdAt;
+    const existing = db.gradebookResponseEntries[entryIdx];
+    entryData.createdAt = existing.createdAt || entryData.createdAt;
+    // Preserve durable teacher-set fields so AI callbacks never silently erase them.
+    if (existing.originalAiScore !== undefined) entryData.originalAiScore = existing.originalAiScore;
+    if (existing.reviewedAt) entryData.reviewedAt = existing.reviewedAt;
+    if (existing.reviewedBy) entryData.reviewedBy = existing.reviewedBy;
+    if (existing.feedbackReleasedAt) entryData.feedbackReleasedAt = existing.feedbackReleasedAt;
+    if (existing.feedbackReleasedBy) entryData.feedbackReleasedBy = existing.feedbackReleasedBy;
+    if (existing.studentFacingFeedback) entryData.studentFacingFeedback = existing.studentFacingFeedback;
+    if (existing.teacherOnlyNotes) entryData.teacherOnlyNotes = existing.teacherOnlyNotes;
     db.gradebookResponseEntries[entryIdx] = entryData;
   } else {
     db.gradebookResponseEntries.push(entryData);
@@ -986,11 +995,19 @@ function shuffleWithSeed<T>(array: T[], randFn: () => number): T[] {
 }
 
 // Coerce a string | RichContent value into plain text for AI prompts/logging.
+// RichContent objects carry a `plainText` field (not `text`).
 function asPlainText(v: any): string {
   if (v === null || v === undefined) return "";
   if (typeof v === "string") return v;
   if (typeof v === "object") {
+    // RichContent uses `plainText` as the canonical plain-text representation.
+    if (typeof v.plainText === "string") return v.plainText;
+    // Legacy objects may carry a bare `text` field.
     if (typeof v.text === "string") return v.text;
+    // Fall back to stripping HTML if available rather than serialising the whole object.
+    if (typeof v.html === "string") {
+      return v.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    }
     try {
       return JSON.stringify(v);
     } catch {
@@ -3001,8 +3018,12 @@ app.get("/api/student/performance", requireAuth, (req, res) => {
       });
       const score = attemptResponses.reduce((sum: number, r: any) => sum + (r.score || 0), 0);
 
-      // Calculate max points for this lesson
-      const lessonBlocks = (db.blocks || []).filter((b: any) => b.lessonId === attempt.lessonId);
+      // Calculate max points from the immutable version snapshot (stable denominator even if teacher
+      // edits the lesson after the attempt was taken).  Fall back to db.blocks for legacy attempts.
+      const versionBlocks = attempt.lessonVersionId
+        ? ((db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId)?.blocksSnapshot || null)
+        : null;
+      const lessonBlocks = versionBlocks || (db.blocks || []).filter((b: any) => b.lessonId === attempt.lessonId);
       const maxScore = lessonBlocks.reduce((sum: number, b: any) => {
         if (b.type !== "question" || b.isPractice) return sum;
         if (b.singleQuestion) return sum + (b.singleQuestion.points || 0);
@@ -4040,13 +4061,21 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === newResponse.id);
 
         if (freshRespIdx !== -1) {
-          freshDb.responses[freshRespIdx].score = clampedScore;
-          freshDb.responses[freshRespIdx].pointsEarned = clampedScore;
+          // Guard: if a teacher has already reviewed or overridden this response while the AI
+          // was grading, do NOT overwrite their decision.  Still update the AIGradingRecord
+          // for audit purposes so the grading details are available in the teacher review UI.
+          const currentResp = freshDb.responses[freshRespIdx];
+          const teacherAlreadyActed = !!(currentResp.teacherReviewedAt || currentResp.teacherOverride);
+
+          if (!teacherAlreadyActed) {
+            freshDb.responses[freshRespIdx].score = clampedScore;
+            freshDb.responses[freshRespIdx].pointsEarned = clampedScore;
+          }
           freshDb.responses[freshRespIdx].isLowEffort = isLowEffort;
           if (lowEffortReason) freshDb.responses[freshRespIdx].lowEffortReason = lowEffortReason;
 
           // For practice responses with a clean grade, release feedback to the student
-          if (isPracticeQuestion && finalStatus === "success") {
+          if (!teacherAlreadyActed && isPracticeQuestion && finalStatus === "success") {
             freshDb.responses[freshRespIdx].aiFeedbackReleasedAt = new Date().toISOString();
             // feedbackVisibility is already "student_visible" from submission; ensure it stays set
             freshDb.responses[freshRespIdx].feedbackVisibility = "student_visible";
@@ -4074,7 +4103,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           const gradebookFeedback = isPracticeQuestion ? studentFeedback : teacherRationale;
 
           const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
-          if (freshAttempt) {
+          if (!teacherAlreadyActed && freshAttempt) {
             upsertResponseGradebookEntry(
               freshDb.responses[freshRespIdx],
               freshAttempt,
@@ -4115,30 +4144,35 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
             rubricBreakdown: {},
             gradedAt: new Date().toISOString()
           };
-          if (isLowEffort) {
-            const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
-            if (freshRespIdx !== -1) {
+
+          const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
+          const teacherAlreadyActed = freshRespIdx !== -1 && !!(
+            freshDb.responses[freshRespIdx].teacherReviewedAt ||
+            freshDb.responses[freshRespIdx].teacherOverride
+          );
+
+          if (!teacherAlreadyActed) {
+            if (isLowEffort && freshRespIdx !== -1) {
               freshDb.responses[freshRespIdx].score = 0;
               freshDb.responses[freshRespIdx].pointsEarned = 0;
               freshDb.responses[freshRespIdx].isLowEffort = true;
               freshDb.responses[freshRespIdx].lowEffortReason = rulesCheck.reason;
             }
-          }
 
-          // Write/update failed response-level GradebookEntry
-          const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
-          const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
-          if (freshRespIdx !== -1 && freshAttempt) {
-            upsertResponseGradebookEntry(
-              freshDb.responses[freshRespIdx],
-              freshAttempt,
-              "error",
-              "ai_short_answer",
-              isLowEffort 
-                ? `AI grading failed, but response was flagged as low-effort: ${rulesCheck.reason}`
-                : "AI grading failed to complete. Sent to the review queue for manual grading.",
-              freshDb
-            );
+            // Write/update failed response-level GradebookEntry
+            const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
+            if (freshRespIdx !== -1 && freshAttempt) {
+              upsertResponseGradebookEntry(
+                freshDb.responses[freshRespIdx],
+                freshAttempt,
+                "error",
+                "ai_short_answer",
+                isLowEffort
+                  ? `AI grading failed, but response was flagged as low-effort: ${rulesCheck.reason}`
+                  : "AI grading failed to complete. Sent to the review queue for manual grading.",
+                freshDb
+              );
+            }
           }
 
           recalculateAttemptScore(id, freshDb);
