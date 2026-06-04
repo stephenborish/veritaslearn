@@ -4299,4 +4299,94 @@ VERIFICATION:
   - Verified compilation and build succeeds with `npm run build` via compile_applet.
   - Verified static typing via `tsc --noEmit` via linter is fully green.
 ```
+
+```text
+Date: 2026-06-04
+Agent: Claude Code (claude-sonnet-4-6)
+Task: Fix root data-loss architecture for teacher lesson-builder rich-text fields and student response submission reliability
+
+ROOT CAUSE:
+  LessonsBuilder.tsx handlers (handleAddBlock, handleDeleteBlock, moveBlock, saveWithPublishedStatus,
+  computeReadiness, autosave effects) read currentBlocks directly from the React render closure.
+  When a Lexical onChange callback queued a state update that React had not yet flushed, the next
+  user action (e.g. clicking "Add reading" immediately after editing rich text) would see the stale
+  pre-edit value of currentBlocks and overwrite the Lexical change.
+
+  Additional problems:
+  - FocusedPlayer.tsx handleSubmitResponse never checked respObj.ok / data.success before clearing
+    drafts and marking questions submitted, so server errors silently discarded student work.
+  - FocusedPlayer.tsx onSelectChoice spread the stale selectedMC closure instead of a functional
+    update, creating a race condition when two MC choices were toggled quickly.
+  - FocusedPlayer.tsx onSubmit closures captured selectedMC / saText from the render closure;
+    if React had not re-rendered after onSelectChoice/handleSaChange the submit sent a stale value.
+  - FocusedPlayer.tsx persistDraftResponse never checked res.ok, always showing "saved" even on
+    4xx / 5xx server responses.
+  - server.ts POST /api/attempts/:id/draft used writeDb() (best-effort, non-awaited) instead of
+    await commitDb(), so draft persistence could silently fail and clients would believe success.
+  - server.ts POST /api/lessons/:id/duplicate and DELETE /api/lessons/:id used writeDb() instead of
+    await commitDb() for durable teacher-authored content.
+
+FILES CHANGED:
+  1. src/components/TeacherDashboard/LessonsBuilder.tsx
+     - Added currentBlocksRef (useRef<any[]>[]) immediately after the currentBlocks useState.
+     - Added setCurrentBlocksLive(nextOrUpdater) helper: reads ref → computes next → writes ref
+       synchronously → calls setCurrentBlocks(next) → returns next.
+     - Replaced every setCurrentBlocks(...) call with setCurrentBlocksLive(...).
+     - Initialization paths (startEditing, startNewLesson, handleRestoreDraft,
+       handleRestoreServerDraft, post-save canonical reload) all call setCurrentBlocksLive so
+       the ref is updated atomically with the state.
+     - handleAddBlock, handleDeleteBlock, moveBlock now use setCurrentBlocksLive with functional
+       updater (prev) => ... so the new block is appended/removed from the latest state even if a
+       pending Lexical update has not flushed.
+     - getSnapshot, saveWithPublishedStatus validation, saveWithPublishedStatus payload, fallback
+       snapshot, computeReadiness, localStorage draft write, and the server autosave timer callback
+       all read from currentBlocksRef.current instead of the closure variable.
+     - The 2500ms server-autosave timer captures blocks from currentBlocksRef.current at execution
+       time (inside the setTimeout callback) rather than at effect-setup time, picking up any
+       Lexical change that arrived during the debounce window.
+
+  2. src/components/StudentPortal/FocusedPlayer.tsx
+     - Added selectedMCRef (useRef<{[qId:string]:string}>{}) and a useEffect to keep it in sync.
+     - Both onSelectChoice closures now update selectedMCRef.current synchronously and call
+       setSelectedMC with a functional updater (prev) => ... to avoid closure-spread races.
+     - Both onSubmit closures read selectedMCRef.current[q.id] / saTextRef.current[q.id] instead
+       of the stale render-closure values, ensuring immediate submit sends the correct latest value.
+     - handleSubmitResponse: added early return with grading_failed state if !respObj.ok ||
+       !data.success; setSubmittedLocal, clearDraft, and clearTimer are gated on server success.
+     - persistDraftResponse: checks res.ok after the fetch; marks autosave "error" (not "saved")
+       when the server returns a non-2xx response.
+
+  3. server.ts
+     - POST /api/attempts/:id/draft: converted to async, replaced writeDb(db) with
+       await commitDb(db) inside a try/catch that returns 500 on failure so clients can detect it.
+     - POST /api/lessons/:id/duplicate: converted to async, replaced writeDb(db) with
+       await commitDb(db) inside a try/catch.
+     - DELETE /api/lessons/:id: converted to async, replaced writeDb(db) with
+       await commitDb(db) inside a try/catch.
+
+  4. scripts/verify-teacher-state.ts
+     - Added Section 5: static stale-closure guard that reads LessonsBuilder.tsx at test time and
+       fails if forbidden patterns appear:
+         * /const nextBlocks = \[\.\.\.currentBlocks(?!Ref)/
+         * /const nextBlocks = currentBlocks\.filter/
+         * /const updated = \[\.\.\.currentBlocks\]/
+         * /blocks:\s*currentBlocks(?!Ref)/
+     - Also asserts that the live-ref infrastructure (currentBlocksRef, setCurrentBlocksLive,
+       currentBlocksRef.current in payload, currentBlocksRef.current.forEach in computeReadiness,
+       setCurrentBlocksLive in handleAddBlock and handleDeleteBlock) is present.
+
+  5. scripts/verify-builder.ts
+     - Updated three assertions that previously hard-coded the old setCurrentBlocks patterns to
+       accept either setCurrentBlocksLive or setCurrentBlocks (for forward/backward compatibility).
+     - Updated payload check to accept blocks: currentBlocksRef.current.
+
+VERIFICATION RESULTS:
+  npm run build         ✓  (vite + esbuild, no errors)
+  npm run lint          ✓  (zero errors in src/; pre-existing script/server.ts node-type errors unchanged)
+  npm run verify:teacher-state  ✓  22 passed, 0 failed
+  npm run verify:builder        ✓  73 passed, 0 failed
+  npm run verify:workflow       ✓  61 passed, 0 failed
+  npm run verify:versioning     ✓  55 passed, 0 failed
+  npm run verify:completion     ✓  47 passed, 0 failed
+  npm run verify:hardening      ✓   6 passed, 0 failed
 ```

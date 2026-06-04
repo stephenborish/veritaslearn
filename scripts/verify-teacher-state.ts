@@ -141,6 +141,77 @@ const initialChoices = [
 const nextChoices = [...initialChoices, { id: "choice_c", text: "Gamma" }];
 assert("Nested options array is immutable on insert", initialChoices.length === 2 && nextChoices.length === 3);
 
+// ---------------------------------------------------------------------------
+// 5. Static stale-closure guard — LessonsBuilder must not spread/filter the
+//    currentBlocks closure variable directly in mutation handlers or payloads.
+//    All such operations must go through setCurrentBlocksLive / currentBlocksRef.
+// ---------------------------------------------------------------------------
+console.log("\n5. Static guard: no stale currentBlocks spread/filter patterns in LessonsBuilder...");
+
+import { readFileSync } from "fs";
+import { join } from "path";
+
+const builderSource = readFileSync(
+  join(process.cwd(), "src/components/TeacherDashboard/LessonsBuilder.tsx"),
+  "utf8"
+);
+
+// Regex-based patterns: check for the stale closure reads without matching the
+// correct ref-based alternatives (e.g. currentBlocksRef, setCurrentBlocksLive).
+const staleRegexPatterns: Array<{ regex: RegExp; description: string }> = [
+  {
+    regex: /const nextBlocks = \[\.\.\.currentBlocks(?!Ref)/,
+    description: "stale spread: [...currentBlocks (not Ref)]",
+  },
+  {
+    regex: /const nextBlocks = currentBlocks\.filter/,
+    description: "stale filter: currentBlocks.filter",
+  },
+  {
+    regex: /const updated = \[\.\.\.currentBlocks\]/,
+    description: "stale spread: [...currentBlocks]",
+  },
+  {
+    // blocks: currentBlocks — only the bare state var, not currentBlocksRef.current
+    regex: /blocks:\s*currentBlocks(?!Ref)/,
+    description: "stale blocks payload: blocks: currentBlocks (without Ref)",
+  },
+];
+
+for (const { regex, description } of staleRegexPatterns) {
+  assert(
+    `No stale pattern: "${description}"`,
+    !regex.test(builderSource),
+    `Found forbidden stale-closure pattern: ${regex.source}`
+  );
+}
+
+// Verify the live-ref infrastructure is present
+assert(
+  "currentBlocksRef is declared in LessonsBuilder",
+  builderSource.includes("currentBlocksRef = useRef<any[]>")
+);
+assert(
+  "setCurrentBlocksLive helper is declared",
+  builderSource.includes("const setCurrentBlocksLive")
+);
+assert(
+  "saveWithPublishedStatus uses currentBlocksRef.current for payload",
+  builderSource.includes("blocks: currentBlocksRef.current")
+);
+assert(
+  "computeReadiness uses currentBlocksRef.current",
+  builderSource.includes("currentBlocksRef.current.forEach")
+);
+assert(
+  "handleAddBlock uses setCurrentBlocksLive",
+  builderSource.includes("setCurrentBlocksLive((prev) => [...prev, newBlock])")
+);
+assert(
+  "handleDeleteBlock uses setCurrentBlocksLive",
+  builderSource.includes("setCurrentBlocksLive((prev) => prev.filter")
+);
+
 console.log("\n========================================================");
 console.log(`📊 SUMMARY: ${passed} passed, ${failed} failed.`);
 console.log("========================================================\n");

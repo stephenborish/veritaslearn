@@ -165,7 +165,7 @@ const server = read("server.ts");
 
 check("Builder has a dedicated latest-state thumbnail update",
   builder.includes("handleVideoThumbnailSelected") &&
-  builder.includes("setCurrentBlocks((prev: any[]) =>") &&
+  (builder.includes("setCurrentBlocksLive((prev: any[]) =>") || builder.includes("setCurrentBlocks((prev: any[]) =>")) &&
   builder.includes("videoUrl: latestBlock.videoUrl") &&
   builder.includes("videoCheckpoints: Array.isArray(latestBlock.videoCheckpoints)"));
 check("VideoUploader routes manual frame selection through onThumbnailSelected",
@@ -222,15 +222,15 @@ console.log("\nStep 6: Builder updates and server persistence keep rich lesson d
 const serverContent = read("server.ts");
 
 check("Checkpoint updates derive from latest block state",
-  /const updateCheckpoint[\s\S]*setCurrentBlocks\(\(prev: any\[\]\) =>/.test(builder));
+  /const updateCheckpoint[\s\S]*setCurrentBlocks(?:Live)?\(\(prev: any\[\]\) =>/.test(builder));
 check("Checkpoint question updates accept updater-style latest question edits",
   /const updateCheckpointQuestion[\s\S]*nextQuestionOrUpdater[\s\S]*nextQuestionOrUpdater\(currentQuestion\)/.test(builder));
 check("Question block updates accept updater-style latest question edits",
   /const handleBlockQuestionChange[\s\S]*nextQuestionOrUpdater\(currentQuestion\)/.test(builder));
 check("Nested checkpoint code no longer reads currentBlocks[blockIndex] from render closure",
   !/currentBlocks\[blockIndex\]/.test(builder));
-check("saveWithPublishedStatus sends blocks: currentBlocks",
-  /const payload = \{[\s\S]*blocks: currentBlocks[\s\S]*\};/.test(builder));
+check("saveWithPublishedStatus sends blocks: currentBlocksRef.current or currentBlocks",
+  /const payload = \{[\s\S]*blocks: currentBlocks(?:Ref\.current)?[\s\S]*\};/.test(builder));
 check("VideoUploader persists thumbnail with video URL, duration, and storage path",
   builder.includes('onBlockMultipleChanges(index, { videoUrl: url, thumbnailUrl: thumbnail || "", duration: duration || 0, storagePath: storagePath || "" })'));
 

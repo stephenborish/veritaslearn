@@ -121,6 +121,21 @@ export default function LessonsBuilder({
   const [postPublishLessonId, setPostPublishLessonId] = useState<string | null>(null);
 
   const [currentBlocks, setCurrentBlocks] = useState<any[]>([]);
+  // Live ref — always holds the latest currentBlocks without stale-closure risk.
+  // Updated synchronously by setCurrentBlocksLive before React renders the new state,
+  // so any handler that runs immediately after a Lexical onChange will see the latest blocks.
+  const currentBlocksRef = useRef<any[]>([]);
+
+  // Reads from ref, computes next, writes ref synchronously, then schedules setState.
+  // Returns the computed next value so callers can use it immediately (e.g. setActiveWorkspace).
+  const setCurrentBlocksLive = (nextOrUpdater: any[] | ((prev: any[]) => any[])): any[] => {
+    const prev = currentBlocksRef.current;
+    const next = typeof nextOrUpdater === "function" ? nextOrUpdater(prev) : nextOrUpdater;
+    currentBlocksRef.current = next;
+    setCurrentBlocks(next);
+    return next;
+  };
+
   // Briefly highlights a freshly added block so the add feels satisfying.
   const [justAddedBlockId, setJustAddedBlockId] = useState<string | null>(null);
 
@@ -239,7 +254,7 @@ export default function LessonsBuilder({
   const getSnapshot = () => JSON.stringify({
     title, description, estimatedMinutes, isPublished,
     restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback,
-    currentBlocks
+    currentBlocks: currentBlocksRef.current
   });
 
   // ---- Open editor for existing lesson ----
@@ -260,7 +275,7 @@ export default function LessonsBuilder({
       .sort((a, b) => a.order - b.order);
 
     const normalized = normalizeBlocksForEditor(lessonBlocks.map((b) => ({ ...b })));
-    setCurrentBlocks(normalized);
+    setCurrentBlocksLive(normalized);
     setActiveWorkspace("setup");
     setSaveStatus("clean");
     setSaveError(null);
@@ -314,7 +329,7 @@ export default function LessonsBuilder({
     setAllowRetakes(false);
     setRandomizeChoices(true);
     setImmediateFeedback(false);
-    setCurrentBlocks([]);
+    setCurrentBlocksLive([]);
     setActiveWorkspace("setup");
     setSaveStatus("clean");
     setSaveError(null);
@@ -364,16 +379,16 @@ export default function LessonsBuilder({
       isPractice: type === "question" ? false : undefined,
       singleQuestion: type === "question" ? newQuestionTemplate("mc") : undefined,
     };
-    const nextBlocks = [...currentBlocks, newBlock];
-    setCurrentBlocks(nextBlocks);
+    // Use functional updater so the new block is appended to the latest state even if a
+    // Lexical onChange queued an update that React has not yet flushed.
+    const nextBlocks = setCurrentBlocksLive((prev) => [...prev, newBlock]);
     setActiveWorkspace(nextBlocks.length - 1);
     setJustAddedBlockId(freshId);
     setTimeout(() => setJustAddedBlockId((id) => (id === freshId ? null : id)), 1400);
   };
 
   const handleDeleteBlock = (index: number) => {
-    const nextBlocks = currentBlocks.filter((_: any, idx: number) => idx !== index);
-    setCurrentBlocks(nextBlocks);
+    const nextBlocks = setCurrentBlocksLive((prev) => prev.filter((_: any, idx: number) => idx !== index));
     if (activeWorkspace === index) {
       setActiveWorkspace(nextBlocks.length > 0 ? Math.min(index, nextBlocks.length - 1) : "setup");
     } else if (typeof activeWorkspace === "number" && activeWorkspace > index) {
@@ -383,31 +398,33 @@ export default function LessonsBuilder({
 
   const moveBlock = (index: number, direction: "up" | "down") => {
     if (direction === "up" && index === 0) return;
-    if (direction === "down" && index === currentBlocks.length - 1) return;
+    if (direction === "down" && index === currentBlocksRef.current.length - 1) return;
     const targetIndex = direction === "up" ? index - 1 : index + 1;
-    const updated = [...currentBlocks];
-    const temp = updated[index];
-    updated[index] = updated[targetIndex];
-    updated[targetIndex] = temp;
-    setCurrentBlocks(updated);
+    setCurrentBlocksLive((prev) => {
+      const updated = [...prev];
+      const temp = updated[index];
+      updated[index] = updated[targetIndex];
+      updated[targetIndex] = temp;
+      return updated;
+    });
     if (activeWorkspace === index) setActiveWorkspace(targetIndex);
     else if (activeWorkspace === targetIndex) setActiveWorkspace(index);
   };
 
   const handleBlockChange = (index: number, key: string, val: any) => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => (idx === index ? { ...block, [key]: val } : block))
     );
   };
 
   const handleBlockMultipleChanges = (index: number, changes: Record<string, any>) => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => (idx === index ? { ...block, ...changes } : block))
     );
   };
 
   const handleBlockQuestionChange = (index: number, nextQuestionOrUpdater: any) => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== index) return block;
         const currentQuestion = block.singleQuestion || newQuestionTemplate(block.questionType || "mc");
@@ -420,7 +437,7 @@ export default function LessonsBuilder({
   };
 
   const handleBlockQuestionTypeChange = (index: number, nextType: "mc" | "sa") => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== index) return block;
         const converted = convertQuestionType(block.singleQuestion, nextType);
@@ -430,7 +447,7 @@ export default function LessonsBuilder({
   };
 
   const handleVideoUploaded = (index: number, url: string, thumbnail?: string, duration?: number, storagePath?: string) => {
-    setCurrentBlocks((prev: any[]) => {
+    setCurrentBlocksLive((prev: any[]) => {
       if (!prev[index]) return prev;
       const updated = [...prev];
       const latestBlock = updated[index];
@@ -447,7 +464,7 @@ export default function LessonsBuilder({
   };
 
   const handleVideoThumbnailSelected = (index: number, thumbnailUrl: string) => {
-    setCurrentBlocks((prev: any[]) => {
+    setCurrentBlocksLive((prev: any[]) => {
       if (!prev[index]) return prev;
       const updated = [...prev];
       const latestBlock = updated[index];
@@ -465,7 +482,7 @@ export default function LessonsBuilder({
 
   // ---- Video checkpoint authoring ----
   const addCheckpoint = (blockIndex: number) => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== blockIndex) return block;
         const cps = Array.isArray(block.videoCheckpoints) ? block.videoCheckpoints : [];
@@ -486,7 +503,7 @@ export default function LessonsBuilder({
   };
 
   const updateCheckpoint = (blockIndex: number, cpId: string, partial: any) => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== blockIndex) return block;
         const cps = (block.videoCheckpoints || []).map((cp: any) =>
@@ -498,7 +515,7 @@ export default function LessonsBuilder({
   };
 
   const updateCheckpointQuestion = (blockIndex: number, cpId: string, nextQuestionOrUpdater: any) => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== blockIndex) return block;
         const cps = (block.videoCheckpoints || []).map((cp: any) => {
@@ -516,7 +533,7 @@ export default function LessonsBuilder({
   };
 
   const updateCheckpointQuestionType = (blockIndex: number, cpId: string, nextType: "mc" | "sa") => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== blockIndex) return block;
         const cps = (block.videoCheckpoints || []).map((cp: any) => {
@@ -531,7 +548,7 @@ export default function LessonsBuilder({
   };
 
   const deleteCheckpoint = (blockIndex: number, cpId: string) => {
-    setCurrentBlocks((prev: any[]) =>
+    setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== blockIndex) return block;
         return { ...block, videoCheckpoints: (block.videoCheckpoints || []).filter((cp: any) => cp.id !== cpId) };
@@ -557,7 +574,7 @@ export default function LessonsBuilder({
           timestamp: Date.now(),
           title, description, estimatedMinutes, isPublished,
           restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback,
-          currentBlocks
+          currentBlocks: currentBlocksRef.current
         }));
       }, 1000);
       return () => clearTimeout(timer);
@@ -626,10 +643,12 @@ export default function LessonsBuilder({
     const capturedEstimatedMinutes = estimatedMinutes;
     const capturedIsPublished = isPublished;
     const capturedSettings = { restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback };
-    const capturedBlocks = currentBlocks;
     const capturedToken = idToken;
 
     const timer = setTimeout(async () => {
+      // Read blocks from the live ref at execution time to pick up any Lexical
+      // onChange that was queued after this effect ran but before the timer fired.
+      const capturedBlocks = currentBlocksRef.current;
       setAutosaveStatus("saving");
       try {
         const res = await fetch(`/api/lessons/${lessonId}/draft`, {
@@ -692,7 +711,7 @@ export default function LessonsBuilder({
     setRandomizeChoices(recoveryDraft.randomizeChoices ?? true);
     setImmediateFeedback(recoveryDraft.immediateFeedback ?? false);
     const restoredBlocks = normalizeBlocksForEditor(recoveryDraft.currentBlocks || []);
-    setCurrentBlocks(restoredBlocks);
+    setCurrentBlocksLive(restoredBlocks);
     if (typeof recoveryDraft.activeWorkspace !== "undefined") {
       setActiveWorkspace(recoveryDraft.activeWorkspace);
     }
@@ -721,7 +740,7 @@ export default function LessonsBuilder({
     setRandomizeChoices(p.settings?.randomizeChoices ?? true);
     setImmediateFeedback(p.settings?.immediateFeedback ?? false);
     const restoredBlocks = normalizeBlocksForEditor(p.blocks || []);
-    setCurrentBlocks(restoredBlocks);
+    setCurrentBlocksLive(restoredBlocks);
     setServerDraft(null);
     setServerDraftConflict(false);
     setSaveStatus("clean");
@@ -750,7 +769,7 @@ export default function LessonsBuilder({
 
     if (publishedStatus) {
       const problems: string[] = [];
-      currentBlocks.forEach((b: any, i: number) => {
+      currentBlocksRef.current.forEach((b: any, i: number) => {
         if (b.type === "question" && b.singleQuestion) {
           validateQuestionClient(b.singleQuestion, b.questionType || "mc", !b.isPractice).forEach((e) =>
             problems.push(`Block ${i + 1}: ${e}`)
@@ -780,7 +799,7 @@ export default function LessonsBuilder({
       estimatedMinutes,
       isPublished: publishedStatus,
       settings: { restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback },
-      blocks: currentBlocks
+      blocks: currentBlocksRef.current
     };
 
     setSaveStatus("saving");
@@ -817,7 +836,7 @@ export default function LessonsBuilder({
         activeDraftKeyRef.current = newKey;
 
         const resolvedBlocks = normalizeBlocksForEditor(savedResult.blocks || []);
-        setCurrentBlocks(resolvedBlocks);
+        setCurrentBlocksLive(resolvedBlocks);
         setIsPublished(savedResult.isPublished);
 
         const newSnap = JSON.stringify({
@@ -837,7 +856,7 @@ export default function LessonsBuilder({
         setInitialSnapshotStr(JSON.stringify({
           title, description, estimatedMinutes, isPublished: publishedStatus,
           restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback,
-          currentBlocks
+          currentBlocks: currentBlocksRef.current
         }));
       }
       return savedResult || null;
@@ -992,7 +1011,7 @@ export default function LessonsBuilder({
     if (!title || !title.trim()) {
       issues.push({ message: "Add a lesson title in Setup.", target: "setup" });
     }
-    if (currentBlocks.length === 0) {
+    if (currentBlocksRef.current.length === 0) {
       issues.push({ message: "Add at least one video, reading, or question.", target: "setup" });
     }
 
@@ -1077,8 +1096,8 @@ export default function LessonsBuilder({
       }
     };
 
-    currentBlocks.forEach((b: any, i: number) => {
-      const blockLabel = b.title?.trim() ? `“${b.title.trim()}”` : `Block ${i + 1}`;
+    currentBlocksRef.current.forEach((b: any, i: number) => {
+      const blockLabel = b.title?.trim() ? `”${b.title.trim()}”` : `Block ${i + 1}`;
       if (!b.title?.trim()) {
         issues.push({ message: `Block ${i + 1} needs a title.`, target: i });
       }
