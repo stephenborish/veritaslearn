@@ -95,6 +95,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   // SA AI feedback data per question (practice only, after grading completes)
   const [saFeedback, setSaFeedback] = useState<{ [qId: string]: SaFeedbackData }>({});
   const draftSaveTimers = useRef<{ [qId: string]: ReturnType<typeof setTimeout> }>({});
+  const latestDraftClientUpdatedAtRef = useRef<{ [qId: string]: string }>({});
 
   const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>("");
 
@@ -132,12 +133,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setAssignments(data.questionAssignments || data.assignments || []);
       setResponses(data.responses);
 
-      const lResponse = await fetch(
-        `/api/lessons/${data.attempt.lessonId}${data.attempt.isPreviewAttempt ? "?preview=true" : ""}`,
-        { headers: authHeader }
-      );
-      const lData = await lResponse.json();
-      setBlocks(lData.blocks);
+      const runtimeBlocks = data.blocks || [];
+      setBlocks(runtimeBlocks);
       setCurrentBlockIndex(data.attempt.currentBlockIndex || 0);
 
       // Restore existing submissions
@@ -209,7 +206,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
       const savedFurthest = data.attempt.furthestVideoTimestamps;
       if (savedFurthest && Object.keys(savedFurthest).length > 0) {
-        const blockId = lData.blocks[data.attempt.currentBlockIndex]?.id;
+        const blockId = runtimeBlocks[data.attempt.currentBlockIndex]?.id;
         if (blockId && savedFurthest[blockId]) {
           setFurthestMaxTimestamp(savedFurthest[blockId]);
         }
@@ -661,7 +658,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   };
 
   // Dedicated helper to persist draft to backend
-  const persistDraftResponse = useCallback(async (questionId: string, value: string) => {
+  const persistDraftResponse = useCallback(async (questionId: string, value: string, clientUpdatedAt?: string) => {
     if (submittedLocal[questionId]) {
       if (draftSaveTimers.current[questionId]) {
         clearTimeout(draftSaveTimers.current[questionId]);
@@ -671,6 +668,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       return;
     }
 
+    const saveClientUpdatedAt = clientUpdatedAt || latestDraftClientUpdatedAtRef.current[questionId] || new Date().toISOString();
+    latestDraftClientUpdatedAtRef.current[questionId] = saveClientUpdatedAt;
     setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saving" }));
     try {
       localStorage.setItem(`veritas_draft_${attemptId}_${questionId}`, value);
@@ -682,15 +681,21 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         const res = await fetch(`/api/attempts/${attemptId}/draft`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeader },
-          body: JSON.stringify({ questionId, draftText: value }),
+          body: JSON.stringify({ questionId, draftText: value, clientUpdatedAt: saveClientUpdatedAt }),
         });
         if (!res.ok) {
           setSaAutosave((prev: any) => ({ ...prev, [questionId]: "error" }));
           return;
         }
+        const data = await res.json();
+        if (data.staleIgnored || latestDraftClientUpdatedAtRef.current[questionId] !== saveClientUpdatedAt) {
+          return;
+        }
       }
+      if (latestDraftClientUpdatedAtRef.current[questionId] !== saveClientUpdatedAt) return;
       setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saved" }));
     } catch {
+      if (latestDraftClientUpdatedAtRef.current[questionId] !== saveClientUpdatedAt) return;
       setSaAutosave((prev: any) => ({ ...prev, [questionId]: "error" }));
     }
   }, [attemptId, submittedLocal]);
@@ -792,7 +797,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         const state = autosaveMap[qId];
         if (state === "dirty" || state === "error") {
           const value = textMap[qId];
-          persistDraftResponseRef.current(qId, value);
+          persistDraftResponseRef.current(qId, value, latestDraftClientUpdatedAtRef.current[qId]);
         }
       });
     }, 15000);
@@ -813,13 +818,15 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     }
 
     setSaText((prev: any) => ({ ...prev, [questionId]: value }));
+    const clientUpdatedAt = new Date().toISOString();
+    latestDraftClientUpdatedAtRef.current[questionId] = clientUpdatedAt;
     setSaAutosave((prev: any) => ({ ...prev, [questionId]: "dirty" }));
 
     if (draftSaveTimers.current[questionId]) {
       clearTimeout(draftSaveTimers.current[questionId]);
     }
     draftSaveTimers.current[questionId] = setTimeout(async () => {
-      await persistDraftResponse(questionId, value);
+      await persistDraftResponse(questionId, value, clientUpdatedAt);
     }, 800);
   };
 
@@ -886,13 +893,19 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const handleCompleteLessonAttempt = async () => {
     try {
       const authHeader = await getAuthHeader();
-      await fetch(`/api/attempts/${attemptId}/complete`, {
+      const res = await fetch(`/api/attempts/${attemptId}/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeader },
       });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        setNavigationError(data.error || "Unable to finish the lesson yet. Please try again.");
+        return;
+      }
       onExit();
     } catch {
       // Keep player open if complete fails
+      setNavigationError("Unable to finish the lesson yet. Please check your connection and try again.");
     }
   };
 

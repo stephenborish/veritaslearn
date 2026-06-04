@@ -111,6 +111,7 @@ export default function LessonsBuilder({
   // Track whether server data was updated while we're actively editing
   const [serverDataUpdated, setServerDataUpdated] = useState(false);
   const editingStartedAtRef = useRef<string>("");
+  const latestDraftClientUpdatedAtRef = useRef<string | null>(null);
 
   const [saveStatus, setSaveStatus] = useState<"clean" | "saving" | "saved" | "error">("clean");
   const [isDirty, setIsDirty] = useState(false);
@@ -644,6 +645,8 @@ export default function LessonsBuilder({
     const capturedIsPublished = isPublished;
     const capturedSettings = { restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback };
     const capturedToken = idToken;
+    const clientUpdatedAt = new Date().toISOString();
+    latestDraftClientUpdatedAtRef.current = clientUpdatedAt;
 
     const timer = setTimeout(async () => {
       // Read blocks from the live ref at execution time to pick up any Lexical
@@ -666,16 +669,21 @@ export default function LessonsBuilder({
               settings: capturedSettings,
               blocks: capturedBlocks
             },
-            baseLessonUpdatedAt
+            baseLessonUpdatedAt,
+            clientUpdatedAt
           })
         });
         if (res.ok) {
+          const data = await res.json();
+          if (data.staleIgnored || latestDraftClientUpdatedAtRef.current !== clientUpdatedAt) return;
           setAutosaveStatus("saved");
           setTimeout(() => setAutosaveStatus((s: "idle" | "saving" | "saved" | "failed") => s === "saved" ? "idle" : s), 3000);
         } else {
+          if (latestDraftClientUpdatedAtRef.current !== clientUpdatedAt) return;
           setAutosaveStatus("failed");
         }
       } catch {
+        if (latestDraftClientUpdatedAtRef.current !== clientUpdatedAt) return;
         setAutosaveStatus("failed");
       }
     }, 2500);

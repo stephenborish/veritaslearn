@@ -20,7 +20,8 @@
     "verify:access-control": "tsx scripts/verify-access-control.ts",
     "verify:versioning": "tsx scripts/verify-versioning.ts",
     "verify:api-only": "tsx scripts/verify-api-only.ts",
-    "verify:completion": "tsx scripts/verify-completion.ts"
+    "verify:completion": "tsx scripts/verify-completion.ts",
+    "verify:reliability": "tsx scripts/verify-reliability.ts"
   },
   "dependencies": {
     "@ckeditor/ckeditor5-react": "^11.1.2",
