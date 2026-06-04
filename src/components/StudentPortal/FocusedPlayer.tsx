@@ -82,6 +82,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // Scoring / submission
   const [selectedMC, setSelectedMC] = useState<{ [qId: string]: string }>({});
+  const selectedMCRef = useRef<{ [qId: string]: string }>({});
   const [saText, setSaText] = useState<{ [qId: string]: string }>({});
   const [submittedLocal, setSubmittedLocal] = useState<{ [qId: string]: boolean }>({});
   const [savingResponse, setSavingResponse] = useState<{ [qId: string]: boolean }>({});
@@ -678,11 +679,15 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     try {
       const authHeader = await getAuthHeader();
       if (authHeader.Authorization) {
-        await fetch(`/api/attempts/${attemptId}/draft`, {
+        const res = await fetch(`/api/attempts/${attemptId}/draft`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeader },
           body: JSON.stringify({ questionId, draftText: value }),
         });
+        if (!res.ok) {
+          setSaAutosave((prev: any) => ({ ...prev, [questionId]: "error" }));
+          return;
+        }
       }
       setSaAutosave((prev: any) => ({ ...prev, [questionId]: "saved" }));
     } catch {
@@ -699,6 +704,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   useEffect(() => {
     saTextRef.current = saText;
   }, [saText]);
+
+  useEffect(() => {
+    selectedMCRef.current = selectedMC;
+  }, [selectedMC]);
 
   useEffect(() => {
     saAutosaveRef.current = saAutosave;
@@ -833,6 +842,13 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       });
       const data = await respObj.json();
 
+      // Only mark as submitted if the server explicitly confirmed success.
+      // On 4xx/5xx or success:false keep the draft in place so the student can retry.
+      if (!respObj.ok || !data.success) {
+        setSaGradingState((prev: any) => ({ ...prev, [questionId]: "grading_failed" }));
+        return;
+      }
+
       setSubmittedLocal((prev: any) => ({ ...prev, [questionId]: true }));
       setSaAutosave((prev: any) => ({ ...prev, [questionId]: "idle" }));
 
@@ -861,7 +877,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         }));
       }
     } catch {
-      // Keep the draft in place on error
+      // Keep the draft in place on network error
     } finally {
       setSavingResponse((prev: any) => ({ ...prev, [questionId]: false }));
     }
@@ -1596,7 +1612,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                   questionNumber={step + 1}
                                   totalQuestions={total}
                                   selectedChoiceId={selectedMC[q.id]}
-                                  onSelectChoice={(id) => setSelectedMC({ ...selectedMC, [q.id]: id })}
+                                  onSelectChoice={(id) => {
+                                    selectedMCRef.current = { ...selectedMCRef.current, [q.id]: id };
+                                    setSelectedMC((prev) => ({ ...prev, [q.id]: id }));
+                                  }}
                                   saValue={saText[q.id] || ""}
                                   onSaChange={(val) => handleSaChange(q.id, val)}
                                   autosaveState={saAutosave[q.id] || "idle"}
@@ -1606,7 +1625,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                     handleSubmitResponse(
                                       activeBlock.id,
                                       q.id,
-                                      isMc ? selectedMC[q.id] : saText[q.id],
+                                      isMc ? selectedMCRef.current[q.id] : saTextRef.current[q.id] ?? "",
                                       activeCheckpoint.id,
                                     )
                                   }
@@ -1686,7 +1705,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                         questionNumber={qIdx + 1}
                         totalQuestions={assignedSet.length}
                         selectedChoiceId={selectedMC[q.id]}
-                        onSelectChoice={(id) => setSelectedMC({ ...selectedMC, [q.id]: id })}
+                        onSelectChoice={(id) => {
+                          selectedMCRef.current = { ...selectedMCRef.current, [q.id]: id };
+                          setSelectedMC((prev) => ({ ...prev, [q.id]: id }));
+                        }}
                         saValue={saText[q.id] || ""}
                         onSaChange={(val) => handleSaChange(q.id, val)}
                         autosaveState={saAutosave[q.id] || "idle"}
@@ -1696,7 +1718,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           handleSubmitResponse(
                             activeBlock.id,
                             q.id,
-                            isMc ? selectedMC[q.id] : saText[q.id],
+                            isMc ? selectedMCRef.current[q.id] : saTextRef.current[q.id] ?? "",
                           )
                         }
                         mcFeedback={feedbackState[q.id]}

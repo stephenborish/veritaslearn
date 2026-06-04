@@ -2084,7 +2084,7 @@ app.get("/api/lessons/:id/versions", requireTeacher, (req, res) => {
 });
 
 // Teacher: Duplicate a lesson
-app.post("/api/lessons/:id/duplicate", requireTeacher, (req, res) => {
+app.post("/api/lessons/:id/duplicate", requireTeacher, async (req, res) => {
   const { id } = req.params;
   const db = readDb();
 
@@ -2114,12 +2114,16 @@ app.post("/api/lessons/:id/duplicate", requireTeacher, (req, res) => {
     });
   });
 
-  writeDb(db);
-  res.json({ success: true, duplicatedLessonId: newId });
+  try {
+    await commitDb(db);
+    res.json({ success: true, duplicatedLessonId: newId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to duplicate lesson." });
+  }
 });
 
 // Teacher: Archive/Delete Lesson
-app.delete("/api/lessons/:id", requireTeacher, (req, res) => {
+app.delete("/api/lessons/:id", requireTeacher, async (req, res) => {
   const { id } = req.params;
   const db = readDb();
 
@@ -2138,9 +2142,12 @@ app.delete("/api/lessons/:id", requireTeacher, (req, res) => {
     );
   }
   // Keep attempts for record consistency unless necessary to delete
-  writeDb(db);
-
-  res.json({ success: true });
+  try {
+    await commitDb(db);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to delete lesson." });
+  }
 });
 
 // ==========================================
@@ -4258,7 +4265,7 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
 // Save SA draft response (server-side autosave without submitting).
 // Stores draftResponses[questionId] on the attempt so the student can resume
 // from any device without losing progress. localStorage is still used as a fallback.
-app.post("/api/attempts/:id/draft", requireAuth, (req, res) => {
+app.post("/api/attempts/:id/draft", requireAuth, async (req, res) => {
   const { id } = req.params;
   const { questionId, draftText } = req.body;
 
@@ -4300,8 +4307,12 @@ app.post("/api/attempts/:id/draft", requireAuth, (req, res) => {
   db.attempts[attemptIdx].draftResponses[questionId] = draftText;
   db.attempts[attemptIdx].lastActiveAt = new Date().toISOString();
 
-  writeDb(db);
-  res.json({ success: true });
+  try {
+    await commitDb(db);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to persist draft. Please try again." });
+  }
 });
 
 // Lightweight endpoint for polling practice SA grading status.
