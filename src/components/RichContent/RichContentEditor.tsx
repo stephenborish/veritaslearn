@@ -419,21 +419,26 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
 
   // Detect external value changes that warrant re-importing content into the editor
   useEffect(() => {
+    // Reset lastEmitted if the documentKey changed so we don't block applying initial values of new blocks
+    if (docKeyChanged) {
+      lastEmittedRef.current = null;
+    }
+
     // Fast-path: if value is the plain HTML string we just emitted, skip reimport.
     // This handles parents that store val.html (a string) instead of the full RichContent
     // object — without this check the echo-prevention below fails because
     // migrateToRichContent() sees a plain string and transforms it, producing HTML that
     // no longer matches currentHtmlRef or lastEmittedRef.
-    if (typeof value === 'string' && lastEmittedRef.current !== null) {
+    if (typeof value === 'string' && lastEmittedRef.current !== null && !docKeyChanged) {
       if (JSON.stringify({ html: value }) === lastEmittedRef.current) return;
     }
 
     const newVal = migrateToRichContent(value);
     // Skip if the HTML hasn't changed from what the editor currently has
-    if (newVal.html === currentHtmlRef.current) return;
+    if (newVal.html === currentHtmlRef.current && !docKeyChanged) return;
     // Skip if this is echoing back content we just emitted
     const str = JSON.stringify({ html: newVal.html });
-    if (str === lastEmittedRef.current) return;
+    if (str === lastEmittedRef.current && !docKeyChanged) return;
 
     // Suppress external value updates if the editor is actively focused and the edit target
     // documentKey has not changed. This protects the teacher's active caret and keystrokes.

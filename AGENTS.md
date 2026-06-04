@@ -4282,3 +4282,21 @@ Future-agent warning:
     it, clicking a button steals focus from the math-field and insert() writes to a blurred
     field, which may not place the symbol at the expected cursor position.
 ```
+
+```text
+Date: 2026-06-04
+Agent: Antigravity Code Partner
+Task: Fix RichContentEditor content saving and loading issues on documentKey change / block navigation
+
+WHAT CHANGED:
+
+src/components/RichContent/RichContentEditor.tsx:
+  - Added resetting of `lastEmittedRef.current = null` synchronously during render when `docKeyChanged` is true.
+  - Bypassed the fast-path string match hook and skip-early returns inside value-sync `useEffect` if `docKeyChanged` is true.
+  - This solves the issue of rich content textboxes (Reading Content, Question Stem / Prompt, Instructions, Model Answer, etc.) sometimes displaying as blank when teachers click to add other blocks or navigate back and forth. Stale `lastEmittedRef.current` values from earlier edited blocks are no longer used to block value synchronization when editing a new document.
+
+VERIFICATION:
+  - Verified compilation and build succeeds with `npm run build` via compile_applet.
+  - Verified static typing via `tsc --noEmit` via linter is fully green.
+```
+```
