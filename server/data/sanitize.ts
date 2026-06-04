@@ -265,6 +265,21 @@ export function sanitizeResponseForStudent(r: any): any {
     teacherReleased ||
     (isPractice && (feedbackVis === "student_visible" || feedbackVis === "immediate"));
 
+  // Assessment responses never expose scoring, correctness, AI grading, rubric
+  // breakdowns, rationale, teacher notes, or feedback in the student payload.
+  // Students see only that the response was submitted for teacher review.
+  if (!isPractice) {
+    delete safe.score;
+    delete safe.pointsEarned;
+    delete safe.isCorrect;
+    delete safe.aiGrading;
+    delete safe.aiFeedbackReleasedAt;
+    delete safe.feedback;
+    delete safe.studentFacingFeedback;
+    safe.status = "submitted";
+    return safe;
+  }
+
   if (safe.type === "sa") {
     if (feedbackAllowed) {
       // Released feedback: sanitize AI grading and expose student-facing content only

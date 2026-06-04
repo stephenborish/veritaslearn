@@ -1432,6 +1432,38 @@ function resolveQuestionFromVersion(
   return { block, rawOriginal };
 }
 
+/**
+ * Resolve the immutable runtime blocks for an attempt.
+ *
+ * Attempts that have a lessonVersionId must render, validate navigation, and
+ * complete against that frozen version snapshot. Live db.blocks is only a
+ * compatibility fallback for legacy attempts that predate versioning or whose
+ * snapshot is genuinely unavailable.
+ */
+function resolveAttemptRuntimeBlocks(attempt: any, db: any): any[] {
+  if (attempt?.lessonVersionId) {
+    const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
+    if (version && Array.isArray(version.blocksSnapshot)) {
+      return [...version.blocksSnapshot].sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+    }
+    console.warn(
+      `VERITAS Learn - Attempt ${attempt.id} references missing lessonVersionId ${attempt.lessonVersionId}; falling back to live blocks for legacy compatibility.`
+    );
+  }
+
+  return (db.blocks || [])
+    .filter((b: any) => b.lessonId === attempt.lessonId)
+    .sort((a: any, b: any) => (a.order || 0) - (b.order || 0));
+}
+
+function resolveAttemptRuntimeSettings(attempt: any, lesson: any, db: any): any {
+  if (attempt?.lessonVersionId) {
+    const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
+    if (version?.settings) return version.settings;
+  }
+  return lesson?.settings || {};
+}
+
 // Multer Storage Configuration for academic video uploads using Memory Storage for Firebase Storage direct stream
 const uploadStorage = multer.memoryStorage();
 
@@ -2176,7 +2208,7 @@ app.post("/api/lessons/:lessonId/draft", requireTeacher, async (req, res) => {
   try {
     const { lessonId } = req.params;
     const user = (req as any).user;
-    const { draftPayload, baseLessonUpdatedAt } = req.body;
+    const { draftPayload, baseLessonUpdatedAt, clientUpdatedAt } = req.body;
 
     if (!draftPayload || typeof draftPayload !== "object") {
       res.status(400).json({ error: "draftPayload is required." });
@@ -2204,10 +2236,16 @@ app.post("/api/lessons/:lessonId/draft", requireTeacher, async (req, res) => {
     );
 
     if (existingIdx !== -1) {
+      const existingClientUpdatedAt = db.lessonDrafts[existingIdx].clientUpdatedAt;
+      if (clientUpdatedAt && existingClientUpdatedAt && new Date(clientUpdatedAt) < new Date(existingClientUpdatedAt)) {
+        res.json({ success: true, draft: db.lessonDrafts[existingIdx], staleIgnored: true });
+        return;
+      }
       db.lessonDrafts[existingIdx] = {
         ...db.lessonDrafts[existingIdx],
         draftPayload,
         baseLessonUpdatedAt: baseLessonUpdatedAt || db.lessonDrafts[existingIdx].baseLessonUpdatedAt,
+        clientUpdatedAt: clientUpdatedAt || now,
         updatedAt: now
       };
       await commitDb(db);
@@ -2219,6 +2257,7 @@ app.post("/api/lessons/:lessonId/draft", requireTeacher, async (req, res) => {
         teacherId: user.id,
         draftPayload,
         baseLessonUpdatedAt: baseLessonUpdatedAt || now,
+        clientUpdatedAt: clientUpdatedAt || now,
         createdAt: now,
         updatedAt: now,
         status: "active"
@@ -3347,6 +3386,7 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
   }
 
   const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
+  let runtimeBlocks = resolveAttemptRuntimeBlocks(attempt, db);
   let questionAssignments = db.questionAssignments.filter((asg: any) => asg.attemptId === id);
   const rawResponses = db.responses.filter((r: any) => r.attemptId === id);
   let responses = mergeResponsesWithAiGrading(rawResponses, db);
@@ -3366,6 +3406,13 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
 
     // Sanitize responses to prevent answer key and premature feedback leaks
     responses = responses.map(sanitizeResponseForStudent);
+    runtimeBlocks = sanitizeLessonBlocksForStudent(runtimeBlocks);
+    const blockLeaks = findLeakedSecretFields(runtimeBlocks);
+    if (blockLeaks.length > 0) {
+      console.error("VERITAS Learn - SECURITY: attempt runtime blocks leaked fields:", blockLeaks);
+      res.status(500).json({ error: "Sanitization failed." });
+      return;
+    }
   }
 
   const safeAttempt = user.role === "student" ? sanitizeAttemptForStudent(attempt) : attempt;
@@ -3373,6 +3420,7 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
   res.json({
     attempt: safeAttempt,
     lesson,
+    blocks: runtimeBlocks,
     // `questionAssignments` is the canonical key; `assignments` retained as a
     // deprecated alias for backward compatibility with older clients.
     questionAssignments,
@@ -3384,7 +3432,7 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
 });
 
 // Watch video progress validations
-app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
+app.post("/api/attempts/:id/progress", requireAuth, async (req, res) => {
   const { id } = req.params;
   const { blockId, timestamp, activeTime, inactiveTime, playbackRate } = req.body;
   const db = readDb();
@@ -3408,6 +3456,7 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
     res.status(404).json({ error: "Lesson not found." });
     return;
   }
+  const runtimeSettings = resolveAttemptRuntimeSettings(attempt, lesson, db);
 
   const currentMax = attempt.furthestVideoTimestamps[blockId] || 0;
   let allowedTimestamp = timestamp;
@@ -3440,7 +3489,13 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
       }
     };
     db.securitySignals.push(fraudSignal);
-    writeDb(db);
+
+    try {
+      await commitDb(db);
+    } catch (err) {
+      sendAppError(res, err);
+      return;
+    }
 
     res.status(400).json({
       error: "Watch progress heartbeat metrics out of acceptable real-time limits.",
@@ -3453,7 +3508,7 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
   attempt.lastProgressReportedAt = new Date().toISOString();
 
   // STRICT VIDEO LAWS ENFORCEMENT ON BACKEND
-  if (lesson.settings.restrictSeeking) {
+  if (runtimeSettings.restrictSeeking) {
     const driftThreshold = 3; // Maximum allowed play jump without detection
     if (timestamp > currentMax + driftThreshold) {
       // FORWARD JUMP DETECTED - LOG TELEMETRY AND LIMIT THE TIMESTAMP ON SERVER
@@ -3506,7 +3561,12 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
   // Record last active timestamp for "inactive > 24h" anomaly detection
   attempt.lastActiveAt = new Date().toISOString();
 
-  writeDb(db);
+  try {
+    await commitDb(db);
+  } catch (err) {
+    sendAppError(res, err);
+    return;
+  }
   res.json({
     success: true,
     allowedTimestamp,
@@ -3516,7 +3576,7 @@ app.post("/api/attempts/:id/progress", requireAuth, (req, res) => {
 });
 
 // Update standard currentBlockIndex
-app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
+app.post("/api/attempts/:id/block", requireAuth, async (req, res) => {
   const { id } = req.params;
   const { blockIndex } = req.body;
   const db = readDb();
@@ -3534,10 +3594,9 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
     res.status(404).json({ error: "Lesson not found." });
     return;
   }
+  const runtimeSettings = resolveAttemptRuntimeSettings(attempt, lesson, db);
 
-  const lessonBlocks = db.blocks
-    .filter((b: any) => b.lessonId === attempt.lessonId)
-    .sort((a: any, b: any) => a.order - b.order);
+  const lessonBlocks = resolveAttemptRuntimeBlocks(attempt, db);
 
   // STRICT MILESTONE VALIDATION FOR FORWARD ADVANCEMENTS
   if (user.role === "student" && blockIndex > attempt.currentBlockIndex) {
@@ -3582,7 +3641,12 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
             }
           };
           db.securitySignals.push(blockNavSignal);
-          writeDb(db);
+          try {
+            await commitDb(db);
+          } catch (err) {
+            sendAppError(res, err);
+            return;
+          }
           
           res.status(400).json({ 
             error: `Navigation blocked. You must answer the required checkpoint questions in '${blockToCheck.title}' before moving forward.` 
@@ -3593,7 +3657,7 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
         // 2. Check video watch milestone against actual video duration if known.
         // Uses getBlockDurationSeconds() to prefer `duration` over the legacy `videoDuration` field.
         const blockDuration = getBlockDurationSeconds(blockToCheck);
-        if (lesson.settings.restrictSeeking && blockDuration !== null) {
+        if (runtimeSettings.restrictSeeking && blockDuration !== null) {
           const videoDuration = blockDuration;
           const requiredSeconds = videoDuration * 0.9;
           const furthestWatch = attempt.furthestVideoTimestamps[blockToCheck.id] || 0;
@@ -3614,7 +3678,12 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
               }
             };
             db.securitySignals.push(blockNavSignal);
-            writeDb(db);
+            try {
+              await commitDb(db);
+            } catch (err) {
+              sendAppError(res, err);
+              return;
+            }
 
             res.status(400).json({
               error: `Navigation blocked. You must watch the required video in '${blockToCheck.title}' before advancing.`
@@ -3650,7 +3719,12 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
             }
           };
           db.securitySignals.push(blockNavSignal);
-          writeDb(db);
+          try {
+            await commitDb(db);
+          } catch (err) {
+            sendAppError(res, err);
+            return;
+          }
           
           res.status(400).json({ 
             error: `Navigation blocked. You must answer the questions in '${blockToCheck.title}' before moving forward.` 
@@ -3662,7 +3736,12 @@ app.post("/api/attempts/:id/block", requireAuth, (req, res) => {
   }
 
   db.attempts[attemptIdx].currentBlockIndex = blockIndex;
-  writeDb(db);
+  try {
+    await commitDb(db);
+  } catch (err) {
+    sendAppError(res, err);
+    return;
+  }
   res.json({ success: true });
 });
 
@@ -4154,7 +4233,7 @@ app.post("/api/attempts/:id/complete", requireAuth, async (req, res) => {
 });
 
 // Post Integrity Signals
-app.post("/api/integrity-signals", requireAuth, (req, res) => {
+app.post("/api/integrity-signals", requireAuth, async (req, res) => {
   const user = (req as any).user;
   const { attemptId, eventType, severity, blockId, videoTimestamp, metadata } = req.body;
   const db = readDb();
@@ -4258,7 +4337,12 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
     }
   }
 
-  writeDb(db);
+  try {
+    await commitDb(db);
+  } catch (err) {
+    sendAppError(res, err);
+    return;
+  }
   res.json({ success: true, lockState, securityReviewRequired });
 });
 
@@ -4267,7 +4351,7 @@ app.post("/api/integrity-signals", requireAuth, (req, res) => {
 // from any device without losing progress. localStorage is still used as a fallback.
 app.post("/api/attempts/:id/draft", requireAuth, async (req, res) => {
   const { id } = req.params;
-  const { questionId, draftText } = req.body;
+  const { questionId, draftText, clientUpdatedAt } = req.body;
 
   if (!questionId || typeof draftText !== "string") {
     res.status(400).json({ error: "questionId and draftText are required." });
@@ -4304,12 +4388,33 @@ app.post("/api/attempts/:id/draft", requireAuth, async (req, res) => {
   if (!db.attempts[attemptIdx].draftResponses) {
     db.attempts[attemptIdx].draftResponses = {};
   }
+  if (!db.attempts[attemptIdx].draftResponseMeta) {
+    db.attempts[attemptIdx].draftResponseMeta = {};
+  }
+
+  const incomingClientUpdatedAt = typeof clientUpdatedAt === "string" ? clientUpdatedAt : new Date().toISOString();
+  const existingClientUpdatedAt = db.attempts[attemptIdx].draftResponseMeta?.[questionId]?.clientUpdatedAt;
+  if (incomingClientUpdatedAt && existingClientUpdatedAt && new Date(incomingClientUpdatedAt) < new Date(existingClientUpdatedAt)) {
+    res.json({
+      success: true,
+      staleIgnored: true,
+      savedAt: db.attempts[attemptIdx].draftResponseMeta[questionId].savedAt,
+      clientUpdatedAt: existingClientUpdatedAt,
+    });
+    return;
+  }
+
   db.attempts[attemptIdx].draftResponses[questionId] = draftText;
-  db.attempts[attemptIdx].lastActiveAt = new Date().toISOString();
+  const savedAt = new Date().toISOString();
+  db.attempts[attemptIdx].draftResponseMeta[questionId] = {
+    clientUpdatedAt: incomingClientUpdatedAt,
+    savedAt,
+  };
+  db.attempts[attemptIdx].lastActiveAt = savedAt;
 
   try {
     await commitDb(db);
-    res.json({ success: true });
+    res.json({ success: true, savedAt, clientUpdatedAt: incomingClientUpdatedAt });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to persist draft. Please try again." });
   }
@@ -4345,7 +4450,7 @@ app.get("/api/attempts/:id/sa-feedback", requireAuth, (req, res) => {
 });
 
 // Teacher: Unlock a locked student attempt
-app.post("/api/attempts/:id/unlock", requireTeacher, (req, res) => {
+app.post("/api/attempts/:id/unlock", requireTeacher, async (req, res) => {
   const { id } = req.params;
   const db = readDb();
 
@@ -4357,7 +4462,12 @@ app.post("/api/attempts/:id/unlock", requireTeacher, (req, res) => {
 
   db.attempts[attemptIdx].lockState = null;
   db.attempts[attemptIdx].lockedAt = null;
-  writeDb(db);
+  try {
+    await commitDb(db);
+  } catch (err) {
+    sendAppError(res, err);
+    return;
+  }
 
   res.json({ success: true, attempt: { id, lockState: null } });
 });

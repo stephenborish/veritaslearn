@@ -4466,3 +4466,71 @@ npm run verify:builder        ✓  73 passed, 0 failed
 npm run verify:student-ui     ✓  71 passed, 0 failed
 npm run verify:hardening      ✓   6 passed, 0 failed
 ```
+
+---
+
+## Current Implementation Status — Reliability/Data-Integrity Audit (June 4, 2026)
+
+### Root causes found
+
+- Student lesson runtime rendering still fetched mutable live lesson blocks after loading an attempt, so a teacher edit after assignment could drift from the attempt's immutable `lessonVersionId` snapshot.
+- Server-side block navigation validation used mutable `db.blocks` instead of the attempt's frozen lesson-version blocks.
+- Student completion UI exited after sending a completion request without checking that the server durably accepted completion.
+- Teacher and student draft autosaves lacked freshness metadata, so slower stale autosave requests could overwrite newer authored text or student draft work.
+- Several attempt/integrity mutations returned success through `writeDb(db)` background sync instead of awaiting `commitDb(db)`.
+- Student response sanitization could expose released assessment scoring/AI grading fields if release flags were present.
+
+### Files changed in this reliability pass
+
+- `server.ts`
+  - Added immutable attempt runtime block/settings resolution.
+  - Returned sanitized attempt-version blocks from `GET /api/attempts/:id`.
+  - Switched student progress, navigation, integrity-signal, and unlock mutations to awaited durable commits.
+  - Added stale-write protection metadata for teacher lesson drafts and student response drafts.
+- `server/data/sanitize.ts`
+  - Hardened assessment response sanitization so assessment score, correctness, feedback, AI grading, rubric breakdown, and internal grading data remain hidden from students even if release flags are present.
+- `src/components/StudentPortal/FocusedPlayer.tsx`
+  - Uses the attempt runtime blocks returned by the server instead of fetching mutable live lesson blocks.
+  - Tracks student draft freshness and ignores stale autosave confirmations.
+  - Exits only after completion is durably confirmed by the server.
+- `src/components/TeacherDashboard/LessonsBuilder.tsx`
+  - Tracks teacher draft freshness and ignores stale autosave confirmations.
+- `scripts/verify-reliability.ts`
+  - Added regression checks for immutable runtime use, durable commits, stale-draft protection, completion confirmation, and assessment sanitizer behavior.
+- `package.json`
+  - Added `npm run verify:reliability`.
+
+### Data-integrity invariants now enforced
+
+- Student runtime blocks and runtime settings for an attempt are resolved from the attempt's `lessonVersionId` snapshot whenever available.
+- Student navigation/progress validation uses the same immutable runtime block/settings snapshot as rendering.
+- Student progress, block navigation, integrity-signal, and teacher unlock updates do not report success until `commitDb(db)` succeeds.
+- Teacher lesson draft saves and student response draft saves include `clientUpdatedAt`; stale saves are ignored instead of overwriting newer work.
+- Student completion UI does not leave the player unless the server returns confirmed success.
+- Assessment responses sent to students never include assessment score, correctness, feedback, AI grading, rubric breakdown, rationale, teacher notes, or internal grading data.
+
+### Verification commands run for this pass
+
+- `git pull --ff-only` — failed before implementation because branch `work` has no configured upstream and this checkout lists no remotes.
+- `npm run lint` — passed.
+- `npm run build` — passed; Vite emitted only the existing large-chunk size warning.
+- `npm run verify:reliability` — passed.
+- `npm run verify:student-ui` — passed, 71 passed / 0 failed.
+- `npm run verify:versioning` — passed, 55 passed / 0 failed.
+- `npm run verify:completion` — passed, 47 passed / 0 failed.
+- `npm run verify:workflow` — passed, 61 passed / 0 failed.
+- `npm run verify:builder` — passed, 73 passed / 0 failed.
+- `npm run verify:teacher-state` — passed, 22 passed / 0 failed.
+- `npm run verify:hardening` — passed.
+- `npm run verify:slice` — passed, 20 passed / 0 failed.
+- `npm run verify:access-control` — passed, 58 passed / 0 failed.
+- `npm run verify:api-only` — passed.
+- `npm run verify:allowlist` — passed, 11 passed / 0 failed.
+- `npm run verify:image` — passed, 7 passed / 0 failed.
+
+### Remaining known risks / follow-up work
+
+- Analytics component paths named in the audit prompt (`AnalyticsOverview.tsx`, `AnalyticsDetail.tsx`, `RiskReport.tsx`, `StudentProfile.tsx`) are not present under those exact paths; related analytics/review surfaces should be discovered by `rg --files` before any broader analytics rewrite.
+- Firestore performance should be observed after switching key attempt/integrity routes to awaited durable commits, especially high-frequency video progress heartbeats.
+- Async AI grading already stores rubric/guidance snapshots, but a future guard should verify the response/input hash before applying delayed AI results.
+- Rich-content rendering across every teacher review, answer-key, analytics, and student surface should continue to be covered by image/rich-content verification scripts.
