@@ -23,6 +23,13 @@ function FormulaComponent({ formula, nodeKey }: { formula: string; nodeKey: Node
     });
   }, [editor]);
 
+  const openEditor = (e?: React.SyntheticEvent) => {
+    if (!isEditable) return;
+    e?.preventDefault();
+    e?.stopPropagation();
+    setShowEditor(true);
+  };
+
   const handleUpdate = (newFormula: string) => {
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
@@ -34,29 +41,47 @@ function FormulaComponent({ formula, nodeKey }: { formula: string; nodeKey: Node
   };
 
   return (
-    <span 
-      className={`inline-flex items-center mx-1 bg-slate-100 rounded px-1.5 py-0.5 min-w-[30px] transition select-none ${
-        isEditable ? 'cursor-pointer hover:bg-slate-200 border border-slate-300' : ''
+    <span
+      className={`inline-flex items-center select-none${
+        isEditable
+          ? ' cursor-pointer rounded hover:ring-1 hover:ring-blue-400 hover:ring-offset-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1'
+          : ''
       }`}
-      onClick={(e) => {
-        if (isEditable) {
+      onClick={openEditor}
+      onDoubleClick={openEditor}
+      onKeyDown={(e) => {
+        if (isEditable && (e.key === 'Enter' || e.key === ' ')) {
           e.preventDefault();
           e.stopPropagation();
           setShowEditor(true);
         }
       }}
-      title={isEditable ? "Click to edit formula" : ""}
+      role={isEditable ? 'button' : undefined}
+      tabIndex={isEditable ? 0 : undefined}
+      aria-label={isEditable ? 'Edit formula' : undefined}
+      title={isEditable ? 'Click or press Enter to edit formula' : undefined}
     >
       {/* @ts-ignore */}
-      <math-field readonly="true" style={{ fontSize: '0.9em', background: 'transparent', border: 'none', outline: 'none' }}>
+      <math-field
+        readonly="true"
+        style={{
+          fontSize: '1em',
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          pointerEvents: 'none',
+          verticalAlign: 'middle',
+          display: 'inline-block',
+        }}
+      >
         {formula}
       </math-field>
 
       {showEditor && (
-        <FormulaEditorModal 
-          initialFormula={formula} 
-          onSave={handleUpdate} 
-          onClose={() => setShowEditor(false)} 
+        <FormulaEditorModal
+          initialFormula={formula}
+          onSave={handleUpdate}
+          onClose={() => setShowEditor(false)}
         />
       )}
     </span>
@@ -91,7 +116,7 @@ export class FormulaNode extends DecoratorNode<React.JSX.Element> {
     const writable = this.getWritable();
     writable.__formula = formula;
   }
-  
+
   getFormula(): string {
     return this.__formula;
   }
@@ -99,10 +124,13 @@ export class FormulaNode extends DecoratorNode<React.JSX.Element> {
   static importDOM(): DOMConversionMap | null {
     return {
       'math-field': (domNode: HTMLElement) => {
-        return {
-          conversion: convertMathFieldElement,
-          priority: 1,
-        };
+        if (!domNode.hasAttribute('data-chem')) {
+          return {
+            conversion: convertMathFieldElement,
+            priority: 1,
+          };
+        }
+        return null;
       },
       'span': (domNode: HTMLElement) => {
         if (domNode.hasAttribute('data-lexical-formula')) {
@@ -120,7 +148,6 @@ export class FormulaNode extends DecoratorNode<React.JSX.Element> {
     const element = document.createElement('span');
     element.setAttribute('data-lexical-formula', 'true');
     element.setAttribute('data-formula', this.__formula);
-    // Keep a math-field inside for rendering outside if needed
     const mf = document.createElement('math-field');
     mf.setAttribute('readonly', 'true');
     mf.innerHTML = this.__formula;
