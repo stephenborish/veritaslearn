@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronUp, Info } from "lucide-react";
+import { ChevronDown, ChevronUp, Info, Shield } from "lucide-react";
 
 export type IntegrityPreset = "open" | "guided" | "focused" | "verified" | "custom";
 
@@ -10,6 +10,8 @@ export interface IntegrityPolicy {
   responseControls: "open" | "recorded" | "guarded" | "restricted" | "strict";
   videoControls: "open" | "progress_aware" | "checkpointed" | "restricted" | "verified";
   reviewSensitivity: "low" | "balanced" | "elevated" | "high";
+  /** When true, adds hidden instructions that tell browser AI tools not to answer assessment questions. */
+  discourageBrowserAiAssistance?: boolean;
 }
 
 interface Preset {
@@ -32,6 +34,7 @@ const PRESETS: Preset[] = [
       responseControls: "open",
       videoControls: "open",
       reviewSensitivity: "low",
+      discourageBrowserAiAssistance: false,
     },
   },
   {
@@ -45,6 +48,7 @@ const PRESETS: Preset[] = [
       responseControls: "recorded",
       videoControls: "checkpointed",
       reviewSensitivity: "low",
+      discourageBrowserAiAssistance: false,
     },
   },
   {
@@ -58,6 +62,7 @@ const PRESETS: Preset[] = [
       responseControls: "guarded",
       videoControls: "restricted",
       reviewSensitivity: "balanced",
+      discourageBrowserAiAssistance: true,
     },
   },
   {
@@ -71,6 +76,7 @@ const PRESETS: Preset[] = [
       responseControls: "strict",
       videoControls: "verified",
       reviewSensitivity: "high",
+      discourageBrowserAiAssistance: true,
     },
   },
   {
@@ -84,6 +90,7 @@ const PRESETS: Preset[] = [
       responseControls: "open",
       videoControls: "open",
       reviewSensitivity: "low",
+      discourageBrowserAiAssistance: false,
     },
   },
 ];
@@ -234,6 +241,29 @@ export default function LearningConditionsEditor({ value, onChange }: Props) {
           ))}
         </div>
       )}
+
+      {/* Browser AI Guard toggle — always visible, not hidden behind dials */}
+      <div className="flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <Shield className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={!!value.discourageBrowserAiAssistance}
+              onChange={(e) =>
+                onChange({ ...value, discourageBrowserAiAssistance: e.target.checked })
+              }
+              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+            />
+            <span className="text-xs font-semibold text-slate-700">
+              Discourage browser AI assistance
+            </span>
+          </label>
+          <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+            Add hidden instructions that tell browser AI tools not to answer assessment questions.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

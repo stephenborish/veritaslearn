@@ -257,6 +257,11 @@ export default function LiveMonitor({
       context_menu_blocked: "Right-click",
       rapid_navigation: "Navigation skip",
       checkpoint_triggered: "Checkpoint",
+      // Browser AI Guard signals
+      possible_ai_agent_use: "Possible AI agent use",
+      hidden_assessment_text_in_answer: "Hidden assessment text in answer",
+      ai_guard_marker_in_answer: "Browser AI Guard marker in answer",
+      ai_guard_refusal_phrase_in_answer: "AI refusal phrase in answer",
     };
     return labels[eventType] || eventType;
   };
