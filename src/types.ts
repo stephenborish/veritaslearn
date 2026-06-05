@@ -310,7 +310,12 @@ export interface SecuritySignal {
     | 'seek_attempt_blocked'
     | 'rapid_navigation'
     | 'context_menu_blocked'
-    | 'checkpoint_triggered';
+    | 'checkpoint_triggered'
+    // Browser AI Guard signals
+    | 'possible_ai_agent_use'
+    | 'hidden_assessment_text_in_answer'
+    | 'ai_guard_marker_in_answer'
+    | 'ai_guard_refusal_phrase_in_answer';
   severity: 'low' | 'medium' | 'high';
   blockId?: string;
   videoTimestamp?: number;
@@ -362,6 +367,12 @@ export interface IntegrityPolicy {
   responseControls: 'open' | 'recorded' | 'guarded' | 'restricted' | 'strict';
   videoControls: 'open' | 'progress_aware' | 'checkpointed' | 'restricted' | 'verified';
   reviewSensitivity: 'low' | 'balanced' | 'elevated' | 'high';
+  /**
+   * Browser AI Guard: when true, the student page embeds hidden instructions directing browser AI
+   * tools not to answer assessment questions, and submitted answers are scanned for guard markers.
+   * Defaults: open=false, guided=false, focused=true, verified=true, custom=teacher-set.
+   */
+  discourageBrowserAiAssistance?: boolean;
   // Compiled enforcement booleans (derived from dials above)
   allowResume: boolean;
   allowBackNavigation: boolean;

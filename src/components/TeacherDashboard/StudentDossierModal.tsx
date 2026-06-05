@@ -191,7 +191,33 @@ export default function StudentDossierModal({
   const screens = sSignals.filter((s) => s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited").length;
   const copyPastes = sSignals.filter((s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked").length;
   const seekVio = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
+  const aiGuardSignals = sSignals.filter((s) =>
+    s.eventType === "possible_ai_agent_use" ||
+    s.eventType === "hidden_assessment_text_in_answer" ||
+    s.eventType === "ai_guard_marker_in_answer" ||
+    s.eventType === "ai_guard_refusal_phrase_in_answer"
+  ).length;
   const totalViolations = blurs + screens + copyPastes + seekVio;
+
+  const signalEventLabel = (eventType: string): string => {
+    const labels: Record<string, string> = {
+      blur_focus_lost: "Focus lost",
+      visibility_hidden: "Tab hidden",
+      fullscreen_exit: "Fullscreen exit",
+      fullscreen_exited: "Fullscreen exit",
+      seek_attempt_blocked: "Seek blocked",
+      copy_blocked: "Copy blocked",
+      paste_blocked: "Paste blocked",
+      context_menu_blocked: "Right-click",
+      rapid_navigation: "Navigation skip",
+      checkpoint_triggered: "Checkpoint",
+      possible_ai_agent_use: "Possible AI agent use",
+      hidden_assessment_text_in_answer: "Hidden assessment text in answer",
+      ai_guard_marker_in_answer: "Browser AI Guard marker in answer",
+      ai_guard_refusal_phrase_in_answer: "AI refusal phrase in answer",
+    };
+    return labels[eventType] || eventType.replace(/_/g, " ");
+  };
 
   const isCompleted = attempt.status === "completed";
 
@@ -471,14 +497,35 @@ export default function StudentDossierModal({
 
           {/* Section 3: Focus / Academic Integrity Signal Log */}
           <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-3">
-            <div className="flex justify-between items-center border-b border-slate-105 pb-2">
+            <div className="flex flex-wrap justify-between items-center border-b border-slate-105 pb-2 gap-2">
               <h4 className="text-xs font-bold text-slate-850 flex items-center gap-2 uppercase tracking-wide">
                 <ShieldAlert className="w-4 h-4 text-amber-600" /> classroom safety telemetry && focus logs
               </h4>
-              <span className="text-[10px] font-mono font-bold text-[#E5B53B] bg-slate-100 px-2 py-0.5 rounded">
-                ⚠️ {totalViolations} focus warning alerts
-              </span>
+              <div className="flex flex-wrap gap-2">
+                <span className="text-[10px] font-mono font-bold text-[#E5B53B] bg-slate-100 px-2 py-0.5 rounded">
+                  ⚠️ {totalViolations} focus warning alerts
+                </span>
+                {aiGuardSignals > 0 && (
+                  <span className="text-[10px] font-mono font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded">
+                    {aiGuardSignals} signals of AI agent use
+                  </span>
+                )}
+              </div>
             </div>
+
+            {/* Browser AI Guard explanation — shown only when AI guard signals are present */}
+            {aiGuardSignals > 0 && (
+              <div className="text-xs bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 space-y-1">
+                <p className="font-semibold text-amber-900">Signals of AI Agent Use</p>
+                <p className="text-amber-800 leading-relaxed">
+                  This answer included hidden assessment text that students should not normally use.
+                  This may mean a browser AI tool read the page while helping with the answer.
+                </p>
+                <p className="text-amber-700 leading-relaxed">
+                  This is not automatic proof of a violation. Review the answer, timing, writing history, and other activity before making a decision.
+                </p>
+              </div>
+            )}
 
             {sSignals.length === 0 ? (
               <div className="py-4 text-xs font-bold text-emerald-800 bg-emerald-50 rounded-lg px-4 flex items-center gap-2 border border-emerald-150">
@@ -507,7 +554,7 @@ export default function StudentDossierModal({
                                 ? "bg-red-50 text-red-700 border-red-150"
                                 : "bg-amber-50 text-amber-800 border-amber-205"
                           }`}>
-                            {signal.eventType.replace("_", " ")}
+                            {signalEventLabel(signal.eventType)}
                           </span>
                           <span className="text-[9.5px] text-slate-400 font-mono font-medium">{renderFormattedDate(signal.timestamp)}</span>
                         </div>

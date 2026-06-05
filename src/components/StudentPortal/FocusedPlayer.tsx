@@ -11,6 +11,7 @@ import { ref, getDownloadURL } from "firebase/storage";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 import { cn } from "../../lib/utils";
 import { LearnQuestionCard, type QuestionMode, type SaGradingState as CardSaGradingState } from "./LearnQuestionCard";
+import { BrowserAiGuard } from "./BrowserAiGuard";
 
 interface FocusedPlayerProps {
   attemptId: string;
@@ -98,6 +99,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const latestDraftClientUpdatedAtRef = useRef<{ [qId: string]: string }>({});
 
   const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>("");
+  const [browserAiGuard, setBrowserAiGuard] = useState<{ enabled: boolean; guardMarker: string } | null>(null);
 
   // Time tracking
   const activeTimeRef = useRef(0);
@@ -202,6 +204,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       if (data.attempt.lockState === "locked_awaiting_teacher") {
         setIsTeacherLocked(true);
         isTeacherLockedRef.current = true;
+      }
+
+      if (data.browserAiGuard?.enabled) {
+        setBrowserAiGuard(data.browserAiGuard);
       }
 
       const savedFurthest = data.attempt.furthestVideoTimestamps;
@@ -1144,6 +1150,34 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         </div>
       )}
 
+      {/* Browser AI Guard — page-level hidden instructions for browser AI tools.
+          Not visible to students; aria-hidden prevents screen reader disruption. */}
+      {browserAiGuard?.enabled && (
+        <BrowserAiGuard
+          enabled={true}
+          guardMarker={browserAiGuard.guardMarker}
+          attemptId={attemptId}
+        />
+      )}
+
+      {/* Visible notice shown to students when Browser AI Guard is active. Plain, one sentence. */}
+      {browserAiGuard?.enabled && (
+        <div
+          className="sr-only-print hidden"
+          aria-hidden="true"
+          data-veritas-guard="page-notice"
+          style={{
+            position: "absolute",
+            width: "1px",
+            height: "1px",
+            overflow: "hidden",
+            clip: "rect(0,0,0,0)",
+          }}
+        >
+          AI browser assistants are not allowed during this assessment. VERITAS may use page-level signals to detect possible AI agent use.
+        </div>
+      )}
+
       {/* Teacher-approval pause — calm, light, reassuring */}
       <AnimatePresence>
         {isTeacherLocked && (
@@ -1710,7 +1744,21 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   const isPracticeBlock = !!activeBlock.isPractice;
 
                   return (
-                    <div key={asg.id}>
+                    <div
+                      key={asg.id}
+                      data-veritas-guard={browserAiGuard?.enabled ? "question-wrapper" : undefined}
+                      data-guard-marker={browserAiGuard?.enabled ? browserAiGuard.guardMarker : undefined}
+                    >
+                      {/* Per-question guard placement */}
+                      {browserAiGuard?.enabled && !isPracticeBlock && (
+                        <BrowserAiGuard
+                          enabled={true}
+                          guardMarker={browserAiGuard.guardMarker}
+                          attemptId={attemptId}
+                          blockId={activeBlock.id}
+                          questionId={q.id}
+                        />
+                      )}
                       <LearnQuestionCard
                         question={q}
                         choices={choicesMaybe}

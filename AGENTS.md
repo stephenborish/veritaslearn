@@ -4689,4 +4689,131 @@ TypeScript lint: 4162 baseline errors (all environment-level — missing React/F
 - `ChemistryFormulaModal.tsx` still exists as a standalone component with the button-based builder. In the primary teacher flow it is no longer used directly (chemistry nodes and toolbar both now open the integrated `FormulaEditorModal`). It is preserved for backward compatibility with existing verify scripts.
 - MathLive virtual keyboard suppression (`mathVirtualKeyboardPolicy = "off"`) is applied in `useEffect` (post-mount). A flash of the keyboard icon is theoretically possible on very slow devices before the effect runs.
 - No automated browser/visual tests for rendered math/chemistry output. Visual verification should be done after MathLive upgrades.
+
+---
+
+## Browser AI Guard / Signals of AI Agent Use
+
+### Feature Purpose
+
+Students may use browser-native AI tools (Gemini in Chrome, ChatGPT browser assistant, Comet, etc.) that can read the current page context and answer assessment questions. Browser AI Guard discourages this by embedding hidden page-level instructions telling browser AI agents not to answer protected questions, and creates teacher-visible signals if hidden assessment text appears in a submitted answer.
+
+### Threat Model
+
+The primary threat is a browser AI agent reading DOM or page context and answering assessment questions for a student. This is different from copy/paste (which is handled by existing `blockPaste`/`blockCopy` policy dials). Browser AI Guard is effective even when copy/paste is allowed, because it targets the AI agent's reading behavior, not clipboard actions.
+
+### Teacher-Facing Language (Plain)
+
+- Setting label: **Discourage browser AI assistance**
+- Setting description: *Add hidden instructions that tell browser AI tools not to answer assessment questions.*
+- Signal label: **Possible AI agent use**
+- Signal detail: *Hidden assessment text appeared in answer. This is not automatic proof of a violation. Review the answer, timing, writing history, and other activity before making a decision.*
+
+### Banned Terms (Not Used in UI)
+
+- "prompt injection", "LLM exploit", "AI Tripwire", "Integrity Canary", "AI detector"
+
+### IntegrityPolicy Defaults
+
+| Preset    | discourageBrowserAiAssistance |
+|-----------|-------------------------------|
+| open      | false                         |
+| guided    | false                         |
+| focused   | true                          |
+| verified  | true                          |
+| custom    | teacher-controlled            |
+
+### Guard Text Placement (Layered)
+
+The `BrowserAiGuard` component renders in multiple channels so AI agents consuming different page representations encounter the instruction:
+
+1. **Visually hidden `<span>` (aria-hidden)** — CSS clip removes it from view; `aria-hidden="true"` prevents screen reader disruption.
+2. **`<script type="application/json">` block** — browser AI agents scanning script tags will read the JSON guard data.
+3. **`<meta>` tag** — added to `<head>` via `useEffect` with `name="veritas-assessment-guard"`.
+4. **`data-veritas-guard` attributes** — on question wrapper divs; AI agents reading data attributes will see the marker.
+5. **Per-question placement** — one BrowserAiGuard instance near the top of the FocusedPlayer page, plus one per assessment question block.
+
+### Guard Marker Generation
+
+A unique per-attempt marker is generated server-side using HMAC-SHA256 keyed by `VERITAS_MARKER_SALT` (env var, defaults to a built-in salt): `VERITAS-[first 12 hex chars of HMAC]`. The same `attemptId` always produces the same marker (deterministic), so no per-marker DB records are needed. The marker phrase is safe to deliver to the student (it's just a token embedded in hidden guard text).
+
+### Detection on Submit (Short Answer Only)
+
+When a short-answer response is submitted and `discourageBrowserAiAssistance` is enabled:
+
+1. The submitted text is scanned for:
+   - The attempt's unique marker phrase (`VERITAS-[hash]`)
+   - The AI refusal phrase: `"I can't complete this assessment for you"`
+   - Guard instruction fragments (e.g., `"This is a protected school assessment in VERITAS Learn"`)
+
+2. For each category detected, a teacher-only `SecuritySignal` is created:
+   - `ai_guard_marker_in_answer` — the unique marker appeared in the answer
+   - `ai_guard_refusal_phrase_in_answer` — the AI refusal phrase appeared
+   - `hidden_assessment_text_in_answer` — guard fragments appeared
+   - `possible_ai_agent_use` — umbrella signal for any detection
+
+3. The attempt is flagged `securityReviewRequired = true` for teacher review.
+
+4. **Grade, score, feedback, and completion status are NOT automatically changed.**
+
+### VERITAS AI Grader Isolation
+
+The Browser AI Guard must not affect VERITAS's own AI grader. When guard text is detected in a submitted SA answer:
+
+- `newResponse.responseValue` stores the **original** submitted text (for teacher review).
+- `textForGrading` is a **redacted** copy (guard text replaced with `[content removed by VERITAS guard]`).
+- `buildShortAnswerPrompt` receives `textForGrading`, not raw `responseValue`.
+- `inputHash` is computed from the redacted prompt content.
+- The AI grader evaluates only the student's actual written content.
+
+### False-Positive Policy
+
+Detection signals are **not proof of a violation**. They are contextual indicators:
+- The teacher must review the answer, timing, writing history, and other activity.
+- No automatic zero is assigned.
+- No automatic completion status change.
+- The dossier modal shows a plain-language explanation: *"This is not automatic proof of a violation."*
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/types.ts` | Added `discourageBrowserAiAssistance` to `IntegrityPolicy`; added 4 new `SecuritySignal.eventType` values |
+| `server.ts` | Added `crypto` import; updated `IntegrityPolicy` interface, `PRESET_DIALS`, `compileIntegrityPolicy`; added `generateAttemptGuardMarker`, `detectBrowserAiGuard`, `redactBrowserAiGuardText`; updated `GET /api/attempts/:id` to return `browserAiGuard`; updated `POST /api/attempts/:id/submit` with detection + redaction |
+| `src/components/StudentPortal/BrowserAiGuard.tsx` | New component — layered hidden guard text |
+| `src/components/StudentPortal/FocusedPlayer.tsx` | Imports and renders `BrowserAiGuard`; reads `browserAiGuard` from API response |
+| `src/components/TeacherDashboard/LearningConditionsEditor.tsx` | Added `discourageBrowserAiAssistance` to local `IntegrityPolicy`; preset defaults; toggle UI |
+| `src/components/TeacherDashboard/LiveMonitor.tsx` | Added labels for 4 new signal event types |
+| `src/components/TeacherDashboard/StudentDossierModal.tsx` | Added `signalEventLabel` function; AI guard signal count; plain-language explanation banner |
+| `scripts/verify-browser-ai-guard.ts` | New verification script (77 checks) |
+| `package.json` | Added `verify:browser-ai-guard` script |
+| `AGENTS.md` | This documentation |
+
+### Verification Results (2026-06-05)
+
+```
+npm run verify:browser-ai-guard     → 77 passed, 0 failed
+npm run verify:reliability          → all checks PASSED
+npm run verify:student-ui           → 71 passed, 0 failed
+npm run verify:versioning           → 55 passed, 0 failed
+npm run verify:completion           → 47 passed, 0 failed
+npm run verify:workflow             → 61 passed, 0 failed
+npm run verify:builder              → 73 passed, 0 failed
+npm run verify:teacher-state        → 22 passed, 0 failed
+npm run verify:hardening            → all checks PASSED
+npm run verify:slice                → 20 passed, 0 failed
+npm run verify:access-control       → 58 passed, 0 failed
+npm run verify:api-only             → all checks PASSED
+npm run verify:ai-grading-safety    → all checks PASSED
+npm run build                       → PASSED (2149 modules)
+```
+
+### Limitations
+
+1. The guard text is effective against AI agents that read DOM content, page text, or JSON data blocks. It is not guaranteed to work against all possible AI architectures — some agents may ignore the instruction.
+2. The guard text is hidden via CSS clip and aria-hidden. It is present in the DOM and visible to any tool that parses raw HTML, which is intentional.
+3. The detection relies on the AI agent including the exact guard text or refusal phrase in its output. AI agents that paraphrase the answer without including these strings will not be detected.
+4. HTML comment injection is not used (avoids hydration/build issues with React).
+5. No new Firestore collection is added for marker metadata — the marker is recomputed deterministically on-demand.
+6. `verify:allowlist` environment issue is pre-existing (requires a configured AUTHORIZED_STUDENT_EMAILS env var that is not present in this environment).
 - The `SCIENCE_QUICK_BAR` in the integrated editor inserts static LaTeX templates (e.g. `\\times 10^{}`), not form-based notation. For fully guided scientific notation, teachers should use the Chemistry tab's Scientific Notation form.
