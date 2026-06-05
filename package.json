@@ -25,7 +25,8 @@
     "verify:ai-grading-safety": "tsx scripts/verify-ai-grading-safety.ts",
     "verify:browser-ai-guard": "tsx scripts/verify-browser-ai-guard.ts",
     "verify:rich-formulas": "tsx scripts/verify-rich-formulas.ts",
-    "verify:visual-math-chemistry-editor": "tsx scripts/verify-visual-math-chemistry-editor.ts"
+    "verify:visual-math-chemistry-editor": "tsx scripts/verify-visual-math-chemistry-editor.ts",
+    "verify:video-sources-builder-ux": "tsx scripts/verify-video-sources-and-builder-ux.ts"
   },
   "dependencies": {
     "@ckeditor/ckeditor5-react": "^11.1.2",

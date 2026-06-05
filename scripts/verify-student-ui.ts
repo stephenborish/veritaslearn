@@ -210,7 +210,8 @@ check(
 );
 check(
   "checkpoint open saves currentTime to resume ref",
-  focusedPlayer.includes("checkpointResumeTimestampRef.current = video.currentTime"),
+  // Uses currentTime parameter (supports both native video and YouTube player paths)
+  focusedPlayer.includes("checkpointResumeTimestampRef.current = currentTime"),
 );
 check(
   "Continue button seeks to resume timestamp before play",

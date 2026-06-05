@@ -232,7 +232,8 @@ check("Nested checkpoint code no longer reads currentBlocks[blockIndex] from ren
 check("saveWithPublishedStatus sends blocks: currentBlocksRef.current or currentBlocks",
   /const payload = \{[\s\S]*blocks: currentBlocks(?:Ref\.current)?[\s\S]*\};/.test(builder));
 check("VideoUploader persists thumbnail with video URL, duration, and storage path",
-  builder.includes('onBlockMultipleChanges(index, { videoUrl: url, thumbnailUrl: thumbnail || "", duration: duration || 0, storagePath: storagePath || "" })'));
+  // handleVideoUploaded uses the updater pattern so YouTube fields can be cleared atomically
+  /handleVideoUploaded[\s\S]*videoUrl: url[\s\S]*thumbnailUrl[\s\S]*duration[\s\S]*storagePath/.test(builder));
 
 check("QuestionEditor emits updater-style changes to avoid stale q overwrites",
   editor.includes("onChange((latestQuestion: AnyQuestion) =>") && editor.includes("patchWith"));
