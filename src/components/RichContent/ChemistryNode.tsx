@@ -2,7 +2,7 @@ import { DecoratorNode, DOMConversionMap, DOMConversionOutput, DOMExportOutput, 
 import React, { useState, useEffect } from 'react';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { $getNodeByKey } from 'lexical';
-import { ChemistryFormulaModal } from './ChemistryFormulaModal';
+import { FormulaEditorModal } from './FormulaEditorModal';
 
 export type SerializedChemistryNode = Spread<
   {
@@ -30,7 +30,7 @@ function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: No
     setShowEditor(true);
   };
 
-  const handleUpdate = (newFormula: string) => {
+  const handleUpdate = (newFormula: string, _mathml: string) => {
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if ($isChemistryNode(node)) {
@@ -78,8 +78,9 @@ function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: No
       </math-field>
 
       {showEditor && (
-        <ChemistryFormulaModal
+        <FormulaEditorModal
           initialFormula={formula}
+          initialTab="chemistry"
           onSave={handleUpdate}
           onClose={() => setShowEditor(false)}
         />

@@ -29,7 +29,6 @@ import { storage } from "../../lib/firebase";
 
 import { RichContent, RichContentEditorProps } from "./types";
 import { FormulaEditorModal } from "./FormulaEditorModal";
-import { ChemistryFormulaModal } from "./ChemistryFormulaModal";
 import { migrateToRichContent } from "./richContentMigration";
 import { richContentSanitizer } from "./richContentSanitizer";
 import { FormulaNode, $createFormulaNode } from "./FormulaNode";
@@ -236,17 +235,31 @@ const ToolbarPlugin = ({
       <Btn title="Align Center" onClick={() => editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'center')}><AlignCenter size={16} /></Btn>
       <Btn title="Align Right" onClick={() => editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'right')}><AlignRight size={16} /></Btn>
       <div className="w-px h-5 bg-slate-300 mx-1"></div>
-      {allowMath && (
-        <button type="button" onClick={onOpenMath} title="Insert formula"
-          className="text-xs text-slate-700 hover:bg-slate-200 p-1.5 rounded flex items-center justify-center transition-colors border border-transparent">
-          <Sigma size={16} />
-        </button>
-      )}
-      {allowChemistry && (
-        <button type="button" onClick={onOpenChem} title="Insert chemistry"
-          className="text-xs text-slate-700 hover:bg-slate-200 p-1.5 rounded flex items-center justify-center transition-colors border border-transparent">
-          <FlaskConical size={16} />
-        </button>
+      {(allowMath || allowChemistry) && (
+        <div className="flex items-center gap-0.5">
+          {allowMath && (
+            <button
+              type="button"
+              onClick={onOpenMath}
+              title="Insert equation"
+              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-700 rounded transition-colors border border-transparent hover:border-blue-200"
+            >
+              <Sigma size={14} />
+              <span>Equation</span>
+            </button>
+          )}
+          {allowChemistry && (
+            <button
+              type="button"
+              onClick={onOpenChem}
+              title="Insert chemistry equation"
+              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 rounded transition-colors border border-transparent hover:border-emerald-200"
+            >
+              <FlaskConical size={14} />
+              <span>Chemistry</span>
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -333,12 +346,12 @@ const EditorInner: React.FC<EditorInnerProps> = ({
     onEditorChange(editorState, ed);
   }, [onEditorChange]);
 
-  const insertFormulaNode = (latex: string) => {
+  const insertFormulaNode = (latex: string, _mathml: string) => {
     editor.update(() => { $insertNodes([$createFormulaNode(latex)]); });
     setShowMath(false);
   };
 
-  const insertChemistryNode = (latex: string) => {
+  const insertChemistryNode = (latex: string, _mathml: string) => {
     editor.update(() => { $insertNodes([$createChemistryNode(latex)]); });
     setShowChem(false);
   };
@@ -366,10 +379,18 @@ const EditorInner: React.FC<EditorInnerProps> = ({
       </div>
 
       {showMath && (
-        <FormulaEditorModal onSave={insertFormulaNode} onClose={() => setShowMath(false)} />
+        <FormulaEditorModal
+          initialTab="math"
+          onSave={insertFormulaNode}
+          onClose={() => setShowMath(false)}
+        />
       )}
       {showChem && (
-        <ChemistryFormulaModal onSave={insertChemistryNode} onClose={() => setShowChem(false)} />
+        <FormulaEditorModal
+          initialTab="chemistry"
+          onSave={insertChemistryNode}
+          onClose={() => setShowChem(false)}
+        />
       )}
     </>
   );
