@@ -12,6 +12,8 @@ import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 import { cn } from "../../lib/utils";
 import { LearnQuestionCard, type QuestionMode, type SaGradingState as CardSaGradingState } from "./LearnQuestionCard";
 import { BrowserAiGuard } from "./BrowserAiGuard";
+import YouTubeLessonPlayer, { type YouTubeLessonPlayerHandle } from "./YouTubeLessonPlayer";
+import { looksLikeYouTubeUrl, resolveYouTubeLegacy } from "../../utils/youtubeParser";
 
 interface FocusedPlayerProps {
   attemptId: string;
@@ -107,6 +109,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // Video
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  // YouTube IFrame API player — used when the active block is a YouTube video
+  const youtubePlayerRef = useRef<YouTubeLessonPlayerHandle | null>(null);
   const wasPlayingRef = useRef(false);
   const checkpointResumeTimestampRef = useRef<number>(0);
   const [furthestMaxTimestamp, setFurthestMaxTimestamp] = useState(0);
@@ -114,6 +118,15 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [activeCheckpoint, setActiveCheckpoint] = useState<any>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const [isNavigating, setIsNavigating] = useState(false);
+
+  // Detect whether the current block uses YouTube
+  const isYouTubeBlock = (block: any): boolean => {
+    if (!block || block.type !== "video") return false;
+    if (block.videoSource === "youtube") return true;
+    if (block.youtubeVideoId) return true;
+    if (block.videoUrl && looksLikeYouTubeUrl(block.videoUrl)) return true;
+    return false;
+  };
 
   const getAuthHeader = async (): Promise<Record<string, string>> => {
     if (!auth.currentUser) return {};
@@ -386,6 +399,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             wasPlayingRef.current = false;
           }
           videoRef.current.pause();
+        } else if (youtubePlayerRef.current) {
+          wasPlayingRef.current = !youtubePlayerRef.current.isPaused();
+          youtubePlayerRef.current.pause();
         }
       }
       if (!isFull && requireFullscreenOpt) {
@@ -418,6 +434,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           wasPlayingRef.current = false;
         }
         videoRef.current.pause();
+      } else if (youtubePlayerRef.current) {
+        wasPlayingRef.current = !youtubePlayerRef.current.isPaused();
+        youtubePlayerRef.current.pause();
       }
       blurCountRef.current += 1;
       const count = blurCountRef.current;
@@ -462,6 +481,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             wasPlayingRef.current = false;
           }
           videoRef.current.pause();
+        } else if (youtubePlayerRef.current) {
+          wasPlayingRef.current = !youtubePlayerRef.current.isPaused();
+          youtubePlayerRef.current.pause();
         }
         logIntegritySignal("visibility_hidden", "high", { detail: "Tab hidden / switched." });
         setViolationBanner({
@@ -539,23 +561,27 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   }, [loading, attemptData, currentBlockIndex, isFullscreenLocked, activeTab]);
 
   const handleVideoPlay = () => {
-    const video = videoRef.current;
-    if (!video) return;
     const requireFullscreenOpt = attemptData?.lesson?.settings?.requireFullscreen ?? true;
     const isFull = !!document.fullscreenElement;
     const isTabActive = document.hasFocus() && !document.hidden && activeTab;
 
     if ((requireFullscreenOpt && !isFull) || !isTabActive) {
-      video.pause();
+      if (videoRef.current) {
+        videoRef.current.pause();
+      } else if (youtubePlayerRef.current) {
+        youtubePlayerRef.current.pause();
+      }
     }
   };
 
-  const handleVideoTimeUpdate = async () => {
-    const video = videoRef.current;
-    if (!video) return;
+  /**
+   * Core video time-update handler.
+   * For native video: called via onTimeUpdate event (reads from videoRef).
+   * For YouTube: called via onTimeUpdate prop with the polled currentTime.
+   */
+  const handleVideoTimeUpdateWithTime = async (currentTime: number, isYoutube?: boolean) => {
     const block = blocks[currentBlockIndex];
     const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
-    const currentTime = video.currentTime;
     const duration = block.duration ?? block.videoDuration ?? 0;
 
     // Check near-ended tolerance
@@ -575,7 +601,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       }
     }
 
-    if (restrictSeeking) {
+    if (restrictSeeking && !isYoutube) {
+      // For native video: enforce seeking client-side via DOM manipulation
+      const video = videoRef.current;
+      if (!video) return;
       const allowedGap = 3;
       if (currentTime > furthestMaxTimestamp + allowedGap) {
         video.currentTime = furthestMaxTimestamp;
@@ -620,8 +649,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         return !hasSubmittedAll && Math.floor(currentTime) >= cp.timestamp;
       });
       if (checkpoint && !activeCheckpoint) {
-        video.pause();
-        checkpointResumeTimestampRef.current = video.currentTime;
+        if (videoRef.current) {
+          videoRef.current.pause();
+        } else if (youtubePlayerRef.current) {
+          youtubePlayerRef.current.pause();
+        }
+        checkpointResumeTimestampRef.current = currentTime;
         setActiveCheckpoint(checkpoint);
         logIntegritySignal("checkpoint_triggered", "medium", {
           detail: `Checkpoint triggered: ${checkpoint.title}`,
@@ -629,6 +662,26 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         });
       }
     }
+  };
+
+  const handleVideoTimeUpdate = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    await handleVideoTimeUpdateWithTime(video.currentTime, false);
+  };
+
+  // Called by YouTubeLessonPlayer's onTimeUpdate (polled at ~250ms)
+  const handleYouTubeTimeUpdate = (currentTime: number) => {
+    handleVideoTimeUpdateWithTime(currentTime, true);
+  };
+
+  // Called by YouTubeLessonPlayer when a seek is blocked
+  const handleYouTubeSeekBlocked = (requestedTime: number, allowedTime: number) => {
+    logIntegritySignal("seek_attempt_blocked", "high", {
+      detail: "Attempted to skip forward in restricted YouTube video.",
+      requestedSeekPosition: requestedTime,
+      furthestAllowedValue: allowedTime,
+    });
   };
 
   const handleBlockNavigation = async (nextIdx: number) => {
@@ -982,7 +1035,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const duration = activeBlock.duration ?? activeBlock.videoDuration;
       if (restrictSeeking && duration) {
         const requiredSeconds = duration * 0.9;
-        const isEndedLocally = videoRef.current && (videoRef.current.ended || videoRef.current.currentTime >= duration - 1);
+        const isEndedLocally = videoRef.current
+          ? (videoRef.current.ended || videoRef.current.currentTime >= duration - 1)
+          : youtubePlayerRef.current
+          ? (youtubePlayerRef.current.isEnded() || youtubePlayerRef.current.getCurrentTime() >= duration - 1)
+          : false;
         if (furthestMaxTimestamp < requiredSeconds && !isEndedLocally) {
           return "Finish the video to continue.";
         }
@@ -1548,36 +1605,77 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             {/* VIDEO BLOCK — full-width, video-first layout */}
             {activeBlock.type === "video" && (
               <div className="flex-1 flex flex-col relative bg-black" style={{ minHeight: 0 }}>
-                {/* Note: browser controls do not prevent media extraction; this is casual deterrence only. */}
-                <video
-                  ref={videoRef}
-                  src={resolvedVideoUrl || undefined}
-                  controls
-                  controlsList="nodownload noremoteplayback"
-                  disablePictureInPicture
-                  playsInline
-                  preload="metadata"
-                  draggable={false}
-                  onContextMenu={(e) => e.preventDefault()}
-                  onPlay={handleVideoPlay}
-                  onTimeUpdate={handleVideoTimeUpdate}
-                  onEnded={handleVideoEnded}
-                  onRateChange={() => {
-                    if (videoRef.current) {
-                      setCurrentSpeed(videoRef.current.playbackRate);
+                {isYouTubeBlock(activeBlock) ? (
+                  /* ── YouTube player path ── */
+                  (() => {
+                    const ytId = activeBlock.youtubeVideoId ||
+                      resolveYouTubeLegacy(activeBlock.videoUrl)?.videoId || "";
+                    const ytEmbed = activeBlock.youtubeEmbedUrl ||
+                      resolveYouTubeLegacy(activeBlock.videoUrl)?.embedUrl || "";
+                    if (!ytId) {
+                      return (
+                        <div className="flex-1 flex items-center justify-center bg-black text-white text-sm opacity-60">
+                          YouTube video not configured.
+                        </div>
+                      );
                     }
-                  }}
-                  onLoadedMetadata={() => {
-                    if (videoRef.current) {
-                      videoRef.current.playbackRate = currentSpeed;
-                      if (activeCheckpoint && checkpointResumeTimestampRef.current > 0) {
-                        videoRef.current.currentTime = checkpointResumeTimestampRef.current;
-                      }
-                    }
-                  }}
-                  className="w-full object-contain bg-black"
-                  style={{ flex: 1, minHeight: 0, maxHeight: "calc(100vh - 160px)" }}
-                />
+                    return (
+                      <YouTubeLessonPlayer
+                        ref={youtubePlayerRef}
+                        videoId={ytId}
+                        embedUrl={ytEmbed}
+                        blockId={activeBlock.id}
+                        restrictSeeking={attemptData?.lesson?.settings?.restrictSeeking ?? true}
+                        furthestTimestamp={furthestMaxTimestamp}
+                        startTimestamp={checkpointResumeTimestampRef.current > 0 && activeCheckpoint ? checkpointResumeTimestampRef.current : 0}
+                        onReady={(duration) => {
+                          if (duration > 0 && !activeBlock.duration) {
+                            // Update local block duration for completion checks when not pre-set
+                          }
+                        }}
+                        onPlay={handleVideoPlay}
+                        onTimeUpdate={handleYouTubeTimeUpdate}
+                        onEnded={handleVideoEnded}
+                        onRateChange={(rate) => setCurrentSpeed(rate)}
+                        onSeekBlocked={handleYouTubeSeekBlocked}
+                      />
+                    );
+                  })()
+                ) : (
+                  /* ── Native video path (uploaded / direct link) ── */
+                  <>
+                    {/* Note: browser controls do not prevent media extraction; this is casual deterrence only. */}
+                    <video
+                      ref={videoRef}
+                      src={resolvedVideoUrl || undefined}
+                      controls
+                      controlsList="nodownload noremoteplayback"
+                      disablePictureInPicture
+                      playsInline
+                      preload="metadata"
+                      draggable={false}
+                      onContextMenu={(e) => e.preventDefault()}
+                      onPlay={handleVideoPlay}
+                      onTimeUpdate={handleVideoTimeUpdate}
+                      onEnded={handleVideoEnded}
+                      onRateChange={() => {
+                        if (videoRef.current) {
+                          setCurrentSpeed(videoRef.current.playbackRate);
+                        }
+                      }}
+                      onLoadedMetadata={() => {
+                        if (videoRef.current) {
+                          videoRef.current.playbackRate = currentSpeed;
+                          if (activeCheckpoint && checkpointResumeTimestampRef.current > 0) {
+                            videoRef.current.currentTime = checkpointResumeTimestampRef.current;
+                          }
+                        }
+                      }}
+                      className="w-full object-contain bg-black"
+                      style={{ flex: 1, minHeight: 0, maxHeight: "calc(100vh - 160px)" }}
+                    />
+                  </>
+                )}
 
                 {/* Playback speed bar — bright and calm */}
                 <div className="bg-white border-t border-slate-200 px-4 md:px-6 py-2.5 flex items-center justify-between gap-4 font-sans select-none shrink-0 z-10 w-full">
@@ -1595,6 +1693,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           onClick={() => {
                             if (videoRef.current) {
                               videoRef.current.playbackRate = speed;
+                              setCurrentSpeed(speed);
+                            } else if (youtubePlayerRef.current) {
+                              youtubePlayerRef.current.setPlaybackRate(speed);
                               setCurrentSpeed(speed);
                             }
                           }}
@@ -1711,6 +1812,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                     if (videoRef.current) {
                                       videoRef.current.currentTime = checkpointResumeTimestampRef.current;
                                       videoRef.current.play().catch(() => {});
+                                    } else if (youtubePlayerRef.current) {
+                                      youtubePlayerRef.current.seekTo(checkpointResumeTimestampRef.current);
+                                      youtubePlayerRef.current.play();
                                     }
                                   }}
                                   className="learn-focusable inline-flex items-center justify-center gap-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm px-6 py-2.5 transition cursor-pointer outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/30"

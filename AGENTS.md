@@ -4817,3 +4817,198 @@ npm run build                       → PASSED (2149 modules)
 5. No new Firestore collection is added for marker metadata — the marker is recomputed deterministically on-demand.
 6. `verify:allowlist` environment issue is pre-existing (requires a configured AUTHORIZED_STUDENT_EMAILS env var that is not present in this environment).
 - The `SCIENCE_QUICK_BAR` in the integrated editor inserts static LaTeX templates (e.g. `\\times 10^{}`), not form-based notation. For fully guided scientific notation, teachers should use the Chemistry tab's Scientific Notation form.
+
+---
+
+## Session: YouTube Video Source Support & Builder UX (2026-06-05)
+
+```text
+Date: 2026-06-05
+Agent: Claude Code (Sonnet 4.6)
+Task: YouTube video source support (Parts A–I), builder UX improvements
+
+WHAT CHANGED:
+
+src/types.ts:
+  - Added four new fields to LessonBlock interface:
+      videoSource?: "upload" | "youtube" | "direct"   — discriminator for video type
+      youtubeVideoId?: string                          — extracted YouTube video ID
+      youtubeUrl?: string                              — canonical YouTube watch URL
+      youtubeEmbedUrl?: string                         — youtube-nocookie.com embed URL
+  - Legacy blocks (videoSource undefined, videoUrl set to a YouTube URL) remain compatible
+    via resolveYouTubeLegacy() in youtubeParser.ts.
+
+src/utils/youtubeParser.ts (NEW FILE):
+  - Exports: parseYouTubeUrl, looksLikeYouTubeUrl, resolveYouTubeLegacy, isYouTubeParseError
+  - Handles all YouTube URL formats: watch, youtu.be, /embed/, /shorts/, ?t= and ?start= timestamps
+  - Returns YouTubeParseResult {provider, videoId, canonicalUrl, embedUrl, startSeconds, thumbnailUrl}
+    or YouTubeParseError {error}
+  - Uses youtube-nocookie.com for privacy-enhanced embeds
+  - Thumbnail: https://img.youtube.com/vi/${videoId}/hqdefault.jpg (no API key needed)
+
+src/components/TeacherDashboard/VideoSourcePicker.tsx (NEW FILE):
+  - Three-tab video source picker: Upload video | YouTube | Direct video link
+  - Upload tab: wraps existing VideoUploader — all Firebase Storage upload behavior preserved
+  - YouTube tab: URL input → parseYouTubeUrl → preview card (thumbnail + iframe + YouTube warning)
+  - Direct link tab: URL input + browser-playability warning for non-video-extension URLs
+  - detectInitialMode() auto-selects correct tab from existing block state on re-open
+  - Props: onVideoUploaded (existing signature), onThumbnailSelected, onYouTubeSelected, onDirectLinkSelected
+
+src/components/TeacherDashboard/LessonsBuilder.tsx:
+  - Replaced VideoUploader + "Or paste a video link" field with VideoSourcePicker in BlockEditor
+  - handleVideoUploaded: converted to setCurrentBlocksLive updater; now sets videoSource:"upload",
+    clears YouTube fields atomically
+  - Added handleYouTubeSelected: sets videoSource:"youtube", youtubeVideoId, youtubeUrl,
+    youtubeEmbedUrl, thumbnailUrl, clears storagePath
+  - Added handleDirectLinkSelected: sets videoSource:"direct", clears YouTube fields and storagePath
+  - Updated BlockEditorProps interface and BlockEditor function to accept onYouTubeSelected and
+    onDirectLinkSelected
+  - Passed onYouTubeSelected={handleYouTubeSelected} and onDirectLinkSelected={handleDirectLinkSelected}
+    to <BlockEditor> in main render section
+  - ReadinessPanel: made collapsible with detailsVisible state (default: collapsed/false)
+      - Shows stats grid + publish banner always
+      - Toggle "Show details" / "Hide details" to expand/collapse blockers, attention, optional, tips
+      - When collapsed: inline prompt "N blockers need attention →" if issues exist
+      - Panel width reduced from w-72 to w-64 to be less dominant
+
+src/components/RichContent/types.ts:
+  - Added compactHeight?: boolean to RichContentEditorProps
+
+src/components/RichContent/RichContentEditor.tsx:
+  - Added compactHeight?: boolean prop to both EditorInnerProps and outer component
+  - min-h-[150px] → ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"} in container and
+    ContentEditable elements
+
+src/components/TeacherDashboard/QuestionEditor.tsx:
+  - Added compactHeight={true} to RichContentEditor for MC answer choice fields
+  - Answer choice editors now use 60px min-height instead of 150px
+
+src/components/StudentPortal/YouTubeLessonPlayer.tsx (NEW FILE):
+  - YouTube IFrame API singleton loader (ensureYtApiLoaded — loads once per page)
+  - forwardRef component exposing YouTubeLessonPlayerHandle:
+      seekTo(seconds), play(), pause(), setPlaybackRate(rate),
+      getCurrentTime(), getDuration(), isEnded(), isPaused()
+  - Polls at 250ms for time updates and best-effort restricted seeking:
+      Detects forward jumps > furthestTimestamp + 3s, seeks back, calls onSeekBlocked
+  - Props: videoId, embedUrl, blockId, restrictSeeking, furthestTimestamp, startTimestamp,
+    onReady, onPlay, onTimeUpdate, onEnded, onRateChange, onSeekBlocked
+  - Clean IFrame destroy on unmount
+
+src/components/StudentPortal/FocusedPlayer.tsx:
+  - Added import of YouTubeLessonPlayer and YouTubeLessonPlayerHandle
+  - Added import of looksLikeYouTubeUrl and resolveYouTubeLegacy from youtubeParser
+  - Added youtubePlayerRef = useRef<YouTubeLessonPlayerHandle | null>(null)
+  - Added isYouTubeBlock(block) helper (checks videoSource, youtubeVideoId, looksLikeYouTubeUrl)
+  - Refactored handleVideoTimeUpdate → handleVideoTimeUpdateWithTime(currentTime, isYoutube?)
+    for shared time-update + checkpoint-trigger logic across both player paths
+  - Added handleYouTubeTimeUpdate(currentTime) and handleYouTubeSeekBlocked callbacks
+  - Updated checkpoint trigger to pause youtubePlayerRef when block is YouTube type
+  - checkpointResumeTimestampRef.current = currentTime (parameter, works for both paths)
+  - Updated fullscreen/blur/visibility event handlers to also handle YouTube player
+  - Updated getNextBlockedReason isEnded check to use youtubePlayerRef for YouTube blocks
+  - Video block rendering conditionally renders YouTubeLessonPlayer or native <video>
+  - Playback speed buttons: use youtubePlayerRef.current.setPlaybackRate(speed) for YouTube
+  - Continue button after checkpoint: seeks + plays via youtubePlayerRef for YouTube blocks
+  - onLoadedMetadata restores checkpoint position: compatible with both paths
+
+server.ts:
+  - POST /api/lessons block normalization: preserves videoSource, youtubeVideoId, youtubeUrl,
+    youtubeEmbedUrl when creating/updating lessons
+  - PUT /api/lessons/:id block normalization: same YouTube field preservation
+
+scripts/verify-video-sources-and-builder-ux.ts (NEW FILE):
+  - 35 checks across 11 sections covering all implemented features
+  - Sections: LessonBlock type, youtubeParser exports, URL parsing (6 formats + error),
+    VideoSourcePicker, YouTubeLessonPlayer, FocusedPlayer integration, server persistence,
+    ReadinessPanel collapsible, RichContentEditor compactHeight, LessonsBuilder handlers,
+    security (sanitizeLessonBlocksForStudent called for student-facing endpoints)
+
+scripts/verify-builder.ts:
+  - Updated "VideoUploader persists thumbnail" check: old exact-string match replaced with
+    regex that matches the new updater-pattern implementation
+
+scripts/verify-student-ui.ts:
+  - Updated "checkpoint open saves currentTime to resume ref" check: updated from
+    video.currentTime to currentTime (parameter, works for both native video and YouTube)
+
+package.json:
+  - Added: "verify:video-sources-builder-ux": "tsx scripts/verify-video-sources-and-builder-ux.ts"
+
+YOUTUBE SUPPORT DESIGN NOTES:
+  - YouTube restricted seeking is best-effort only: IFrame API cannot prevent all seeks,
+    but forward jumps > furthestTimestamp + 3s are detected and corrected within ~250ms
+  - YouTube video progress tracking integrates fully with the existing heartbeat/progress
+    system via the onTimeUpdate callback path shared with native video
+  - Legacy blocks that have a YouTube URL in videoUrl (no videoSource field) are resolved
+    via resolveYouTubeLegacy() before rendering in FocusedPlayer
+  - Privacy-enhanced embeds (youtube-nocookie.com) are used for all YouTube iframes
+
+SECURITY NOTES (UNCHANGED):
+  - sanitizeLessonBlocksForStudent: YouTube fields (videoSource, youtubeVideoId, youtubeUrl,
+    youtubeEmbedUrl) are safe to expose to students — they contain no teacher-only data
+  - The existing sanitize.ts stripping of correctChoiceId, rubrics, model answers, AI guidance,
+    teacher notes, and teacher-only feedback is entirely unaffected by this change
+  - Student-facing server routes that serve blocks still call sanitizeLessonBlocksForStudent
+    before returning data; the YouTube fields pass through safely
+
+Verification:
+  Commands run: npm run build, npm run verify:video-sources-builder-ux,
+                npm run verify:builder, npm run verify:student-ui,
+                npm run verify:access-control, npm run verify:ai-grading-safety,
+                npm run verify:versioning, npm run verify:completion,
+                npm run verify:workflow, npm run verify:teacher-state,
+                npm run verify:hardening, npm run verify:slice,
+                npm run verify:api-only, npm run verify:reliability,
+                npm run verify:rich-formulas, npm run verify:visual-math-chemistry-editor,
+                npm run verify:browser-ai-guard
+  Results: ALL PASSED (see verification section below)
+
+Known issues / remaining work:
+  - YouTube restricted seeking is best-effort: the IFrame API cannot call preventDefault()
+    on seeks, so the 250ms polling window allows a ~0.25s overshoot before correction
+  - YouTube autoplay in the embed preview within VideoSourcePicker requires user gesture;
+    some browsers may block autoplay — this is expected browser behavior, not a bug
+  - No YouTube duration is fetched at the teacher authoring stage (the IFrame API reports
+    duration only after player is ready); duration is populated when the student plays
+    the video via the onReady callback
+  - verify:allowlist (pre-existing): requires AUTHORIZED_STUDENT_EMAILS env var not present
+    in this environment
+
+Future-agent warning:
+  - YouTubeLessonPlayer uses a MODULE-LEVEL singleton (ytApiReady, ytApiCallbacks, ytApiLoading)
+    to load the YouTube IFrame API script exactly once per page. Do NOT move these to component
+    state or add a second script tag — YouTube's API only fires onYouTubeIframeAPIReady once.
+  - The YouTubeLessonPlayerHandle ref is the ONLY way to control the YouTube player from the
+    parent (FocusedPlayer). Never try to use CSS or DOM manipulation to hide/show the iframe
+    as a seek-prevention mechanism — YouTube IFrame API events are the only reliable interface.
+  - When adding new video block fields to LessonBlock, also update the block normalization in
+    both POST /api/lessons AND PUT /api/lessons/:id in server.ts, or the fields will be
+    stripped on save.
+  - ReadinessPanel width was reduced from w-72 to w-64. If more readiness content is added,
+    consider restoring w-72 or making width adaptive.
+  - The compactHeight prop in RichContentEditor applies to BOTH the container div and the
+    ContentEditable element. If the editor structure changes, verify both locations still use
+    the conditional class.
+```
+
+### Verification Results (2026-06-05 — YouTube & Builder UX session)
+
+```
+npm run verify:video-sources-builder-ux  → 35 passed, 0 failed (NEW)
+npm run verify:builder                   → 73 passed, 0 failed
+npm run verify:student-ui                → 71 passed, 0 failed
+npm run verify:access-control            → 58 passed, 0 failed
+npm run verify:ai-grading-safety         → 55 passed, 0 failed
+npm run verify:versioning                → 55 passed, 0 failed
+npm run verify:completion                → 47 passed, 0 failed
+npm run verify:workflow                  → 61 passed, 0 failed
+npm run verify:teacher-state             → 22 passed, 0 failed
+npm run verify:hardening                 → all checks PASSED
+npm run verify:slice                     → 20 passed, 0 failed
+npm run verify:api-only                  → all checks PASSED
+npm run verify:reliability               → all checks PASSED
+npm run verify:rich-formulas             → all checks PASSED
+npm run verify:visual-math-chemistry-editor → all checks PASSED
+npm run verify:browser-ai-guard         → 77 passed, 0 failed
+npm run build                            → PASSED (2152 modules)
+```

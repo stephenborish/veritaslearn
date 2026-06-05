@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
+import VideoSourcePicker from "./VideoSourcePicker";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
 import QuestionEditor, { validateQuestionClient } from "./QuestionEditor";
 import LearningConditionsEditor, { buildDefaultPolicy, type IntegrityPolicy } from "./LearningConditionsEditor";
@@ -454,7 +455,11 @@ export default function LessonsBuilder({
       const latestBlock = updated[index];
       updated[index] = {
         ...latestBlock,
+        videoSource: "upload" as const,
         videoUrl: url,
+        youtubeVideoId: undefined,
+        youtubeUrl: undefined,
+        youtubeEmbedUrl: undefined,
         thumbnailUrl: thumbnail ?? latestBlock.thumbnailUrl ?? "",
         duration: duration ?? latestBlock.duration ?? 0,
         storagePath: storagePath ?? latestBlock.storagePath ?? "",
@@ -475,6 +480,53 @@ export default function LessonsBuilder({
         thumbnailUrl,
         duration: latestBlock.duration ?? 0,
         storagePath: latestBlock.storagePath ?? "",
+        videoCheckpoints: Array.isArray(latestBlock.videoCheckpoints) ? latestBlock.videoCheckpoints : [],
+      };
+      return updated;
+    });
+  };
+
+  const handleYouTubeSelected = (
+    index: number,
+    videoId: string,
+    youtubeUrl: string,
+    embedUrl: string,
+    thumbnailUrl: string,
+    duration?: number,
+  ) => {
+    setCurrentBlocksLive((prev: any[]) => {
+      if (!prev[index]) return prev;
+      const updated = [...prev];
+      const latestBlock = updated[index];
+      updated[index] = {
+        ...latestBlock,
+        videoSource: "youtube" as const,
+        videoUrl: youtubeUrl,
+        youtubeVideoId: videoId,
+        youtubeUrl,
+        youtubeEmbedUrl: embedUrl,
+        thumbnailUrl: thumbnailUrl || latestBlock.thumbnailUrl || "",
+        duration: duration ?? latestBlock.duration,
+        storagePath: "",
+        videoCheckpoints: Array.isArray(latestBlock.videoCheckpoints) ? latestBlock.videoCheckpoints : [],
+      };
+      return updated;
+    });
+  };
+
+  const handleDirectLinkSelected = (index: number, url: string) => {
+    setCurrentBlocksLive((prev: any[]) => {
+      if (!prev[index]) return prev;
+      const updated = [...prev];
+      const latestBlock = updated[index];
+      updated[index] = {
+        ...latestBlock,
+        videoSource: "direct" as const,
+        videoUrl: url,
+        youtubeVideoId: undefined,
+        youtubeUrl: undefined,
+        youtubeEmbedUrl: undefined,
+        storagePath: "",
         videoCheckpoints: Array.isArray(latestBlock.videoCheckpoints) ? latestBlock.videoCheckpoints : [],
       };
       return updated;
@@ -2060,6 +2112,8 @@ export default function LessonsBuilder({
                   onBlockQuestionTypeChange={handleBlockQuestionTypeChange}
                   selectedLessonId={selectedLesson?.id}
                   lessonTitle={title}
+                  onYouTubeSelected={handleYouTubeSelected}
+                  onDirectLinkSelected={handleDirectLinkSelected}
                 />
               ) : (
                 <div className="bg-white border border-slate-200 rounded-lg p-16 text-center text-slate-400 text-sm">
@@ -2225,6 +2279,9 @@ function ReadinessPanel({
   checkpointCount, totalBlocks, isPublished, onNavigate
 }: ReadinessPanelProps) {
   const canPublish = blockers.length === 0;
+  const hasIssues = blockers.length > 0 || attention.length > 0;
+  const [detailsVisible, setDetailsVisible] = useState(false);
+
   const stats: Array<{ value: number; label: string; accent?: string }> = [
     { value: totalBlocks, label: "Blocks" },
     { value: gradedQCount, label: "Assessment", accent: "text-emerald-700" },
@@ -2236,18 +2293,27 @@ function ReadinessPanel({
   if (aiGradedCount > 0) stats.push({ value: aiGradedCount, label: "AI-scored", accent: "text-indigo-700" });
 
   return (
-    <aside className="w-72 shrink-0 border border-slate-200 rounded-r-lg bg-white flex flex-col overflow-y-auto ml-3">
+    <aside className="w-64 shrink-0 border border-slate-200 rounded-r-lg bg-white flex flex-col overflow-y-auto ml-3">
       {/* Readiness headline */}
-      <div className="p-4 border-b border-slate-100">
-        <div className="flex items-center gap-2 mb-3">
-          <BarChart2 className="w-4 h-4 text-slate-500" />
-          <span className="font-bold text-xs uppercase tracking-wider text-slate-800">Readiness</span>
+      <div className="p-3 border-b border-slate-100">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1.5">
+            <BarChart2 className="w-3.5 h-3.5 text-slate-500" />
+            <span className="font-bold text-[11px] uppercase tracking-wider text-slate-800">Readiness</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDetailsVisible((v) => !v)}
+            className="text-[10px] text-blue-600 hover:text-blue-800 font-semibold transition"
+          >
+            {detailsVisible ? "Hide details" : "Show details"}
+          </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 text-[11px] mb-3">
+        <div className="grid grid-cols-2 gap-1.5 text-[11px] mb-2">
           {stats.map((s) => (
-            <div key={s.label} className="bg-slate-50 border border-slate-200 rounded p-2 text-center">
-              <div className={`font-bold text-base ${s.accent || "text-slate-800"}`}>{s.value}</div>
+            <div key={s.label} className="bg-slate-50 border border-slate-200 rounded p-1.5 text-center">
+              <div className={`font-bold text-sm ${s.accent || "text-slate-800"}`}>{s.value}</div>
               <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">{s.label}</div>
             </div>
           ))}
@@ -2266,84 +2332,99 @@ function ReadinessPanel({
             <><AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" /><span className="text-[11px] font-bold">Fix {blockers.length} blocker{blockers.length !== 1 ? "s" : ""} before publishing</span></>
           )}
         </motion.div>
-      </div>
 
-      {/* Blockers */}
-      {blockers.length > 0 && (
-        <div className="p-4 border-b border-slate-100">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-rose-600 mb-2.5 flex items-center gap-1">
-            <AlertCircle className="w-3.5 h-3.5" /> Blockers
-          </div>
-          <ul className="space-y-1.5">
-            <AnimatePresence initial={false}>
-              {renderReadinessRows(blockers, "blocker", "Fix this", onNavigate)}
-            </AnimatePresence>
-          </ul>
-        </div>
-      )}
-
-      {/* Needs attention */}
-      {attention.length > 0 && (
-        <div className="p-4 border-b border-slate-100">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-amber-600 mb-2.5 flex items-center gap-1">
-            <AlertCircle className="w-3.5 h-3.5" /> Needs attention
-          </div>
-          <ul className="space-y-1.5">
-            <AnimatePresence initial={false}>
-              {renderReadinessRows(attention, "attention", "Review", onNavigate)}
-            </AnimatePresence>
-          </ul>
-        </div>
-      )}
-
-      {/* Optional improvements */}
-      {optional.length > 0 && (
-        <div className="p-4 border-b border-slate-100">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2.5 flex items-center gap-1">
-            <Info className="w-3.5 h-3.5" /> Optional
-          </div>
-          <ul className="space-y-1.5">
-            <AnimatePresence initial={false}>
-              {renderReadinessRows(optional, "optional", "Open", onNavigate)}
-            </AnimatePresence>
-          </ul>
-        </div>
-      )}
-
-      {blockers.length === 0 && attention.length === 0 && optional.length === 0 && (
-        <div className="p-4 border-b border-slate-100 text-center">
-          <CheckCircle className="w-7 h-7 mx-auto mb-1.5 text-emerald-400" />
-          <p className="text-[11px] font-semibold text-slate-600">Everything looks good.</p>
-          <p className="text-[10px] text-slate-400 mt-0.5">Preview, then publish when you’re ready.</p>
-        </div>
-      )}
-
-      {/* What students will see */}
-      <div className="p-4 bg-slate-50/80 mt-auto space-y-2.5 text-[11px] text-slate-500 leading-normal border-t border-slate-200">
-        <div className="text-[9px] font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1">
-          <Eye className="w-3.5 h-3.5 text-[#0A192F]" /> What students will see
-        </div>
-        <div className="space-y-2 text-[10px] text-left">
-          <div className="flex items-start gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0 mt-1"></span>
-            <span><strong>Practice:</strong> students see whether they were right, plus your explanation, right away.</span>
-          </div>
-          <div className="flex items-start gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0 mt-1"></span>
-            <span><strong>Assessment:</strong> answers and scores stay hidden until you release them.</span>
-          </div>
-          <div className="flex items-start gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0 mt-1"></span>
-            <span>Students never see model answers, rubrics, or scoring guidance.</span>
-          </div>
-        </div>
-        {aiGradedCount > 0 && (
-          <div className="text-indigo-600 flex items-start gap-1 leading-relaxed text-left border-t border-slate-200 pt-2">
-            <GraduationCap className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-            <span>Review AI-scored short answers before releasing scores.</span>
-          </div>
+        {!detailsVisible && hasIssues && (
+          <button
+            type="button"
+            onClick={() => setDetailsVisible(true)}
+            className="mt-2 w-full text-[10px] text-amber-700 hover:text-amber-900 font-semibold text-left"
+          >
+            {blockers.length > 0 ? `${blockers.length} blocker${blockers.length !== 1 ? "s" : ""} need attention →` : `${attention.length} item${attention.length !== 1 ? "s" : ""} to review →`}
+          </button>
         )}
       </div>
+
+      {/* Collapsible details section */}
+      {detailsVisible && (
+        <>
+          {/* Blockers */}
+          {blockers.length > 0 && (
+            <div className="p-3 border-b border-slate-100">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-rose-600 mb-2 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" /> Blockers
+              </div>
+              <ul className="space-y-1.5">
+                <AnimatePresence initial={false}>
+                  {renderReadinessRows(blockers, "blocker", "Fix this", onNavigate)}
+                </AnimatePresence>
+              </ul>
+            </div>
+          )}
+
+          {/* Needs attention */}
+          {attention.length > 0 && (
+            <div className="p-3 border-b border-slate-100">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-amber-600 mb-2 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" /> Needs attention
+              </div>
+              <ul className="space-y-1.5">
+                <AnimatePresence initial={false}>
+                  {renderReadinessRows(attention, "attention", "Review", onNavigate)}
+                </AnimatePresence>
+              </ul>
+            </div>
+          )}
+
+          {/* Optional improvements */}
+          {optional.length > 0 && (
+            <div className="p-3 border-b border-slate-100">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center gap-1">
+                <Info className="w-3.5 h-3.5" /> Optional
+              </div>
+              <ul className="space-y-1.5">
+                <AnimatePresence initial={false}>
+                  {renderReadinessRows(optional, "optional", "Open", onNavigate)}
+                </AnimatePresence>
+              </ul>
+            </div>
+          )}
+
+          {blockers.length === 0 && attention.length === 0 && optional.length === 0 && (
+            <div className="p-3 border-b border-slate-100 text-center">
+              <CheckCircle className="w-6 h-6 mx-auto mb-1.5 text-emerald-400" />
+              <p className="text-[11px] font-semibold text-slate-600">Everything looks good.</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Preview, then publish when you’re ready.</p>
+            </div>
+          )}
+
+          {/* What students will see */}
+          <div className="p-3 bg-slate-50/80 mt-auto space-y-2 text-[11px] text-slate-500 leading-normal border-t border-slate-200">
+            <div className="text-[9px] font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1">
+              <Eye className="w-3.5 h-3.5 text-[#0A192F]" /> What students will see
+            </div>
+            <div className="space-y-1.5 text-[10px] text-left">
+              <div className="flex items-start gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0 mt-1"></span>
+                <span><strong>Practice:</strong> students see whether they were right, plus your explanation, right away.</span>
+              </div>
+              <div className="flex items-start gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0 mt-1"></span>
+                <span><strong>Assessment:</strong> answers and scores stay hidden until you release them.</span>
+              </div>
+              <div className="flex items-start gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0 mt-1"></span>
+                <span>Students never see model answers, rubrics, or scoring guidance.</span>
+              </div>
+            </div>
+            {aiGradedCount > 0 && (
+              <div className="text-indigo-600 flex items-start gap-1 leading-relaxed text-left border-t border-slate-200 pt-2">
+                <GraduationCap className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>Review AI-scored short answers before releasing scores.</span>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </aside>
   );
 }
@@ -2367,6 +2448,8 @@ interface BlockEditorProps {
   onBlockQuestionTypeChange: (index: number, nextType: "mc" | "sa") => void;
   selectedLessonId: string | undefined;
   lessonTitle?: string;
+  onYouTubeSelected: (index: number, videoId: string, youtubeUrl: string, embedUrl: string, thumbnailUrl: string, duration?: number) => void;
+  onDirectLinkSelected: (index: number, url: string) => void;
 }
 
 /**
@@ -2428,7 +2511,9 @@ function BlockEditor({
   onBlockQuestionChange,
   onBlockQuestionTypeChange,
   selectedLessonId,
-  lessonTitle
+  lessonTitle,
+  onYouTubeSelected,
+  onDirectLinkSelected,
 }: BlockEditorProps) {
   const typeLabel = block.type === "video" ? "Video" : block.type === "reading" ? "Reading" : "Question";
 
@@ -2469,31 +2554,27 @@ function BlockEditor({
         {/* Video block */}
         {block.type === "video" && (
           <div className="space-y-4">
-            <VideoUploader
+            <VideoSourcePicker
               videoUrl={block.videoUrl}
               thumbnailUrl={block.thumbnailUrl}
               storagePath={block.storagePath}
               duration={block.duration}
+              videoSource={block.videoSource}
+              youtubeVideoId={block.youtubeVideoId}
+              youtubeEmbedUrl={block.youtubeEmbedUrl}
               onVideoUploaded={(url, thumbnail, duration, storagePath) => {
                 onVideoUploaded(index, url, thumbnail, duration, storagePath);
-                // verify-builder.ts contract compatibility:
-                // onBlockMultipleChanges(index, { videoUrl: url, thumbnailUrl: thumbnail || "", duration: duration || 0, storagePath: storagePath || "" })
               }}
               onThumbnailSelected={(thumbnail) => {
                 onVideoThumbnailSelected(index, thumbnail);
               }}
+              onYouTubeSelected={(videoId, youtubeUrl, embedUrl, thumbnailUrl, duration) => {
+                onYouTubeSelected(index, videoId, youtubeUrl, embedUrl, thumbnailUrl, duration);
+              }}
+              onDirectLinkSelected={(url) => {
+                onDirectLinkSelected(index, url);
+              }}
             />
-
-            <div className="pt-2 border-t border-slate-100">
-              <label className="font-semibold text-slate-600 block mb-1">Or paste a video link</label>
-              <input
-                type="text"
-                value={block.videoUrl || ""}
-                onChange={(e) => onBlockChange(index, "videoUrl", e.target.value)}
-                placeholder="https://example.com/video.mp4"
-                className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-1.5 font-mono text-[11px] focus:outline-none focus:border-slate-400"
-              />
-            </div>
 
             {/* Video checkpoints */}
             <div className="pt-3 border-t border-slate-100 space-y-3">

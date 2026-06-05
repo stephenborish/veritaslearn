@@ -281,6 +281,8 @@ interface EditorInnerProps {
   applyKey: number;
   // Signals "apply complete" so parent can track current html
   onApplied: (html: string) => void;
+  /** When true, uses a compact min-height (suitable for answer choices). */
+  compactHeight?: boolean;
 }
 
 const EditorInner: React.FC<EditorInnerProps> = ({
@@ -292,6 +294,7 @@ const EditorInner: React.FC<EditorInnerProps> = ({
   contentToApplyRef,
   applyKey,
   onApplied,
+  compactHeight,
 }) => {
   const [editor] = useLexicalComposerContext();
   const [showMath, setShowMath] = useState(false);
@@ -366,9 +369,9 @@ const EditorInner: React.FC<EditorInnerProps> = ({
           onOpenChem={() => setShowChem(true)}
         />
       )}
-      <div className="relative p-3 min-h-[150px] cursor-text select-text">
+      <div className={`relative p-3 cursor-text select-text ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`}>
         <RichTextPlugin
-          contentEditable={<ContentEditable className="outline-none min-h-[150px]" />}
+          contentEditable={<ContentEditable className={`outline-none ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`} />}
           placeholder={<div className="absolute top-3 left-3 text-slate-400 pointer-events-none">{placeholder}</div>}
           ErrorBoundary={LexicalErrorBoundary}
         />
@@ -405,7 +408,8 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   allowMath = true,
   allowChemistry = true,
   disabled = false,
-  documentKey = ""
+  documentKey = "",
+  compactHeight = false,
 }) => {
   // Track focus state of this specific editor
   const [isFocused, setIsFocused] = useState(false);
@@ -585,6 +589,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
           contentToApplyRef={contentToApplyRef}
           applyKey={applyKey}
           onApplied={handleApplied}
+          compactHeight={compactHeight}
         />
       </LexicalComposer>
     </div>

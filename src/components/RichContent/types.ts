@@ -40,4 +40,6 @@ export type RichContentEditorProps = {
   allowChemistry?: boolean;
   disabled?: boolean;
   documentKey?: string;
+  /** When true, uses a smaller min-height (suitable for compact answer choices). */
+  compactHeight?: boolean;
 };

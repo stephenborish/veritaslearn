@@ -540,6 +540,7 @@ export default function QuestionEditor({
                         mode="compact"
                         allowMath={true}
                         allowChemistry={true}
+                        compactHeight={true}
                         placeholder={`Choice ${CHOICE_LETTERS[idx] ?? idx + 1} — supports bold, subscript, images, math…`}
                         documentKey={`${lessonPart}${blockPart}${cpPart}q-${qIdStr}-choice-${c.id}-text`}
                       />

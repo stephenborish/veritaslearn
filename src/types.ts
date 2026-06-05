@@ -146,6 +146,14 @@ export interface LessonBlock {
   title: string;
   // Video block specific properties
   videoUrl?: string; // Standard streaming link or clean URL
+  /** Explicit video source type. Inferred from storagePath/youtubeVideoId when absent (legacy compat). */
+  videoSource?: "upload" | "youtube" | "direct";
+  /** YouTube video ID extracted from the URL. Present only when videoSource === "youtube". */
+  youtubeVideoId?: string;
+  /** Canonical YouTube watch URL. Present only when videoSource === "youtube". */
+  youtubeUrl?: string;
+  /** youtube-nocookie.com embed URL. Present only when videoSource === "youtube". */
+  youtubeEmbedUrl?: string;
   thumbnailUrl?: string; // Opt-in generated course preview thumbnail
   storagePath?: string; // Firebase Storage reference path for the video asset
   duration?: number; // Video duration in seconds
