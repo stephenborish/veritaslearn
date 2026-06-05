@@ -19,8 +19,8 @@ const CHEM_GROUPS: { group: string; items: ChemBtn[] }[] = [
   {
     group: "Subscript & Superscript",
     items: [
-      { label: "X₂",  title: "Subscript (e.g. H₂O)", latex: "_{}" },
-      { label: "Xⁿ",  title: "Superscript",           latex: "^{}" },
+      { label: "X₂",  title: "Subscript (e.g. H₂O)", latex: "_{#?}" },
+      { label: "Xⁿ",  title: "Superscript",           latex: "^{#?}" },
     ],
   },
   {
@@ -129,8 +129,8 @@ export const ChemistryFormulaModal: React.FC<ChemistryFormulaModalProps> = ({
   const insertSymbol = useCallback((latex: string) => {
     const mf = mfRef.current;
     if (!mf) return;
-    mf.insert(latex);
     mf.focus();
+    mf.insert(latex);
   }, []);
 
   const handleSave = useCallback(() => {

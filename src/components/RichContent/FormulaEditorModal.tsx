@@ -25,11 +25,11 @@ interface SymbolCategory {
 
 // ─── Math: Quick-access bar ───────────────────────────────────────────────────
 const MATH_QUICK_BAR: MathSymbol[] = [
-  { label: "a/b",  title: "Fraction",             latex: "\\frac{}{}" },
-  { label: "√",    title: "Square root",           latex: "\\sqrt{}" },
-  { label: "xⁿ",  title: "Exponent / power",      latex: "^{}" },
+  { label: "a/b",  title: "Fraction",             latex: "\\frac{#?}{#?}" },
+  { label: "√",    title: "Square root",           latex: "\\sqrt{#?}" },
+  { label: "xⁿ",  title: "Exponent / power",      latex: "^{#?}" },
   { label: "x²",  title: "Squared",               latex: "^{2}" },
-  { label: "xᵢ",  title: "Subscript",             latex: "_{}" },
+  { label: "xᵢ",  title: "Subscript",             latex: "_{#?}" },
   { label: "+",    title: "Plus",                  latex: "+" },
   { label: "−",    title: "Minus",                 latex: "-" },
   { label: "×",    title: "Multiply",              latex: "\\times " },
@@ -38,13 +38,13 @@ const MATH_QUICK_BAR: MathSymbol[] = [
   { label: "≈",    title: "Approximately equal",   latex: "\\approx " },
   { label: "π",    title: "Pi",                    latex: "\\pi " },
   { label: "∞",    title: "Infinity",              latex: "\\infty " },
-  { label: "|x|",  title: "Absolute value",        latex: "\\left|\\right|" },
+  { label: "|x|",  title: "Absolute value",        latex: "\\left|#?\\right|" },
 ];
 
 // ─── Chemistry: Quick-access bar ──────────────────────────────────────────────
 const CHEM_QUICK_BAR: MathSymbol[] = [
-  { label: "X₂",  title: "Subscript",              latex: "_{}" },
-  { label: "X²",  title: "Superscript",            latex: "^{}" },
+  { label: "X₂",  title: "Subscript",              latex: "_{#?}" },
+  { label: "X²",  title: "Superscript",            latex: "^{#?}" },
   { label: "⁺",   title: "Positive charge",        latex: "^{+}" },
   { label: "⁻",   title: "Negative charge",        latex: "^{-}" },
   { label: "²⁺",  title: "2+ charge",              latex: "^{2+}" },
@@ -65,9 +65,9 @@ const SCIENCE_QUICK_BAR: MathSymbol[] = [
   { label: "F=ma",   title: "Newton's 2nd law",        latex: "F = ma" },
   { label: "PV=nRT", title: "Ideal gas law",           latex: "PV = nRT" },
   { label: "y=mx+b", title: "Linear equation",         latex: "y = mx + b" },
-  { label: "a/b",    title: "Fraction",                latex: "\\frac{}{}" },
-  { label: "√x",     title: "Square root",             latex: "\\sqrt{}" },
-  { label: "×10ⁿ",  title: "Scientific notation",     latex: "\\times 10^{}" },
+  { label: "a/b",    title: "Fraction",                latex: "\\frac{#?}{#?}" },
+  { label: "√x",     title: "Square root",             latex: "\\sqrt{#?}" },
+  { label: "×10ⁿ",  title: "Scientific notation",     latex: "\\times 10^{#?}" },
 ];
 
 // ─── Math symbol categories ───────────────────────────────────────────────────
@@ -114,17 +114,17 @@ const SYMBOL_CATEGORIES: SymbolCategory[] = [
     name: "Exponents, Roots & Logs",
     defaultOpen: false,
     symbols: [
-      { label: "xⁿ",  title: "x to the power n",    latex: "^{}" },
+      { label: "xⁿ",  title: "x to the power n",    latex: "^{#?}" },
       { label: "x²",  title: "x squared",            latex: "^{2}" },
       { label: "x³",  title: "x cubed",              latex: "^{3}" },
-      { label: "xᵢ",  title: "Subscript",            latex: "_{}" },
-      { label: "√",   title: "Square root",          latex: "\\sqrt{}" },
-      { label: "ⁿ√",  title: "nth root",             latex: "\\sqrt[]{}" },
-      { label: "eˣ",  title: "e to the x",           latex: "e^{}" },
-      { label: "ln",  title: "Natural log",           latex: "\\ln " },
-      { label: "log", title: "Log base 10",           latex: "\\log " },
-      { label: "logᵦ", title: "Log base b",          latex: "\\log_{}{}" },
-      { label: "a/b", title: "Fraction",              latex: "\\frac{}{}" },
+      { label: "xᵢ",  title: "Subscript",            latex: "_{#?}" },
+      { label: "√",   title: "Square root",          latex: "\\sqrt{#?}" },
+      { label: "ⁿ√",  title: "nth root",             latex: "\\sqrt[#?]{#?}" },
+      { label: "eˣ",  title: "e to the x",           latex: "e^{#?}" },
+      { label: "ln",  title: "Natural log",           latex: "\\ln{#?}" },
+      { label: "log", title: "Log base 10",           latex: "\\log_{10}{#?}" },
+      { label: "logᵦ", title: "Log base b",          latex: "\\log_{#?}{#?}" },
+      { label: "a/b", title: "Fraction",              latex: "\\frac{#?}{#?}" },
     ],
   },
   {
@@ -181,8 +181,8 @@ const SYMBOL_CATEGORIES: SymbolCategory[] = [
       { label: "μ",  title: "Mu (population mean)",    latex: "\\mu " },
       { label: "n!", title: "Factorial",               latex: "n!" },
       { label: "Σ",  title: "Summation",               latex: "\\sum " },
-      { label: "P()", title: "Probability",            latex: "P\\left(\\right)" },
-      { label: "C",  title: "Combination (nCr)",       latex: "\\binom{}{}" },
+      { label: "P()", title: "Probability",            latex: "P\\left(#?\\right)" },
+      { label: "C",  title: "Combination (nCr)",       latex: "\\binom{#?}{#?}" },
     ],
   },
   {
@@ -220,7 +220,7 @@ const SYMBOL_CATEGORIES: SymbolCategory[] = [
       { label: "d/dx",  title: "Derivative",          latex: "\\frac{d}{dx}" },
       { label: "∂/∂x",  title: "Partial derivative",  latex: "\\frac{\\partial}{\\partial x}" },
       { label: "∂",     title: "Partial symbol",      latex: "\\partial " },
-      { label: "lim",   title: "Limit",               latex: "\\lim_{}" },
+      { label: "lim",   title: "Limit",               latex: "\\lim_{#?}" },
       { label: "Σ",     title: "Summation series",    latex: "\\sum_{i=1}^{n}" },
       { label: "∇",     title: "Nabla / gradient",    latex: "\\nabla " },
     ],
@@ -232,8 +232,8 @@ const CHEM_BUILDING_BLOCKS: { group: string; items: MathSymbol[] }[] = [
   {
     group: "Subscript & Superscript",
     items: [
-      { label: "X₂",  title: "Subscript (e.g. H₂O)", latex: "_{}" },
-      { label: "X⁴",  title: "Superscript",           latex: "^{}" },
+      { label: "X₂",  title: "Subscript (e.g. H₂O)", latex: "_{#?}" },
+      { label: "X⁴",  title: "Superscript",           latex: "^{#?}" },
     ],
   },
   {
@@ -314,8 +314,8 @@ const SCIENCE_TEMPLATES: { label: string; title: string; latex: string; category
   { category: "Biology",    label: "Fermentation",     title: "Anaerobic fermentation",        latex: "C_6H_{12}O_6 \\rightarrow 2C_2H_5OH + 2CO_2" },
   { category: "Math",       label: "y = mx + b",       title: "Linear equation (slope-intercept)", latex: "y = mx + b" },
   { category: "Math",       label: "Quadratic",        title: "Quadratic formula",             latex: "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}" },
-  { category: "Math",       label: "a/b fraction",     title: "Fraction",                      latex: "\\frac{}{}" },
-  { category: "Math",       label: "√ root",           title: "Square root",                   latex: "\\sqrt{}" },
+  { category: "Math",       label: "a/b fraction",     title: "Fraction",                      latex: "\\frac{#?}{#?}" },
+  { category: "Math",       label: "√ root",           title: "Square root",                   latex: "\\sqrt{#?}" },
   { category: "Math",       label: "xⁿ exponent",      title: "Exponent",                      latex: "x^{n}" },
   { category: "Math",       label: "Isotope ¹⁴₆C",    title: "Isotope notation example",      latex: "^{14}_{6}C" },
   { category: "Math",       label: "×10²³ notation",  title: "Scientific notation",           latex: "6.02 \\times 10^{23}" },
@@ -597,14 +597,14 @@ export const FormulaEditorModal: React.FC<FormulaEditorModalProps> = ({
   const insertSymbol = useCallback((latex: string) => {
     const mf = mfRef.current;
     if (!mf) return;
-    mf.insert(latex);
     mf.focus();
+    mf.insert(latex);
   }, []);
 
   const handleSave = useCallback(() => {
     const latex = mfRef.current?.value ?? "";
-    onSave(latex, "");
-  }, [onSave]);
+    onSave(latex, activeTab);
+  }, [onSave, activeTab]);
 
   const handleShowAdvanced = () => {
     if (!showAdvanced) setAdvancedValue(mfRef.current?.value ?? '');

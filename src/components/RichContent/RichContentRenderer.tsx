@@ -10,7 +10,11 @@ interface ZoomState {
   alt: string;
 }
 
-export const RichContentRenderer: React.FC<{ content: string | RichContent | null | undefined, className?: string }> = ({ content, className = "" }) => {
+export const RichContentRenderer: React.FC<{
+  content: string | RichContent | null | undefined;
+  className?: string;
+  variant?: "default" | "student-reading";
+}> = ({ content, className = "", variant = "default" }) => {
   const rawHtml = getRenderableHtml(content);
   const cleanHtml = richContentSanitizer(rawHtml);
   const [zoom, setZoom] = useState<ZoomState | null>(null);
@@ -33,7 +37,11 @@ export const RichContentRenderer: React.FC<{ content: string | RichContent | nul
   return (
     <>
       <div
-        className={`prose prose-sm max-w-none [&_img]:cursor-zoom-in ${className}`}
+        className={`${
+          variant === "student-reading"
+            ? "prose prose-lg max-w-none student-reading-content select-text"
+            : "prose prose-sm max-w-none"
+        } [&_img]:cursor-zoom-in ${className}`}
         dangerouslySetInnerHTML={{ __html: cleanHtml }}
         onClick={handleClick}
       />

@@ -78,6 +78,7 @@ interface LessonsBuilderProps {
   courses?: any[];
   onEditingDirtyChange?: (isDirty: boolean) => void;
   idToken?: string | null;
+  onCollapseSidebar?: (collapsed: boolean) => void;
 }
 
 export default function LessonsBuilder({
@@ -92,6 +93,7 @@ export default function LessonsBuilder({
   courses = [],
   onEditingDirtyChange,
   idToken,
+  onCollapseSidebar,
 }: LessonsBuilderProps) {
   const [selectedLesson, setSelectedLesson] = useState<any>(null);
   // Top-level lesson fields use the live-state contract (see useLiveState above) so
@@ -651,6 +653,13 @@ export default function LessonsBuilder({
       })
     );
   };
+
+  // Automatically collapse sidebar when editor is opened
+  useEffect(() => {
+    if (selectedLesson && onCollapseSidebar) {
+      onCollapseSidebar(true);
+    }
+  }, [selectedLesson, onCollapseSidebar]);
 
   // ---- Dirty state + auto-save draft ----
   useEffect(() => {

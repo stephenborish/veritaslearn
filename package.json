@@ -28,6 +28,8 @@
     "verify:visual-math-chemistry-editor": "tsx scripts/verify-visual-math-chemistry-editor.ts",
     "verify:video-sources-builder-ux": "tsx scripts/verify-video-sources-and-builder-ux.ts",
     "verify:rich-authoring-persistence": "tsx scripts/verify-rich-authoring-persistence.ts",
+    "verify:student-reading-layout": "tsx scripts/verify-student-reading-layout.ts",
+    "verify:real-rich-editor-persistence": "vitest run tests/realRichEditorPersistence.test.tsx",
     "verify:rich-authoring-flows": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
@@ -42,6 +44,13 @@
     "@lexical/selection": "^0.45.0",
     "@lexical/utils": "^0.45.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@tiptap/extension-link": "^3.26.0",
+    "@tiptap/extension-subscript": "^3.26.0",
+    "@tiptap/extension-superscript": "^3.26.0",
+    "@tiptap/extension-underline": "^3.26.0",
+    "@tiptap/pm": "^3.26.0",
+    "@tiptap/react": "^3.26.0",
+    "@tiptap/starter-kit": "^3.26.0",
     "@vitejs/plugin-react": "^5.0.4",
     "ckeditor5": "^48.1.1",
     "dompurify": "^3.4.7",

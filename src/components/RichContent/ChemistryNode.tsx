@@ -1,27 +1,19 @@
-import { DecoratorNode, DOMConversionMap, DOMConversionOutput, DOMExportOutput, LexicalNode, NodeKey, SerializedLexicalNode, Spread } from 'lexical';
-import React, { useState, useEffect } from 'react';
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { $getNodeByKey } from 'lexical';
-import { FormulaEditorModal } from './FormulaEditorModal';
+import React, { useState } from "react";
+import { Node, mergeAttributes, ReactNodeViewRenderer, NodeViewWrapper } from "@tiptap/react";
+import { FormulaEditorModal } from "./FormulaEditorModal";
 
-export type SerializedChemistryNode = Spread<
-  {
-    formula: string;
-  },
-  SerializedLexicalNode
->;
-
-function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: NodeKey }) {
-  const [editor] = useLexicalComposerContext();
-  const [isEditable, setIsEditable] = useState(false);
+export const ChemistryNodeView = ({ node, updateAttributes, editor }: any) => {
   const [showEditor, setShowEditor] = useState(false);
+  const isEditable = editor.isEditable;
 
-  useEffect(() => {
-    setIsEditable(editor.isEditable());
-    return editor.registerEditableListener((editable) => {
-      setIsEditable(editable);
+  const handleSave = (latex: string) => {
+    updateAttributes({
+      formula: latex,
+      html: `<math-field readonly="true" data-chem="true">${latex}</math-field>`,
+      plainTextFallback: latex,
     });
-  }, [editor]);
+    setShowEditor(false);
+  };
 
   const openEditor = (e?: React.SyntheticEvent) => {
     if (!isEditable) return;
@@ -30,174 +22,122 @@ function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: No
     setShowEditor(true);
   };
 
-  const handleUpdate = (newFormula: string, _mathml: string) => {
-    editor.update(() => {
-      const node = $getNodeByKey(nodeKey);
-      if ($isChemistryNode(node)) {
-        node.setFormula(newFormula);
-      }
-    });
-    setShowEditor(false);
-  };
-
   return (
-    <span
-      className={`inline-flex items-center select-none${
-        isEditable
-          ? ' cursor-pointer rounded hover:ring-1 hover:ring-emerald-400 hover:ring-offset-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1'
-          : ''
-      }`}
-      onClick={openEditor}
-      onDoubleClick={openEditor}
-      onKeyDown={(e) => {
-        if (isEditable && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault();
-          e.stopPropagation();
-          setShowEditor(true);
-        }
-      }}
-      role={isEditable ? 'button' : undefined}
-      tabIndex={isEditable ? 0 : undefined}
-      aria-label={isEditable ? 'Edit chemistry equation' : undefined}
-      title={isEditable ? 'Click or press Enter to edit chemistry equation' : undefined}
+    <NodeViewWrapper 
+      className="inline-flex items-center select-none vertical-align-middle bg-slate-50/50"
+      style={{ display: "inline-block", verticalAlign: "middle" }}
     >
-      {/* @ts-ignore */}
-      <math-field
-        readonly="true"
-        style={{
-          fontSize: '1em',
-          background: 'transparent',
-          border: 'none',
-          outline: 'none',
-          pointerEvents: 'none',
-          verticalAlign: 'middle',
-          display: 'inline-block',
+      <span
+        onClick={openEditor}
+        onDoubleClick={openEditor}
+        onKeyDown={(e) => {
+          if (isEditable && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            e.stopPropagation();
+            setShowEditor(true);
+          }
         }}
+        role={isEditable ? "button" : undefined}
+        tabIndex={isEditable ? 0 : undefined}
+        aria-label={isEditable ? "Edit chemistry equation" : undefined}
+        title={isEditable ? "Click or press Enter to edit chemistry equation" : "Chemistry"}
+        className={`inline-flex items-center${
+          isEditable
+            ? " cursor-pointer rounded hover:ring-1 hover:ring-emerald-400 hover:ring-offset-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 bg-emerald-50/10"
+            : ""
+        }`}
       >
-        {formula}
-      </math-field>
+        {React.createElement("math-field", {
+          readonly: "true",
+          style: {
+            fontSize: "1em",
+            background: "transparent",
+            border: "none",
+            outline: "none",
+            pointerEvents: "none",
+            verticalAlign: "middle",
+            display: "inline-block",
+          }
+        }, node.attrs.formula)}
+      </span>
 
       {showEditor && (
         <FormulaEditorModal
-          initialFormula={formula}
+          initialFormula={node.attrs.formula}
           initialTab="chemistry"
-          onSave={handleUpdate}
+          onSave={handleSave}
           onClose={() => setShowEditor(false)}
         />
       )}
-    </span>
+    </NodeViewWrapper>
   );
-}
+};
 
-export class ChemistryNode extends DecoratorNode<React.JSX.Element> {
-  __formula: string;
+export const ChemistryNode = Node.create({
+  name: "chemistry",
+  group: "inline",
+  inline: true,
+  atom: true,
 
-  static getType(): string {
-    return 'chemistry';
-  }
-
-  static clone(node: ChemistryNode): ChemistryNode {
-    return new ChemistryNode(node.__formula, node.__key);
-  }
-
-  constructor(formula: string, key?: NodeKey) {
-    super(key);
-    this.__formula = formula;
-  }
-
-  createDOM(): HTMLElement {
-    return document.createElement('span');
-  }
-
-  updateDOM(): false {
-    return false;
-  }
-
-  setFormula(formula: string): void {
-    const writable = this.getWritable();
-    writable.__formula = formula;
-  }
-
-  getFormula(): string {
-    return this.__formula;
-  }
-
-  static importDOM(): DOMConversionMap | null {
+  addAttributes() {
     return {
-      'math-field': (domNode: HTMLElement) => {
-        if (domNode.hasAttribute('data-chem')) {
-          return {
-            conversion: convertChemMathFieldElement,
-            priority: 2,
-          };
-        }
-        return null;
+      formula: {
+        default: "",
       },
-      'span': (domNode: HTMLElement) => {
-        if (domNode.hasAttribute('data-lexical-chemistry')) {
-          return {
-            conversion: convertChemSpanElement,
-            priority: 2,
-          };
-        }
-        return null;
+      kind: {
+        default: "chemistry",
+      },
+      html: {
+        default: "",
+      },
+      plainTextFallback: {
+        default: "",
       },
     };
-  }
+  },
 
-  exportDOM(): DOMExportOutput {
-    const element = document.createElement('span');
-    element.setAttribute('data-lexical-chemistry', 'true');
-    element.setAttribute('data-formula', this.__formula);
-    const mf = document.createElement('math-field');
-    mf.setAttribute('readonly', 'true');
-    mf.setAttribute('data-chem', 'true');
-    // Use textContent (not innerHTML) to avoid HTML injection from LaTeX source
-    mf.textContent = this.__formula;
-    element.appendChild(mf);
-    return { element };
-  }
+  parseHTML() {
+    return [
+      {
+        tag: "span[data-lexical-chemistry]",
+        getAttrs: (dom) => {
+          const element = dom as HTMLElement;
+          return {
+            formula: element.getAttribute("data-formula") || "",
+            kind: "chemistry",
+            html: element.innerHTML,
+            plainTextFallback: element.getAttribute("data-formula") || "",
+          };
+        },
+      },
+      {
+        tag: "math-field[data-chem]",
+        getAttrs: (dom) => {
+          const element = dom as HTMLElement;
+          return {
+            formula: element.getAttribute("data-formula") || element.textContent || "",
+            kind: "chemistry",
+            html: element.outerHTML,
+            plainTextFallback: element.getAttribute("data-formula") || element.textContent || "",
+          };
+        },
+      },
+    ];
+  },
 
-  static importJSON(serializedNode: SerializedChemistryNode): ChemistryNode {
-    const node = $createChemistryNode(serializedNode.formula);
-    return node;
-  }
+  renderHTML({ HTMLAttributes, node }) {
+    return [
+      "span",
+      mergeAttributes(HTMLAttributes, {
+        "data-lexical-chemistry": "true",
+        "data-formula": node.attrs.formula,
+        "data-kind": "chemistry",
+      }),
+      ["math-field", { readonly: "true", "data-chem": "true" }, node.attrs.formula],
+    ];
+  },
 
-  exportJSON(): SerializedChemistryNode {
-    return {
-      ...super.exportJSON(),
-      formula: this.__formula,
-      type: 'chemistry',
-      version: 1,
-    };
-  }
-
-  decorate(): React.JSX.Element {
-    return <ChemistryComponent formula={this.__formula} nodeKey={this.__key} />;
-  }
-}
-
-function convertChemMathFieldElement(domNode: HTMLElement): DOMConversionOutput | null {
-  // Prefer data-formula (safe attribute), then textContent; avoid innerHTML
-  const formula = domNode.getAttribute('data-formula') || domNode.textContent?.trim() || '';
-  if (formula) {
-    return { node: $createChemistryNode(formula) };
-  }
-  return null;
-}
-
-function convertChemSpanElement(domNode: HTMLElement): DOMConversionOutput | null {
-  const formula = domNode.getAttribute('data-formula') || '';
-  if (formula) {
-    return { node: $createChemistryNode(formula) };
-  }
-  return null;
-}
-
-export function $createChemistryNode(formula: string): ChemistryNode {
-  return new ChemistryNode(formula);
-}
-
-export function $isChemistryNode(node: LexicalNode | null | undefined): node is ChemistryNode {
-  return node instanceof ChemistryNode;
-}
+  addNodeView() {
+    return ReactNodeViewRenderer(ChemistryNodeView);
+  },
+});

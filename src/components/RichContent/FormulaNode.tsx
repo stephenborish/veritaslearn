@@ -1,27 +1,19 @@
-import { DecoratorNode, DOMConversionMap, DOMConversionOutput, DOMExportOutput, LexicalNode, NodeKey, SerializedLexicalNode, Spread } from 'lexical';
-import React, { useState, useEffect } from 'react';
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
-import { $getNodeByKey } from 'lexical';
-import { FormulaEditorModal } from './FormulaEditorModal';
+import React, { useState } from "react";
+import { Node, mergeAttributes, ReactNodeViewRenderer, NodeViewWrapper } from "@tiptap/react";
+import { FormulaEditorModal } from "./FormulaEditorModal";
 
-export type SerializedFormulaNode = Spread<
-  {
-    formula: string;
-  },
-  SerializedLexicalNode
->;
-
-function FormulaComponent({ formula, nodeKey }: { formula: string; nodeKey: NodeKey }) {
-  const [editor] = useLexicalComposerContext();
-  const [isEditable, setIsEditable] = useState(false);
+export const FormulaNodeView = ({ node, updateAttributes, editor }: any) => {
   const [showEditor, setShowEditor] = useState(false);
+  const isEditable = editor.isEditable;
 
-  useEffect(() => {
-    setIsEditable(editor.isEditable());
-    return editor.registerEditableListener((editable) => {
-      setIsEditable(editable);
+  const handleSave = (latex: string) => {
+    updateAttributes({
+      formula: latex,
+      html: `<math-field readonly="true">${latex}</math-field>`,
+      plainTextFallback: latex,
     });
-  }, [editor]);
+    setShowEditor(false);
+  };
 
   const openEditor = (e?: React.SyntheticEvent) => {
     if (!isEditable) return;
@@ -30,172 +22,122 @@ function FormulaComponent({ formula, nodeKey }: { formula: string; nodeKey: Node
     setShowEditor(true);
   };
 
-  const handleUpdate = (newFormula: string) => {
-    editor.update(() => {
-      const node = $getNodeByKey(nodeKey);
-      if ($isFormulaNode(node)) {
-        node.setFormula(newFormula);
-      }
-    });
-    setShowEditor(false);
-  };
-
   return (
-    <span
-      className={`inline-flex items-center select-none${
-        isEditable
-          ? ' cursor-pointer rounded hover:ring-1 hover:ring-blue-400 hover:ring-offset-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1'
-          : ''
-      }`}
-      onClick={openEditor}
-      onDoubleClick={openEditor}
-      onKeyDown={(e) => {
-        if (isEditable && (e.key === 'Enter' || e.key === ' ')) {
-          e.preventDefault();
-          e.stopPropagation();
-          setShowEditor(true);
-        }
-      }}
-      role={isEditable ? 'button' : undefined}
-      tabIndex={isEditable ? 0 : undefined}
-      aria-label={isEditable ? 'Edit equation' : undefined}
-      title={isEditable ? 'Click or press Enter to edit equation' : undefined}
+    <NodeViewWrapper 
+      className="inline-flex items-center select-none vertical-align-middle"
+      style={{ display: "inline-block", verticalAlign: "middle" }}
     >
-      {/* @ts-ignore */}
-      <math-field
-        readonly="true"
-        style={{
-          fontSize: '1em',
-          background: 'transparent',
-          border: 'none',
-          outline: 'none',
-          pointerEvents: 'none',
-          verticalAlign: 'middle',
-          display: 'inline-block',
+      <span
+        onClick={openEditor}
+        onDoubleClick={openEditor}
+        onKeyDown={(e) => {
+          if (isEditable && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            e.stopPropagation();
+            setShowEditor(true);
+          }
         }}
+        role={isEditable ? "button" : undefined}
+        tabIndex={isEditable ? 0 : undefined}
+        aria-label={isEditable ? "Edit equation" : undefined}
+        title={isEditable ? "Click or press Enter to edit equation" : "Equation"}
+        className={`inline-flex items-center${
+          isEditable
+            ? " cursor-pointer rounded hover:ring-1 hover:ring-blue-400 hover:ring-offset-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 bg-blue-50/10"
+            : ""
+        }`}
       >
-        {formula}
-      </math-field>
+        {React.createElement("math-field", {
+          readonly: "true",
+          style: {
+            fontSize: "1em",
+            background: "transparent",
+            border: "none",
+            outline: "none",
+            pointerEvents: "none",
+            verticalAlign: "middle",
+            display: "inline-block",
+          }
+        }, node.attrs.formula)}
+      </span>
 
       {showEditor && (
         <FormulaEditorModal
-          initialFormula={formula}
-          onSave={handleUpdate}
+          initialFormula={node.attrs.formula}
+          initialTab={node.attrs.kind === "science" ? "science" : "math"}
+          onSave={handleSave}
           onClose={() => setShowEditor(false)}
         />
       )}
-    </span>
+    </NodeViewWrapper>
   );
-}
+};
 
-export class FormulaNode extends DecoratorNode<React.JSX.Element> {
-  __formula: string;
+export const FormulaNode = Node.create({
+  name: "formula",
+  group: "inline",
+  inline: true,
+  atom: true,
 
-  static getType(): string {
-    return 'formula';
-  }
-
-  static clone(node: FormulaNode): FormulaNode {
-    return new FormulaNode(node.__formula, node.__key);
-  }
-
-  constructor(formula: string, key?: NodeKey) {
-    super(key);
-    this.__formula = formula;
-  }
-
-  createDOM(): HTMLElement {
-    return document.createElement('span');
-  }
-
-  updateDOM(): false {
-    return false;
-  }
-
-  setFormula(formula: string): void {
-    const writable = this.getWritable();
-    writable.__formula = formula;
-  }
-
-  getFormula(): string {
-    return this.__formula;
-  }
-
-  static importDOM(): DOMConversionMap | null {
+  addAttributes() {
     return {
-      'math-field': (domNode: HTMLElement) => {
-        if (!domNode.hasAttribute('data-chem')) {
-          return {
-            conversion: convertMathFieldElement,
-            priority: 1,
-          };
-        }
-        return null;
+      formula: {
+        default: "",
       },
-      'span': (domNode: HTMLElement) => {
-        if (domNode.hasAttribute('data-lexical-formula')) {
-          return {
-            conversion: convertMathSpanElement,
-            priority: 2,
-          };
-        }
-        return null;
+      kind: {
+        default: "equation",
+      },
+      html: {
+        default: "",
+      },
+      plainTextFallback: {
+        default: "",
       },
     };
-  }
+  },
 
-  exportDOM(): DOMExportOutput {
-    const element = document.createElement('span');
-    element.setAttribute('data-lexical-formula', 'true');
-    element.setAttribute('data-formula', this.__formula);
-    const mf = document.createElement('math-field');
-    mf.setAttribute('readonly', 'true');
-    // Use textContent (not innerHTML) to avoid HTML injection from LaTeX source
-    mf.textContent = this.__formula;
-    element.appendChild(mf);
-    return { element };
-  }
+  parseHTML() {
+    return [
+      {
+        tag: "span[data-lexical-formula]",
+        getAttrs: (dom) => {
+          const element = dom as HTMLElement;
+          return {
+            formula: element.getAttribute("data-formula") || "",
+            kind: element.getAttribute("data-kind") || "equation",
+            html: element.innerHTML,
+            plainTextFallback: element.getAttribute("data-formula") || "",
+          };
+        },
+      },
+      {
+        tag: "math-field:not([data-chem])",
+        getAttrs: (dom) => {
+          const element = dom as HTMLElement;
+          return {
+            formula: element.getAttribute("data-formula") || element.textContent || "",
+            kind: element.getAttribute("data-kind") || "equation",
+            html: element.outerHTML,
+            plainTextFallback: element.getAttribute("data-formula") || element.textContent || "",
+          };
+        },
+      },
+    ];
+  },
 
-  static importJSON(serializedNode: SerializedFormulaNode): FormulaNode {
-    const node = $createFormulaNode(serializedNode.formula);
-    return node;
-  }
+  renderHTML({ HTMLAttributes, node }) {
+    return [
+      "span",
+      mergeAttributes(HTMLAttributes, {
+        "data-lexical-formula": "true",
+        "data-formula": node.attrs.formula,
+        "data-kind": node.attrs.kind || "equation",
+      }),
+      ["math-field", { readonly: "true" }, node.attrs.formula],
+    ];
+  },
 
-  exportJSON(): SerializedFormulaNode {
-    return {
-      ...super.exportJSON(),
-      formula: this.__formula,
-      type: 'formula',
-      version: 1,
-    };
-  }
-
-  decorate(): React.JSX.Element {
-    return <FormulaComponent formula={this.__formula} nodeKey={this.__key} />;
-  }
-}
-
-function convertMathFieldElement(domNode: HTMLElement): DOMConversionOutput | null {
-  // Prefer data-formula (safe attribute), then textContent; avoid innerHTML
-  const formula = domNode.getAttribute('data-formula') || domNode.textContent?.trim() || '';
-  if (formula) {
-    return { node: $createFormulaNode(formula) };
-  }
-  return null;
-}
-
-function convertMathSpanElement(domNode: HTMLElement): DOMConversionOutput | null {
-  const formula = domNode.getAttribute('data-formula') || '';
-  if (formula) {
-    return { node: $createFormulaNode(formula) };
-  }
-  return null;
-}
-
-export function $createFormulaNode(formula: string): FormulaNode {
-  return new FormulaNode(formula);
-}
-
-export function $isFormulaNode(node: LexicalNode | null | undefined): node is FormulaNode {
-  return node instanceof FormulaNode;
-}
+  addNodeView() {
+    return ReactNodeViewRenderer(FormulaNodeView);
+  },
+});

@@ -119,6 +119,38 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const [isNavigating, setIsNavigating] = useState(false);
 
+  // Reading Block Scroll Progress Indicator
+  const [readingScrollPercent, setReadingScrollPercent] = useState<number>(0);
+  const readingScrollContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const handleReadingScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    const { scrollTop, scrollHeight, clientHeight } = target;
+    const totalScroll = scrollHeight - clientHeight;
+    if (totalScroll <= 0) {
+      setReadingScrollPercent(100);
+    } else {
+      const pct = Math.round((scrollTop / totalScroll) * 100);
+      setReadingScrollPercent(pct);
+    }
+  };
+
+  useEffect(() => {
+    setReadingScrollPercent(0);
+    if (readingScrollContainerRef.current) {
+      readingScrollContainerRef.current.scrollTop = 0;
+      const timer = setTimeout(() => {
+        if (readingScrollContainerRef.current) {
+          const { scrollHeight, clientHeight } = readingScrollContainerRef.current;
+          if (scrollHeight <= clientHeight) {
+            setReadingScrollPercent(100);
+          }
+        }
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [currentBlockIndex]);
+
   // Detect whether the current block uses YouTube
   const isYouTubeBlock = (block: any): boolean => {
     if (!block || block.type !== "video") return false;
@@ -1591,14 +1623,27 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
             {/* READING BLOCK */}
             {activeBlock.type === "reading" && (
-              <div className="p-8 md:p-10 max-w-3xl mx-auto w-full space-y-5 overflow-y-auto flex-1 select-text">
-                {activeBlock.content ? (
-                  <div className="text-slate-800 font-serif text-base leading-relaxed space-y-4">
-                    <RichContentRenderer content={activeBlock.content} />
-                  </div>
-                ) : (
-                  <p className="italic text-slate-400 text-sm">No reading content available.</p>
-                )}
+              <div 
+                ref={readingScrollContainerRef}
+                onScroll={handleReadingScroll}
+                className="max-w-[920px] mx-auto w-full overflow-y-auto flex-1 select-text relative flex flex-col student-reading-scroll-container"
+              >
+                {/* Subtle Sticky Reading Progress Indicator */}
+                <div className="sticky top-0 left-0 right-0 z-30 w-full h-1 bg-slate-100 shrink-0">
+                  <motion.div 
+                    className="h-full bg-gradient-to-r from-indigo-500 to-indigo-600"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${readingScrollPercent}%` }}
+                    transition={reduceMotion ? { duration: 0 } : { duration: 0.1, ease: "easeOut" }}
+                  />
+                </div>
+                <div className="p-6 md:p-12 flex-1 flex flex-col">
+                  {activeBlock.content ? (
+                    <RichContentRenderer content={activeBlock.content} variant="student-reading" />
+                  ) : (
+                    <p className="italic text-slate-400 text-sm">No reading content available.</p>
+                  )}
+                </div>
               </div>
             )}
 

@@ -469,7 +469,6 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
               preload="metadata" 
               crossOrigin="anonymous"
               className="w-full h-full max-h-[300px] rounded-lg object-contain"
-              referrerPolicy="no-referrer"
               onLoadedMetadata={(e) => {
                 const dur = e.currentTarget.duration || 0;
                 if (dur > 0 && dur !== videoDuration) {
@@ -635,7 +634,6 @@ export default function VideoUploader({ videoUrl, thumbnailUrl, storagePath, dur
                 autoPlay 
                 crossOrigin="anonymous"
                 className="w-full max-h-[60vh] rounded bg-black"
-                referrerPolicy="no-referrer"
               />
             </div>
             <div className="p-4 bg-slate-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs border-t border-slate-800">

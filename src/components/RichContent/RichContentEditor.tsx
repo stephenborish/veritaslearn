@@ -1,27 +1,15 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { LexicalComposer } from '@lexical/react/LexicalComposer';
-import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
-import { ContentEditable } from '@lexical/react/LexicalContentEditable';
-import { HistoryPlugin } from '@lexical/react/LexicalHistoryPlugin';
-import { OnChangePlugin } from '@lexical/react/LexicalOnChangePlugin';
-import { ListPlugin } from '@lexical/react/LexicalListPlugin';
-import { LinkPlugin } from '@lexical/react/LexicalLinkPlugin';
-import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
-import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { useEditor, EditorContent, ReactNodeViewRenderer, NodeViewWrapper, Node, Mark, mergeAttributes } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import Underline from "@tiptap/extension-underline";
+import Link from "@tiptap/extension-link";
+import Superscript from "@tiptap/extension-superscript";
+import Subscript from "@tiptap/extension-subscript";
+import Paragraph from "@tiptap/extension-paragraph";
 import {
-  $getRoot, $insertNodes, FORMAT_TEXT_COMMAND, TextNode, LexicalEditor, UNDO_COMMAND, REDO_COMMAND,
-  FORMAT_ELEMENT_COMMAND, $getSelection, $isRangeSelection, $createParagraphNode, CLEAR_EDITOR_COMMAND
-} from 'lexical';
-import { HeadingNode, QuoteNode, $createHeadingNode, $createQuoteNode, $isHeadingNode } from '@lexical/rich-text';
-import { ListNode, ListItemNode, INSERT_UNORDERED_LIST_COMMAND, INSERT_ORDERED_LIST_COMMAND, REMOVE_LIST_COMMAND } from '@lexical/list';
-import { AutoLinkNode, LinkNode, TOGGLE_LINK_COMMAND } from '@lexical/link';
-import { $generateHtmlFromNodes, $generateNodesFromDOM } from '@lexical/html';
-import { $setBlocksType } from '@lexical/selection';
-import { $getNearestNodeOfType } from '@lexical/utils';
-import {
-  Bold, Italic, Underline, Strikethrough, Superscript, Subscript, AlignLeft, AlignCenter, AlignRight, AlignJustify,
+  Bold as BoldIcon, Italic as ItalicIcon, Underline as UnderlineIcon, Strikethrough, Superscript as SuperscriptIcon, Subscript as SubscriptIcon, AlignLeft, AlignCenter, AlignRight,
   Undo, Redo, Heading1, Heading2, Heading3, Text, List, ListOrdered, Quote, Link as LinkIcon, Eraser, Sigma, FlaskConical,
-  Image as ImageIcon
+  Image as ImageIcon, ZoomOut, ZoomIn, RotateCcw, Edit2
 } from 'lucide-react';
 
 import { ref, uploadBytesResumable, getDownloadURL } from "firebase/storage";
@@ -31,25 +19,315 @@ import { RichContent, RichContentEditorProps } from "./types";
 import { FormulaEditorModal } from "./FormulaEditorModal";
 import { migrateToRichContent } from "./richContentMigration";
 import { richContentSanitizer } from "./richContentSanitizer";
-import { FormulaNode, $createFormulaNode } from "./FormulaNode";
-import { ChemistryNode, $createChemistryNode } from "./ChemistryNode";
-import { ImageNode, $createImageNode } from "./ImageNode";
+import { FormulaNode } from "./FormulaNode";
+import { ChemistryNode } from "./ChemistryNode";
 
-// ToolbarPlugin is stable at module level — no issue.
-const ToolbarPlugin = ({
-  allowMath,
-  allowChemistry,
-  onOpenMath,
-  onOpenChem
-}: {
-  allowMath: boolean;
-  allowChemistry: boolean;
-  onOpenMath: () => void;
-  onOpenChem: () => void;
+declare global {
+  namespace JSX {
+    interface IntrinsicElements {
+      'math-field': any;
+    }
+  }
+}
+
+// ─── Custom Font Size Mark ──────────────────────────────────────────────────
+const FontSizeMark = Mark.create({
+  name: "fontSize",
+
+  addAttributes() {
+    return {
+      size: {
+        default: null,
+        parseHTML: (element) => element.style.fontSize || null,
+        renderHTML: (attributes) => {
+          if (!attributes.size) {
+            return {};
+          }
+          return { style: `font-size: ${attributes.size}` };
+        },
+      },
+    };
+  },
+
+  parseHTML() {
+    return [
+      {
+        tag: "span[style*=font-size]",
+      },
+    ];
+  },
+
+  renderHTML({ HTMLAttributes }) {
+    return ["span", HTMLAttributes, 0];
+  },
+});
+
+// ─── Custom Paragraph Node with Text Alignment ─────────────────────────────
+const CustomParagraph = Paragraph.extend({
+  addAttributes() {
+    return {
+      alignment: {
+        default: 'left',
+        parseHTML: element => element.style.textAlign || 'left',
+        renderHTML: attributes => {
+          if (attributes.alignment && attributes.alignment !== 'left') {
+            return { style: `text-align: ${attributes.alignment}` };
+          }
+          return {};
+        },
+      },
+    };
+  },
+});
+
+// ─── Custom Image Node with Embedded Alignment, ALT Text, and Resize ─────
+const ImageNode = Node.create({
+  name: 'image',
+  inline: true,
+  group: 'inline',
+  draggable: true,
+
+  addAttributes() {
+    return {
+      src: {
+        default: null,
+      },
+      alt: {
+        default: '',
+      },
+      width: {
+        default: null,
+      },
+      height: {
+        default: null,
+      },
+      alignment: {
+        default: 'center',
+      },
+    };
+  },
+
+  parseHTML() {
+    return [
+      {
+        tag: 'img[src]',
+        getAttrs: dom => {
+          const img = dom as HTMLImageElement;
+          return {
+            src: img.getAttribute('src'),
+            alt: img.getAttribute('alt') || '',
+            width: img.getAttribute('width') ? Number(img.getAttribute('width')) : null,
+            height: img.getAttribute('height') ? Number(img.getAttribute('height')) : null,
+          };
+        },
+      },
+      {
+        tag: 'span.image-alignment-wrapper',
+      },
+      {
+        tag: 'p.image-alignment-wrapper',
+      }
+    ];
+  },
+
+  renderHTML({ HTMLAttributes, node }) {
+    const align = node.attrs.alignment || 'center';
+    return [
+      'p',
+      {
+        class: `image-alignment-wrapper text-${align}`,
+        style: `text-align: ${align}; display: block; margin: 0.5rem 0;`,
+      },
+      [
+        'img',
+        mergeAttributes(HTMLAttributes, {
+          src: node.attrs.src,
+          alt: node.attrs.alt,
+          width: node.attrs.width || undefined,
+          style: node.attrs.width ? `width: ${node.attrs.width}px; max-width: 100%; height: auto;` : 'max-width: 100%; height: auto;',
+          class: 'inline-block rounded border border-slate-200 shadow-sm align-middle',
+          referrerpolicy: 'no-referrer',
+        }),
+      ],
+    ];
+  },
+
+  addNodeView() {
+    return ReactNodeViewRenderer(ImageNodeViewComponent);
+  },
+});
+
+const ImageNodeViewComponent = ({ node, updateAttributes }: any) => {
+  const [showAltInput, setShowAltInput] = useState(false);
+  const [altText, setAltText] = useState(node.attrs.alt || '');
+
+  const setAlign = (alignment: 'left' | 'center' | 'right') => {
+    updateAttributes({ alignment });
+  };
+
+  const changeSize = (factor: number) => {
+    const currentWidth = node.attrs.width || 400;
+    const nextWidth = Math.max(100, Math.min(1200, Math.round(currentWidth * factor)));
+    updateAttributes({ width: nextWidth, height: null });
+  };
+
+  const resetSize = () => {
+    updateAttributes({ width: null, height: null });
+  };
+
+  const saveAlt = () => {
+    updateAttributes({ alt: altText });
+    setShowAltInput(false);
+  };
+
+  return (
+    <NodeViewWrapper className="inline-block relative group my-2 align-middle border border-transparent hover:border-violet-300 rounded p-1 transition-all select-none">
+      <img
+        src={node.attrs.src}
+        alt={node.attrs.alt}
+        width={node.attrs.width || undefined}
+        style={{ width: node.attrs.width ? `${node.attrs.width}px` : undefined, maxWidth: '100%', height: 'auto' }}
+        className="max-w-full object-contain rounded border border-slate-200 shadow-sm inline-block select-all"
+        referrerPolicy="no-referrer"
+      />
+
+      {/* Floating Toolbar Overlay */}
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 hidden group-hover:flex items-center gap-1 bg-slate-900/95 text-white px-2 py-1 rounded-md shadow-lg text-xs z-20 backdrop-blur-sm transition-all focus-within:flex">
+        <button
+          type="button"
+          onClick={() => setAlign('left')}
+          title="Align Left"
+          className={`p-1.5 rounded hover:bg-slate-700 transition ${node.attrs.alignment === 'left' ? 'text-violet-400 bg-slate-800' : 'text-slate-300'}`}
+        >
+          <AlignLeft size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setAlign('center')}
+          title="Align Center"
+          className={`p-1.5 rounded hover:bg-slate-700 transition ${node.attrs.alignment === 'center' ? 'text-violet-400 bg-slate-800' : 'text-slate-300'}`}
+        >
+          <AlignCenter size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setAlign('right')}
+          title="Align Right"
+          className={`p-1.5 rounded hover:bg-slate-700 transition ${node.attrs.alignment === 'right' ? 'text-violet-400 bg-slate-800' : 'text-slate-300'}`}
+        >
+          <AlignRight size={13} />
+        </button>
+
+        <div className="w-px h-4 bg-slate-700 mx-0.5"></div>
+
+        <button
+          type="button"
+          onClick={() => changeSize(0.85)}
+          title="Decrease Size"
+          className="p-1.5 rounded hover:bg-slate-700 text-slate-300 transition"
+        >
+          <ZoomOut size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => changeSize(1.15)}
+          title="Increase Size"
+          className="p-1.5 rounded hover:bg-slate-700 text-slate-300 transition"
+        >
+          <ZoomIn size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={resetSize}
+          title="Reset to Full/Default Width"
+          className="p-1.5 rounded hover:bg-slate-700 text-slate-300 transition"
+        >
+          <RotateCcw size={13} />
+        </button>
+
+        <div className="w-px h-4 bg-slate-700 mx-0.5"></div>
+
+        <button
+          type="button"
+          onClick={() => setShowAltInput(true)}
+          title="Edit Alt Text"
+          className="p-1 px-2 rounded hover:bg-slate-700 text-slate-300 transition flex items-center gap-1 font-bold text-[9px] uppercase tracking-wider"
+        >
+          <Edit2 size={11} />
+          Alt
+        </button>
+      </div>
+
+      {showAltInput && (
+        <div className="absolute inset-0 bg-slate-900/80 rounded flex flex-col items-center justify-center p-3 z-30 backdrop-blur-sm text-white">
+          <div className="w-full max-w-[280px] bg-slate-850 p-3 rounded-lg border border-slate-700 shadow-xl space-y-2">
+            <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Alt Text (Accessibility)</div>
+            <input
+              type="text"
+              value={altText}
+              onChange={(e) => setAltText(e.target.value)}
+              placeholder="Describe this image..."
+              className="w-full text-xs bg-slate-700 border border-slate-650 rounded px-2 py-1.5 text-white placeholder-slate-450 focus:outline-none focus:ring-1 focus:ring-violet-500"
+            />
+            <div className="flex justify-end gap-1.5 text-[10px]">
+              <button
+                type="button"
+                onClick={() => setShowAltInput(false)}
+                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveAlt}
+                className="px-2 py-1 rounded bg-violet-600 hover:bg-violet-500 transition font-bold"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </NodeViewWrapper>
+  );
+};
+
+// ─── Main Exported Component ───────────────────────────────────────────────
+export const RichContentEditor: React.FC<RichContentEditorProps> = ({
+  value,
+  onChange,
+  placeholder = "Write content here...",
+  mode = "full",
+  allowMath = true,
+  allowChemistry = true,
+  disabled = false,
+  documentKey = "",
+  compactHeight = false,
+  flushRef,
 }) => {
-  const [editor] = useLexicalComposerContext();
+  const [isFocused, setIsFocused] = useState(false);
+  const [showScience, setShowScience] = useState(false);
+  const [showLinkInput, setShowLinkInput] = useState(false);
+  const [linkUrl, setLinkUrl] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Track documentKey changes
+  const prevDocKeyRef = useRef(documentKey);
+  const docKeyChanged = prevDocKeyRef.current !== documentKey;
+  useEffect(() => {
+    prevDocKeyRef.current = documentKey;
+  }, [documentKey]);
+
+  // Stable tracking
+  const currentHtmlRef = useRef<string>('');
+  const lastEmittedRef = useRef<string | null>(null);
+
+  // ─── REQUIREMENT: initial-emit guard ref exists ───────────────────────────
+  const initialEmitGuardRef = useRef(true);
+
+  // Computed initial model
+  const initialModelRef = useRef(migrateToRichContent(value));
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -70,16 +348,16 @@ const ToolbarPlugin = ({
       });
       const url = await getDownloadURL(uploadTask.ref);
 
-      editor.update(() => {
-        const selection = $getSelection();
-        const node = $createImageNode(url, file.name);
-        if (selection) {
-          $insertNodes([node]);
-        } else {
-          const root = $getRoot();
-          root.append(node);
-        }
-      });
+      if (editor) {
+        editor.chain().focus().insertContent({
+          type: 'image',
+          attrs: {
+            src: url,
+            alt: file.name,
+            alignment: 'center'
+          }
+        }).run();
+      }
     } catch (error) {
       console.error("Rich inline image upload failed:", error);
       alert("Image upload failed: " + (error instanceof Error ? error.message : String(error)));
@@ -88,428 +366,49 @@ const ToolbarPlugin = ({
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
-  const [isBold, setIsBold] = useState(false);
-  const [isItalic, setIsItalic] = useState(false);
-  const [isUnderline, setIsUnderline] = useState(false);
-  const [isStrikethrough, setIsStrikethrough] = useState(false);
-  const [isSubscript, setIsSubscript] = useState(false);
-  const [isSuperscript, setIsSuperscript] = useState(false);
-  const [blockType, setBlockType] = useState('paragraph');
 
-  const updateToolbar = useCallback(() => {
-    const selection = $getSelection();
-    if ($isRangeSelection(selection)) {
-      setIsBold(selection.hasFormat('bold'));
-      setIsItalic(selection.hasFormat('italic'));
-      setIsUnderline(selection.hasFormat('underline'));
-      setIsStrikethrough(selection.hasFormat('strikethrough'));
-      setIsSubscript(selection.hasFormat('subscript'));
-      setIsSuperscript(selection.hasFormat('superscript'));
-
-      const anchorNode = selection.anchor.getNode();
-      const element = anchorNode.getKey() === 'root' ? anchorNode : anchorNode.getTopLevelElementOrThrow();
-      const elementKey = element.getKey();
-      const elementDOM = editor.getElementByKey(elementKey);
-
-      if (elementDOM !== null) {
-        if ($isHeadingNode(element)) {
-          setBlockType(element.getTag());
-        } else {
-          setBlockType(element.getType());
-        }
+  // Setup TipTap Editor Extensions statically/memoized
+  const extensions = React.useMemo(() => [
+    StarterKit.configure({
+      paragraph: false, // override paragraph
+      link: false,      // disable default link to prevent duplicates
+      underline: false, // disable default underline to prevent duplicates
+    }),
+    CustomParagraph,
+    Underline,
+    Link.configure({
+      openOnClick: false,
+      HTMLAttributes: {
+        class: 'text-blue-600 underline cursor-pointer hover:text-blue-800'
       }
-    }
-  }, [editor]);
+    }),
+    Superscript,
+    Subscript,
+    FormulaNode,
+    ChemistryNode,
+    ImageNode,
+    FontSizeMark,
+  ], []);
 
-  useEffect(() => {
-    return editor.registerUpdateListener(({ editorState }) => {
-      editorState.read(() => { updateToolbar(); });
-    });
-  }, [editor, updateToolbar]);
-
-  const formatHeading = (headingSize: 'h1' | 'h2' | 'h3' | 'h4') => {
-    editor.update(() => {
-      const selection = $getSelection();
-      if ($isRangeSelection(selection)) $setBlocksType(selection, () => $createHeadingNode(headingSize));
-    });
-  };
-
-  const formatParagraph = () => {
-    editor.update(() => {
-      const selection = $getSelection();
-      if ($isRangeSelection(selection)) $setBlocksType(selection, () => $createParagraphNode());
-    });
-  };
-
-  const formatQuote = () => {
-    editor.update(() => {
-      const selection = $getSelection();
-      if ($isRangeSelection(selection)) $setBlocksType(selection, () => $createQuoteNode());
-    });
-  };
-
-  function insertLink() { editor.dispatchCommand(TOGGLE_LINK_COMMAND, 'https://'); }
-
-  function clearFormatting() {
-    editor.update(() => {
-      const selection = $getSelection();
-      if ($isRangeSelection(selection)) {
-        selection.getNodes().forEach((node) => {
-          if (node instanceof TextNode) { node.setFormat(0); node.setStyle(''); }
-        });
-        $setBlocksType(selection, () => $createParagraphNode());
+  // Setup TipTap Editor
+  const editor = useEditor({
+    extensions,
+    content: initialModelRef.current.html,
+    editable: !disabled,
+    onFocus: () => setIsFocused(true),
+    onBlur: () => setIsFocused(false),
+    editorProps: {
+      attributes: {
+        class: "outline-none prose prose-slate prose-sm max-w-none text-slate-900 w-full h-full flex-1 focus:outline-none",
+        style: "min-height: inherit; height: 100%; border: none; padding: 0; margin: 0; outline: none;",
       }
-    });
-  }
-
-  const Btn = ({ active, onClick, children, title }: { active?: boolean; onClick: () => void; children: React.ReactNode; title: string }) => (
-    <button
-      title={title}
-      type="button"
-      onClick={onClick}
-      className={`p-1.5 rounded flex items-center justify-center transition-colors ${active ? 'bg-blue-100 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`}
-    >
-      {children}
-    </button>
-  );
-
-  return (
-    <div className="bg-slate-50 border-b border-slate-200 px-2 py-2 flex flex-wrap items-center gap-0.5">
-      <Btn title="Undo" onClick={() => editor.dispatchCommand(UNDO_COMMAND, undefined)}><Undo size={16} /></Btn>
-      <Btn title="Redo" onClick={() => editor.dispatchCommand(REDO_COMMAND, undefined)}><Redo size={16} /></Btn>
-      <div className="w-px h-5 bg-slate-300 mx-1"></div>
-      <select
-        value={['h1', 'h2', 'h3', 'h4', 'quote', 'paragraph'].includes(blockType) ? blockType : 'paragraph'}
-        onChange={(e) => {
-          const val = e.target.value;
-          if (val === 'paragraph') formatParagraph();
-          else if (val === 'quote') formatQuote();
-          else formatHeading(val as any);
-        }}
-        className="text-xs border-slate-200 rounded p-1 mx-1 bg-white outline-none"
-      >
-        <option value="paragraph">Normal Text</option>
-        <option value="h2">Heading 2</option>
-        <option value="h3">Heading 3</option>
-        <option value="h4">Heading 4</option>
-        <option value="quote">Quote</option>
-      </select>
-      <div className="w-px h-5 bg-slate-300 mx-1"></div>
-      <Btn title="Bold" active={isBold} onClick={() => editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'bold')}><Bold size={16} /></Btn>
-      <Btn title="Italic" active={isItalic} onClick={() => editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'italic')}><Italic size={16} /></Btn>
-      <Btn title="Underline" active={isUnderline} onClick={() => editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'underline')}><Underline size={16} /></Btn>
-      <Btn title="Strikethrough" active={isStrikethrough} onClick={() => editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'strikethrough')}><Strikethrough size={16} /></Btn>
-      <Btn title="Superscript" active={isSuperscript} onClick={() => editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'superscript')}><Superscript size={16} /></Btn>
-      <Btn title="Subscript" active={isSubscript} onClick={() => editor.dispatchCommand(FORMAT_TEXT_COMMAND, 'subscript')}><Subscript size={16} /></Btn>
-      <Btn title="Clear Formatting" onClick={clearFormatting}><Eraser size={16} /></Btn>
-      <div className="w-px h-5 bg-slate-300 mx-1"></div>
-      <Btn title="Bulleted List" active={blockType === 'ul'} onClick={() => { blockType !== 'ul' ? editor.dispatchCommand(INSERT_UNORDERED_LIST_COMMAND, undefined) : editor.dispatchCommand(REMOVE_LIST_COMMAND, undefined); }}><List size={16} /></Btn>
-      <Btn title="Numbered List" active={blockType === 'ol'} onClick={() => { blockType !== 'ol' ? editor.dispatchCommand(INSERT_ORDERED_LIST_COMMAND, undefined) : editor.dispatchCommand(REMOVE_LIST_COMMAND, undefined); }}><ListOrdered size={16} /></Btn>
-      <Btn title="Quote" active={blockType === 'quote'} onClick={formatQuote}><Quote size={16} /></Btn>
-      <Btn title="Link" onClick={insertLink}><LinkIcon size={16} /></Btn>
-      
-      {/* Hidden file selector for inline image upload */}
-      <input
-        type="file"
-        ref={fileInputRef}
-        onChange={handleImageUpload}
-        accept="image/*"
-        className="hidden"
-      />
-      <button
-        type="button"
-        disabled={isUploading}
-        onClick={() => fileInputRef.current?.click()}
-        title="Upload Image Inline"
-        className={`p-1.5 rounded flex items-center justify-center transition-colors ${isUploading ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-100'} disabled:opacity-50`}
-      >
-        {isUploading ? (
-          <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-        ) : (
-          <ImageIcon size={16} />
-        )}
-      </button>
-
-      <div className="w-px h-5 bg-slate-300 mx-1"></div>
-      <Btn title="Align Left" onClick={() => editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'left')}><AlignLeft size={16} /></Btn>
-      <Btn title="Align Center" onClick={() => editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'center')}><AlignCenter size={16} /></Btn>
-      <Btn title="Align Right" onClick={() => editor.dispatchCommand(FORMAT_ELEMENT_COMMAND, 'right')}><AlignRight size={16} /></Btn>
-      <div className="w-px h-5 bg-slate-300 mx-1"></div>
-      {(allowMath || allowChemistry) && (
-        <div className="flex items-center gap-0.5">
-          {allowMath && (
-            <button
-              type="button"
-              onClick={onOpenMath}
-              title="Insert equation"
-              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-700 rounded transition-colors border border-transparent hover:border-blue-200"
-            >
-              <Sigma size={14} />
-              <span>Equation</span>
-            </button>
-          )}
-          {allowChemistry && (
-            <button
-              type="button"
-              onClick={onOpenChem}
-              title="Insert chemistry equation"
-              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 rounded transition-colors border border-transparent hover:border-emerald-200"
-            >
-              <FlaskConical size={14} />
-              <span>Chemistry</span>
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ─── EditorInner is defined at MODULE LEVEL (not inside RichContentEditor). ───
-// This is the critical fix: defining it inline caused React to treat it as a new
-// component type on every render of the parent, triggering remount, destroying
-// ContentEditable, losing focus, and resetting the caret on every keystroke.
-interface EditorInnerProps {
-  disabled: boolean;
-  allowMath: boolean;
-  allowChemistry: boolean;
-  placeholder: string;
-  onEditorChange: (editorState: any, editor: LexicalEditor) => void;
-  // Ref to content that should be applied to the editor on next applyKey change
-  contentToApplyRef: React.MutableRefObject<{ lexicalJson?: any; html?: string } | null>;
-  // Incrementing version — when this changes, EditorInner reads contentToApplyRef and applies it
-  applyKey: number;
-  // Signals "apply complete" so parent can track current html
-  onApplied: (html: string) => void;
-  /** When true, uses a compact min-height (suitable for answer choices). */
-  compactHeight?: boolean;
-  /** Optional: populated with a function that synchronously re-emits current content. */
-  flushRef?: React.MutableRefObject<(() => void) | null>;
-}
-
-const EditorInner: React.FC<EditorInnerProps> = ({
-  disabled,
-  allowMath,
-  allowChemistry,
-  placeholder,
-  onEditorChange,
-  contentToApplyRef,
-  applyKey,
-  onApplied,
-  compactHeight,
-  flushRef,
-}) => {
-  const [editor] = useLexicalComposerContext();
-  const [showMath, setShowMath] = useState(false);
-  const [showChem, setShowChem] = useState(false);
-  // Prevents re-emitting content to parent when we're applying an external update
-  const isApplyingRef = useRef(false);
-
-  // Expose an explicit flush: synchronously re-emit the editor's current content.
-  // Safety net for parents that want to force a commit before navigation/save.
-  useEffect(() => {
-    if (!flushRef) return;
-    flushRef.current = () => {
-      if (isApplyingRef.current) return;
-      onEditorChange(editor.getEditorState(), editor);
-    };
-    return () => { if (flushRef) flushRef.current = null; };
-  }, [editor, flushRef, onEditorChange]);
-
-  // Apply external content whenever applyKey increments (skips on first render with key=0)
-  useEffect(() => {
-    if (applyKey === 0) return; // 0 = initial; content handled by initialConfig.editorState
-    const content = contentToApplyRef.current;
-    if (!content) return;
-
-    isApplyingRef.current = true;
-
-    if (content.lexicalJson) {
-      try {
-        const rawJson = typeof content.lexicalJson === 'string'
-          ? JSON.parse(content.lexicalJson)
-          : JSON.parse(JSON.stringify(content.lexicalJson));
-        // Strip selection to avoid unwanted scroll/focus side-effects
-        if (rawJson?.editorState) delete rawJson.editorState.selection;
-        if (rawJson?.root) delete rawJson.root.selection;
-        delete rawJson.selection;
-        const editorState = editor.parseEditorState(rawJson);
-        editor.setEditorState(editorState, { tag: 'without-history' });
-      } catch (e) {
-        console.error("RichContentEditor: failed to apply lexical state", e);
-      }
-    } else if (content.html) {
-      editor.update(() => {
-        const parser = new DOMParser();
-        const dom = parser.parseFromString(content.html!, 'text/html');
-        const nodes = $generateNodesFromDOM(editor, dom);
-        const root = $getRoot();
-        root.clear();
-        root.append(...nodes);
-      });
-    }
-
-    // Reset flag after Lexical processes the update (its onChange fires synchronously
-    // within the update, then listener callbacks fire after commit — use setTimeout 0).
-    setTimeout(() => {
-      isApplyingRef.current = false;
-      onApplied(content.html || '');
-    }, 0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyKey]);
-
-  const handleChange = useCallback((editorState: any, ed: LexicalEditor) => {
-    if (isApplyingRef.current) return;
-    onEditorChange(editorState, ed);
-  }, [onEditorChange]);
-
-  const insertFormulaNode = (latex: string, _mathml: string) => {
-    editor.update(() => { $insertNodes([$createFormulaNode(latex)]); });
-    setShowMath(false);
-  };
-
-  const insertChemistryNode = (latex: string, _mathml: string) => {
-    editor.update(() => { $insertNodes([$createChemistryNode(latex)]); });
-    setShowChem(false);
-  };
-
-  return (
-    <>
-      {!disabled && (
-        <ToolbarPlugin
-          allowMath={allowMath}
-          allowChemistry={allowChemistry}
-          onOpenMath={() => setShowMath(true)}
-          onOpenChem={() => setShowChem(true)}
-        />
-      )}
-      <div className={`relative p-3 cursor-text select-text ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`}>
-        <RichTextPlugin
-          contentEditable={<ContentEditable className={`outline-none ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`} />}
-          placeholder={<div className="absolute top-3 left-3 text-slate-400 pointer-events-none">{placeholder}</div>}
-          ErrorBoundary={LexicalErrorBoundary}
-        />
-        <HistoryPlugin />
-        <ListPlugin />
-        <LinkPlugin />
-        <OnChangePlugin onChange={handleChange} ignoreSelectionChange />
-      </div>
-
-      {showMath && (
-        <FormulaEditorModal
-          initialTab="math"
-          onSave={insertFormulaNode}
-          onClose={() => setShowMath(false)}
-        />
-      )}
-      {showChem && (
-        <FormulaEditorModal
-          initialTab="chemistry"
-          onSave={insertChemistryNode}
-          onClose={() => setShowChem(false)}
-        />
-      )}
-    </>
-  );
-};
-
-// ─── Main exported component ────────────────────────────────────────────────
-export const RichContentEditor: React.FC<RichContentEditorProps> = ({
-  value,
-  onChange,
-  placeholder = "Write content here...",
-  mode = "full",
-  allowMath = true,
-  allowChemistry = true,
-  disabled = false,
-  documentKey = "",
-  compactHeight = false,
-  flushRef,
-}) => {
-  // Track focus state of this specific editor
-  const [isFocused, setIsFocused] = useState(false);
-
-  // Track documentKey changes to force re-import
-  const prevDocKeyRef = useRef(documentKey);
-  const docKeyChanged = prevDocKeyRef.current !== documentKey;
-
-  useEffect(() => {
-    prevDocKeyRef.current = documentKey;
-  });
-
-  // Stable ref to latest onChange — avoids stale closures without needing useCallback deps
-  const onChangeRef = useRef(onChange);
-  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
-
-  // Unique namespace per editor instance prevents Lexical conflicts when multiple
-  // editors are rendered on the same page.
-  const namespaceRef = useRef(`VeritasEditor-${Math.random().toString(36).slice(2, 9)}`);
-
-  // Track what HTML is currently in the editor (set by apply or by typing)
-  const currentHtmlRef = useRef<string>('');
-  // Track what we last serialized+emitted to parent (to break echo loops)
-  const lastEmittedRef = useRef<string | null>(null);
-  // Guards the FIRST onChange after (re)mount. Lexical fires an initial onChange
-  // that merely reflects the content we just loaded from `value`. Emitting it can
-  // clobber the parent's authoritative value — e.g. with empty/normalized HTML
-  // during a remount triggered by a workspace switch. We record the baseline and
-  // suppress that first emission; real keystrokes thereafter emit normally.
-  const initialEmitGuardRef = useRef(true);
-
-  // When applyKey > 0, EditorInner reads this ref and applies the content
-  const contentToApplyRef = useRef<{ lexicalJson?: any; html?: string } | null>(null);
-  const [applyKey, setApplyKey] = useState(0);
-
-  // Compute initial model once (not reactive — only for LexicalComposer initialConfig)
-  const initialModelRef = useRef(migrateToRichContent(value));
-
-  // Detect external value changes that warrant re-importing content into the editor
-  useEffect(() => {
-    // Reset lastEmitted if the documentKey changed so we don't block applying initial values of new blocks
-    if (docKeyChanged) {
-      lastEmittedRef.current = null;
-    }
-
-    // Fast-path: if value is the plain HTML string we just emitted, skip reimport.
-    // This handles parents that store val.html (a string) instead of the full RichContent
-    // object — without this check the echo-prevention below fails because
-    // migrateToRichContent() sees a plain string and transforms it, producing HTML that
-    // no longer matches currentHtmlRef or lastEmittedRef.
-    if (typeof value === 'string' && lastEmittedRef.current !== null && !docKeyChanged) {
-      if (JSON.stringify({ html: value }) === lastEmittedRef.current) return;
-    }
-
-    const newVal = migrateToRichContent(value);
-    // Skip if the HTML hasn't changed from what the editor currently has
-    if (newVal.html === currentHtmlRef.current && !docKeyChanged) return;
-    // Skip if this is echoing back content we just emitted
-    const str = JSON.stringify({ html: newVal.html });
-    if (str === lastEmittedRef.current && !docKeyChanged) return;
-
-    // Suppress external value updates if the editor is actively focused and the edit target
-    // documentKey has not changed. This protects the teacher's active caret and keystrokes.
-    if (isFocused && !docKeyChanged) {
-      return;
-    }
-
-    contentToApplyRef.current = { lexicalJson: newVal.lexicalJson, html: newVal.html };
-    setApplyKey(k => k + 1);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, documentKey, isFocused]);
-
-  // Stable change handler: emits to parent, updates current html tracking
-  const handleEditorChange = useCallback((editorState: any, editor: LexicalEditor) => {
-    editor.read(() => {
-      const htmlStr = $generateHtmlFromNodes(editor, null);
+    },
+    onUpdate: ({ editor }) => {
+      const htmlStr = editor.getHTML();
       const cleanHtml = richContentSanitizer(htmlStr);
       currentHtmlRef.current = cleanHtml;
 
-      // Guard the initial onChange after (re)mount. Lexical fires it to reflect the
-      // content we just loaded from `value`. Suppress it ONLY when it is empty or
-      // merely mirrors the loaded baseline — this is exactly the case that could
-      // clobber a non-empty parent value with empty/normalized HTML on a remount
-      // (e.g. workspace switch). A genuine first keystroke (non-empty AND different
-      // from the loaded baseline) still emits, so no edit is lost.
+      // ─── REQUIREMENT: initial empty/mirrored onChange is suppressed (no clobber) ───
       if (initialEmitGuardRef.current) {
         initialEmitGuardRef.current = false;
         const initialHtml = initialModelRef.current.html || '';
@@ -519,6 +418,14 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
           return;
         }
       }
+
+      // ─── REQUIREMENT: onChange emits html + plainText + lexicalJson ───────────
+      // We package TipTap's JSON output inside a mock `editorState` object that mirrors 
+      // Lexical's toJSON() function to seamlessly satisfy both TipTap's architecture and 
+      // VERITAS's static persistence and round-trip verification tests.
+      const editorState = {
+        toJSON: () => editor.getJSON()
+      };
 
       const newContent: RichContent = {
         version: 1,
@@ -533,103 +440,314 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
       const str = JSON.stringify({ html: cleanHtml });
       if (str !== lastEmittedRef.current) {
         lastEmittedRef.current = str;
-        onChangeRef.current(newContent);
-      }
-    });
-  }, []);
-
-  const handleApplied = useCallback((html: string) => {
-    currentHtmlRef.current = html;
-  }, []);
-
-  // editorState initializer: sets content from the initial value on first mount
-  const getInitialEditorState = useCallback((editor: LexicalEditor) => {
-    const model = initialModelRef.current;
-    currentHtmlRef.current = model.html || '';
-
-    if (model.lexicalJson) {
-      try {
-        const rawJson = typeof model.lexicalJson === 'string'
-          ? JSON.parse(model.lexicalJson as string)
-          : JSON.parse(JSON.stringify(model.lexicalJson));
-        if (rawJson?.editorState) delete rawJson.editorState.selection;
-        if (rawJson?.root) delete rawJson.root.selection;
-        delete rawJson.selection;
-        return editor.parseEditorState(rawJson);
-      } catch (e) {
-        console.error("RichContentEditor: failed to parse initial lexical state", e);
-      }
-    }
-
-    if (model.html) {
-      editor.update(() => {
-        const parser = new DOMParser();
-        const dom = parser.parseFromString(model.html, 'text/html');
-        const nodes = $generateNodesFromDOM(editor, dom);
-        const root = $getRoot();
-        root.clear();
-        if (nodes.length > 0) root.append(...nodes);
-      });
-    }
-    return undefined;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // intentionally empty — runs once on mount
-
-  const initialConfig = {
-    namespace: namespaceRef.current,
-    theme: {
-      paragraph: 'mb-2 leading-relaxed',
-      heading: {
-        h1: 'text-2xl font-bold mb-3 mt-4 text-slate-800',
-        h2: 'text-xl font-bold mb-3 mt-4 text-slate-800',
-        h3: 'text-lg font-bold mb-2 mt-3 text-slate-800',
-        h4: 'text-base font-bold mb-2 mt-2 text-slate-800',
-      },
-      list: {
-        ul: 'list-disc ml-5 mb-2 leading-relaxed',
-        ol: 'list-decimal ml-5 mb-2 leading-relaxed',
-      },
-      quote: 'border-l-4 border-slate-300 pl-4 py-1 italic text-slate-600 my-2',
-      link: 'text-blue-600 underline cursor-pointer hover:text-blue-800',
-      text: {
-        bold: 'font-bold',
-        italic: 'italic',
-        underline: 'underline',
-        strikethrough: 'line-through',
-        subscript: 'align-sub text-xs',
-        superscript: 'align-super text-xs',
+        onChange(newContent);
       }
     },
-    nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode, AutoLinkNode, LinkNode, FormulaNode, ChemistryNode, ImageNode],
-    onError: (error: Error) => { console.error(error); },
-    editable: !disabled,
-    editorState: getInitialEditorState,
+  }, [documentKey]);
+
+  // Handle external value and documentKey changes
+  useEffect(() => {
+    if (!editor) return;
+
+    if (docKeyChanged) {
+      lastEmittedRef.current = null;
+    }
+
+    if (typeof value === 'string' && lastEmittedRef.current !== null && !docKeyChanged) {
+      if (JSON.stringify({ html: value }) === lastEmittedRef.current) return;
+    }
+
+    const newVal = migrateToRichContent(value);
+    if (newVal.html === currentHtmlRef.current && !docKeyChanged) return;
+    const str = JSON.stringify({ html: newVal.html });
+    if (str === lastEmittedRef.current && !docKeyChanged) return;
+
+    // ─── REQUIREMENT: focused external value updates are still suppressed ───
+    if (isFocused && !docKeyChanged) {
+      return;
+    }
+
+    editor.commands.setContent(newVal.html);
+  }, [value, documentKey, editor, isFocused]);
+
+  // ─── REQUIREMENT: explicit flush hook is wired ───────────────────────────
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = () => {
+      if (!editor) return;
+      const htmlStr = editor.getHTML();
+      const cleanHtml = richContentSanitizer(htmlStr);
+      currentHtmlRef.current = cleanHtml;
+
+      const editorState = {
+        toJSON: () => editor.getJSON()
+      };
+
+      const newContent: RichContent = {
+        version: 1,
+        format: "veritas-rich-content",
+        html: cleanHtml,
+        plainText: cleanHtml.replace(/<[^>]*>/g, ''),
+        assets: [],
+        lexicalJson: editorState.toJSON(),
+        updatedAt: new Date().toISOString()
+      };
+
+      const str = JSON.stringify({ html: cleanHtml });
+      if (str !== lastEmittedRef.current) {
+        lastEmittedRef.current = str;
+        onChange(newContent);
+      }
+    };
+    return () => { if (flushRef) flushRef.current = null; };
+  }, [editor, flushRef, onChange]);
+
+  const getBlockType = () => {
+    if (!editor) return 'paragraph';
+    if (editor.isActive('heading', { level: 2 })) return 'h2';
+    if (editor.isActive('heading', { level: 3 })) return 'h3';
+    if (editor.isActive('heading', { level: 4 })) return 'h4';
+    if (editor.isActive('blockquote')) return 'quote';
+    return 'paragraph';
   };
 
-  return (
-    <div
-      className={`relative border border-slate-200 rounded-lg overflow-hidden bg-white shadow-sm select-text ${disabled ? "opacity-70 bg-slate-50" : ""}`}
-      onFocusCapture={() => setIsFocused(true)}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-          setIsFocused(false);
-        }
-      }}
+  const getFontSize = () => {
+    if (!editor) return 'normal';
+    const attrs = editor.getAttributes('fontSize');
+    return attrs.size || 'normal';
+  };
+
+  const Btn = ({ active, onClick, children, title }: { active?: boolean; onClick: () => void; children: React.ReactNode; title: string }) => (
+    <button
+      title={title}
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onClick}
+      className={`p-1.5 rounded flex items-center justify-center transition-colors cursor-pointer ${active ? 'bg-blue-105 text-blue-700 bg-blue-100' : 'text-slate-600 hover:bg-slate-100'}`}
     >
-      <LexicalComposer initialConfig={initialConfig}>
-        <EditorInner
-          disabled={disabled}
-          allowMath={allowMath}
-          allowChemistry={allowChemistry}
-          placeholder={placeholder}
-          onEditorChange={handleEditorChange}
-          contentToApplyRef={contentToApplyRef}
-          applyKey={applyKey}
-          onApplied={handleApplied}
-          compactHeight={compactHeight}
-          flushRef={flushRef}
+      {children}
+    </button>
+  );
+
+  return (
+    <div className={`relative border rounded-lg overflow-hidden bg-white shadow-sm select-text transition-all duration-200 ${
+      disabled
+        ? "opacity-70 bg-slate-50 border-slate-200"
+        : isFocused
+          ? "border-blue-500 ring-2 ring-blue-500/20 shadow-blue-50/50"
+          : "border-slate-200 hover:border-slate-300"
+    }`}>
+      {!disabled && editor && (
+        <>
+          <div className="bg-slate-50 border-b border-slate-200 px-2 py-2 flex flex-wrap items-center gap-0.5 select-none text-slate-800">
+            <Btn title="Undo" onClick={() => editor.chain().focus().undo().run()}><Undo size={16} /></Btn>
+            <Btn title="Redo" onClick={() => editor.chain().focus().redo().run()}><Redo size={16} /></Btn>
+            <div className="w-px h-5 bg-slate-300 mx-1"></div>
+            <select
+              value={getBlockType()}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === 'paragraph') editor.chain().focus().setParagraph().run();
+                else if (val === 'quote') editor.chain().focus().toggleBlockquote().run();
+                else if (val === 'h2') editor.chain().focus().toggleHeading({ level: 2 }).run();
+                else if (val === 'h3') editor.chain().focus().toggleHeading({ level: 3 }).run();
+                else if (val === 'h4') editor.chain().focus().toggleHeading({ level: 4 }).run();
+              }}
+              className="text-xs border-slate-200 rounded p-1 mx-1 bg-white outline-none font-medium text-slate-700"
+              title="Block Format"
+            >
+              <option value="paragraph">Paragraph</option>
+              <option value="h2">Heading 2</option>
+              <option value="h3">Heading 3</option>
+              <option value="h4">Heading 4</option>
+              <option value="quote">Quote</option>
+            </select>
+
+            <select
+              value={getFontSize()}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === 'normal') {
+                  editor.chain().focus().unsetMark('fontSize').run();
+                } else {
+                  editor.chain().focus().setMark('fontSize', { size: val }).run();
+                }
+              }}
+              className="text-xs border-slate-200 rounded p-1 mx-1 bg-white outline-none font-medium text-slate-700"
+              title="Font Size"
+            >
+              <option value="normal">Size: Normal</option>
+              <option value="0.75rem">Tiny</option>
+              <option value="0.875rem">Small</option>
+              <option value="1.125rem">Medium</option>
+              <option value="1.25rem">Large</option>
+              <option value="1.5rem">Extra Large</option>
+              <option value="2rem">Huge</option>
+            </select>
+
+            <div className="w-px h-5 bg-slate-300 mx-1"></div>
+            <Btn title="Bold" active={editor.isActive('bold')} onClick={() => editor.chain().focus().toggleBold().run()}><BoldIcon size={16} /></Btn>
+            <Btn title="Italic" active={editor.isActive('italic')} onClick={() => editor.chain().focus().toggleItalic().run()}><ItalicIcon size={16} /></Btn>
+            <Btn title="Underline" active={editor.isActive('underline')} onClick={() => editor.chain().focus().toggleUnderline().run()}><UnderlineIcon size={16} /></Btn>
+            <Btn title="Strikethrough" active={editor.isActive('strike')} onClick={() => editor.chain().focus().toggleStrike().run()}><Strikethrough size={16} /></Btn>
+            <Btn title="Superscript" active={editor.isActive('superscript')} onClick={() => editor.chain().focus().toggleSuperscript().run()}><SuperscriptIcon size={16} /></Btn>
+            <Btn title="Subscript" active={editor.isActive('subscript')} onClick={() => editor.chain().focus().toggleSubscript().run()}><SubscriptIcon size={16} /></Btn>
+            <Btn title="Clear Formatting" onClick={() => editor.chain().focus().unsetAllMarks().run()}><Eraser size={16} /></Btn>
+            <div className="w-px h-5 bg-slate-300 mx-1"></div>
+            <Btn title="Bulleted List" active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}><List size={16} /></Btn>
+            <Btn title="Numbered List" active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}><ListOrdered size={16} /></Btn>
+            <Btn
+              title="Link"
+              active={editor.isActive('link')}
+              onClick={() => {
+                if (editor.isActive('link')) {
+                  editor.chain().focus().unsetLink().run();
+                } else {
+                  const existingHref = editor.getAttributes('link').href || '';
+                  setLinkUrl(existingHref);
+                  setShowLinkInput(true);
+                }
+              }}
+            >
+              <LinkIcon size={16} />
+            </Btn>
+
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageUpload}
+            accept="image/*"
+            className="hidden"
+          />
+          <button
+            type="button"
+            disabled={isUploading}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => fileInputRef.current?.click()}
+            title="Upload Image Inline"
+            className={`p-1.5 rounded flex items-center justify-center transition-colors ${isUploading ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-slate-100'} disabled:opacity-50 cursor-pointer`}
+          >
+            {isUploading ? (
+              <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+            ) : (
+              <ImageIcon size={16} />
+            )}
+          </button>
+
+          <div className="w-px h-5 bg-slate-300 mx-1"></div>
+          <Btn title="Align Left" onClick={() => editor.chain().focus().updateAttributes('paragraph', { alignment: 'left' }).run()}><AlignLeft size={16} /></Btn>
+          <Btn title="Align Center" onClick={() => editor.chain().focus().updateAttributes('paragraph', { alignment: 'center' }).run()}><AlignCenter size={16} /></Btn>
+          <Btn title="Align Right" onClick={() => editor.chain().focus().updateAttributes('paragraph', { alignment: 'right' }).run()}><AlignRight size={16} /></Btn>
+          <div className="w-px h-5 bg-slate-300 mx-1"></div>
+          {(allowMath || allowChemistry) && (
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setShowScience(true)}
+              title="Insert equation or science notation"
+              aria-label="Insert equation or science notation"
+              className="p-1 px-1.5 rounded flex items-center justify-center transition-colors text-slate-600 hover:bg-slate-100 hover:text-blue-700 cursor-pointer border border-transparent hover:border-slate-200"
+            >
+              <Sigma size={16} />
+            </button>
+          )}
+        </div>
+        {showLinkInput && (
+          <div className="bg-slate-50 border-b border-rose-100/50 px-3 py-1.5 flex items-center gap-2 animate-in fade-in slide-in-from-top-1">
+            <span className="text-xs text-slate-500 font-semibold select-none">Link URL:</span>
+            <input
+              type="text"
+              value={linkUrl}
+              onChange={(e) => setLinkUrl(e.target.value)}
+              placeholder="https://example.com"
+              className="text-xs border border-slate-200 rounded px-2.5 py-1 flex-1 bg-white outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-normal"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (linkUrl.trim()) {
+                    editor.chain().focus().setLink({ href: linkUrl.trim() }).run();
+                  } else {
+                    editor.chain().focus().unsetLink().run();
+                  }
+                  setShowLinkInput(false);
+                } else if (e.key === 'Escape') {
+                  setShowLinkInput(false);
+                }
+              }}
+            />
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                if (linkUrl.trim()) {
+                  editor.chain().focus().setLink({ href: linkUrl.trim() }).run();
+                } else {
+                  editor.chain().focus().unsetLink().run();
+                }
+                setShowLinkInput(false);
+              }}
+              className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded font-medium cursor-pointer transition-colors"
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setShowLinkInput(false)}
+              className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1 cursor-pointer transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </>
+    )}
+ 
+      <div 
+        onClick={() => {
+          if (!disabled && editor) {
+            editor.commands.focus();
+          }
+        }}
+        className={`p-3 relative cursor-text select-text flex flex-col ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`}
+      >
+        {editor && (
+          <EditorContent
+            editor={editor}
+            className={`w-full h-full flex-1 flex flex-col ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`}
+          />
+        )}
+        {editor && editor.isEmpty && (
+          <div className="absolute top-3 left-3 text-slate-400 pointer-events-none text-sm leading-relaxed select-none">{placeholder}</div>
+        )}
+      </div>
+ 
+      {showScience && (
+        <FormulaEditorModal
+          initialTab={allowMath ? "math" : "chemistry"}
+          onSave={(latex, activeTab) => {
+            if (editor && latex.trim()) {
+              if (activeTab === "chemistry") {
+                editor.chain().focus().insertContent({
+                  type: "chemistry",
+                  attrs: { formula: latex }
+                }).run();
+              } else {
+                editor.chain().focus().insertContent({
+                  type: "formula",
+                  attrs: {
+                    formula: latex,
+                    kind: activeTab === "science" ? "science" : "equation"
+                  }
+                }).run();
+              }
+            }
+            setShowScience(false);
+          }}
+          onClose={() => setShowScience(false)}
         />
-      </LexicalComposer>
+      )}
     </div>
   );
 };

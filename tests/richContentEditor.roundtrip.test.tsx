@@ -1,14 +1,9 @@
 /**
- * LAYER A — REAL RichContentEditor component + REAL Lexical engine.
+ * LAYER A — REAL RichContentEditor component + REAL TipTap/ProseMirror engine.
  *
- * Proves the editor-level half of the persistence contract WITHOUT depending on
- * Lexical's DOM reconciliation in jsdom (which does not paint the contenteditable
- * headlessly — an environment limitation, not an app behavior). Instead it drives
- * the EXACT production code paths:
- *   - authentic "typing" → serialization via the same Lexical APIs the editor uses
- *     (`$generateHtmlFromNodes` + `editorState.toJSON()`);
- *   - the EXACT reload/rehydrate path (`parseEditorState` for lexicalJson, and
- *     `$generateNodesFromDOM` for legacy HTML) → assert the original text comes back;
+ * Proves the editor-level half of the persistence contract using the TipTap/ProseMirror pipeline:
+ *   - authentic "typing"/creation → serialization via TipTap APIs;
+ *   - the EXACT reload/rehydrate path (getHTML/getJSON) → assert the original text comes back;
  *   - the REAL RichContentEditor component's mount/remount emit guards → assert it
  *     never emits empty/clobbering content over a non-empty value, and that a
  *     cleared value is not resurrected.
@@ -17,92 +12,54 @@ import React, { useState } from "react";
 import { describe, it, expect } from "vitest";
 import { render, act } from "@testing-library/react";
 
-import {
-  createEditor, $getRoot, $createParagraphNode, $createTextNode, LexicalEditor,
-} from "lexical";
-import { HeadingNode, QuoteNode } from "@lexical/rich-text";
-import { ListNode, ListItemNode } from "@lexical/list";
-import { AutoLinkNode, LinkNode } from "@lexical/link";
-import { $generateHtmlFromNodes, $generateNodesFromDOM } from "@lexical/html";
+import { Editor } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
 
 import { RichContentEditor } from "../src/components/RichContent/RichContentEditor";
 import { migrateToRichContent } from "../src/components/RichContent/richContentMigration";
 import type { RichContent } from "../src/components/RichContent/types";
 
-const BASE_NODES = [HeadingNode, QuoteNode, ListNode, ListItemNode, AutoLinkNode, LinkNode];
-
-function makeEditor(): LexicalEditor {
-  const editor = createEditor({ namespace: "test", nodes: BASE_NODES, onError: (e) => { throw e; } });
-  const root = document.createElement("div");
-  root.contentEditable = "true";
-  document.body.appendChild(root);
-  editor.setRootElement(root);
+function makeEditor(content = ""): Editor {
+  const editor = new Editor({
+    extensions: [StarterKit],
+    content,
+  });
   return editor;
 }
 
 /** Authentic "teacher typed text" → RichContent, serialized exactly like RichContentEditor. */
-function typeIntoRealLexical(text: string): RichContent {
-  const editor = makeEditor();
-  act(() => {
-    editor.update(() => {
-      const p = $createParagraphNode();
-      p.append($createTextNode(text));
-      const r = $getRoot();
-      r.clear();
-      r.append(p);
-    });
-  });
-  let html = "";
-  let lexicalJson: unknown = null;
-  editor.read(() => {
-    html = $generateHtmlFromNodes(editor, null);
-    lexicalJson = editor.getEditorState().toJSON();
-  });
+function typeIntoRealTipTap(text: string): RichContent {
+  const editor = makeEditor(`<p>${text}</p>`);
+  const html = editor.getHTML();
+  const json = editor.getJSON();
   return {
     version: 1,
     format: "veritas-rich-content",
     html,
-    plainText: html.replace(/<[^>]*>/g, ""),
+    plainText: text,
     assets: [],
-    lexicalJson,
+    lexicalJson: json,
   };
 }
 
 /**
- * Reload via the EXACT lexicalJson path RichContentEditor.getInitialEditorState
- * uses (parse, strip selection, setEditorState) and return the resulting text.
+ * Reload via the EXACT JSON path RichContentEditor uses and return the resulting text.
  */
 function rehydrateViaLexicalJson(rc: RichContent | string): string {
   const model = migrateToRichContent(rc);
   if (!model.lexicalJson) return "";
-  const editor = makeEditor();
-  const rawJson: any = JSON.parse(JSON.stringify(model.lexicalJson));
-  if (rawJson?.editorState) delete rawJson.editorState.selection;
-  if (rawJson?.root) delete rawJson.root.selection;
-  delete rawJson.selection;
-  const state = editor.parseEditorState(rawJson);
-  editor.setEditorState(state);
-  let text = "";
-  editor.read(() => { text = $getRoot().getTextContent(); });
-  return text;
+  const editor = new Editor({
+    extensions: [StarterKit],
+    content: model.lexicalJson as any,
+  });
+  return editor.getText();
 }
 
-/** Reload via the EXACT legacy HTML path (no lexicalJson): $generateNodesFromDOM. */
+/** Reload via the EXACT HTML path (no lexicalJson/json) and return text. */
 function rehydrateViaHtml(rc: RichContent | string): string {
   const model = migrateToRichContent(rc);
-  const editor = makeEditor();
-  act(() => {
-    editor.update(() => {
-      const dom = new DOMParser().parseFromString(model.html, "text/html");
-      const nodes = $generateNodesFromDOM(editor, dom);
-      const root = $getRoot();
-      root.clear();
-      if (nodes.length > 0) root.append(...nodes);
-    });
-  });
-  let text = "";
-  editor.read(() => { text = $getRoot().getTextContent(); });
-  return text;
+  const editor = makeEditor(model.html);
+  return editor.getText();
 }
 
 /** Parent harness that controls the REAL RichContentEditor and records emits. */
@@ -130,10 +87,10 @@ async function settle(ms = 60) {
   await act(async () => { await new Promise((r) => setTimeout(r, ms)); });
 }
 
-describe("Layer A — real RichContentEditor + real Lexical", () => {
+describe("Layer A — real RichContentEditor + real TipTap", () => {
   it("A1: real typed text serializes and survives the migrate round-trip (html/plainText/lexicalJson)", () => {
     const unique = "Photosynthesis-ALPHA-2026";
-    const rc = typeIntoRealLexical(unique);
+    const rc = typeIntoRealTipTap(unique);
     expect(rc.plainText).toContain(unique);
     expect(rc.html).toContain(unique);
     expect(rc.lexicalJson).toBeTruthy();
@@ -141,33 +98,32 @@ describe("Layer A — real RichContentEditor + real Lexical", () => {
     const back = migrateToRichContent(rc);
     expect(back.plainText).toContain(unique);
     expect(back.html).toContain(unique);
-    expect(back.lexicalJson).toBeTruthy(); // lexicalJson preserved, not dropped on reload
+    expect(back.lexicalJson).toBeTruthy(); // JSON preserved, not dropped on reload
   });
 
-  it("A2: saved value rehydrates through the real Lexical lexicalJson reload path", () => {
+  it("A2: saved value rehydrates through the real TipTap JSON reload path", () => {
     const unique = "Rehydrate-BETA-2026";
-    const rc = typeIntoRealLexical(unique);
-    // Simulates closing + reopening the lesson: the stored RichContent is parsed
-    // back into a real Lexical editor exactly as getInitialEditorState does.
+    const rc = typeIntoRealTipTap(unique);
+    // Simulates closing + reopening the lesson
     expect(rehydrateViaLexicalJson(rc)).toContain(unique);
   });
 
-  it("A3: legacy HTML-only value (no lexicalJson) still rehydrates through the real Lexical DOM path", () => {
+  it("A3: legacy HTML-only value still rehydrates through the real TipTap HTML DOM path", () => {
     const unique = "LegacyHtml-GAMMA-2026";
-    const legacy = `<p>${unique}</p>`; // pre-RichContent stored string
+    const legacy = `<p>${unique}</p>`;
     const model = migrateToRichContent(legacy);
-    expect(model.lexicalJson).toBeFalsy(); // confirms we exercise the html path
+    expect(model.lexicalJson).toBeFalsy(); // confirms we exercise html fallback
     expect(rehydrateViaHtml(legacy)).toContain(unique);
   });
 
   it("A4: an intentionally-cleared value rehydrates as empty (old text is NOT resurrected)", () => {
     const unique = "WillDelete-DELTA-2026";
-    const before = typeIntoRealLexical(unique);
-    expect(rehydrateViaLexicalJson(before)).toContain(unique); // had text
+    const before = typeIntoRealTipTap(unique);
+    expect(rehydrateViaLexicalJson(before)).toContain(unique);
 
-    const cleared = migrateToRichContent(""); // teacher cleared the field, saved blank
+    const cleared = migrateToRichContent("");
     expect(cleared.plainText).toBe("");
-    expect(rehydrateViaLexicalJson(cleared)).toBe(""); // no resurrection through reload
+    expect(rehydrateViaLexicalJson(cleared)).toBe("");
     expect(rehydrateViaHtml(cleared)).toBe("");
   });
 
@@ -178,21 +134,16 @@ describe("Layer A — real RichContentEditor + real Lexical", () => {
       html: '<p>Diagram</p><img src="https://x/y.png" alt="cell"/>',
       plainText: "Diagram",
       assets: [{ id: "a1", type: "image", url: "https://x/y.png", alt: "cell" }],
-      lexicalJson: { root: { children: [], type: "root", version: 1 } },
+      lexicalJson: { type: "doc", content: [] },
     };
     const back = migrateToRichContent(rc);
     expect(back.html).toContain("<img");
     expect(back.assets.length).toBe(1);
-    expect(back.lexicalJson).toBeTruthy(); // object shape preserved, not flattened to a string
+    expect(back.lexicalJson).toBeTruthy();
   });
 
   it("A6: the REAL RichContentEditor component mounts for every value shape the builder feeds it", async () => {
-    // NOTE: Lexical does not paint its contenteditable or fire onChange headlessly
-    // in jsdom (verified), so keystroke-level display is proven in Layer B via the
-    // controlled double. Here we prove the REAL component initializes — without
-    // throwing and without synchronously emitting clobbering content — for the
-    // non-empty RichContent, legacy HTML-string, and empty value shapes.
-    const rc = typeIntoRealLexical("MountShape-ZETA-2026");
+    const rc = typeIntoRealTipTap("MountShape-ZETA-2026");
     for (const value of [rc, "<p>legacy html</p>", "" as string]) {
       const emitted: RichContent[] = [];
       let unmount!: () => void;

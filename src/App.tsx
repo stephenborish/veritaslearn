@@ -52,7 +52,7 @@ export default function App() {
   const [gradebookResponseEntries, setGradebookResponseEntries] = useState<any[]>([]);
 
   // Selection states
-  const [activeTab, setActiveTab] = useState<"live" | "builder" | "courses" | "gradebook" | "ai">("live");
+  const [activeTab, setActiveTab] = useState<"live" | "builder" | "courses" | "gradebook" | "ai" | "admin">("live");
   const [activeDossier, setActiveDossier] = useState<{ studentId: string; lessonId: string } | null>(null);
   const [activeStudentAttempt, setActiveStudentAttempt] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
@@ -819,6 +819,7 @@ export default function App() {
                     courses={courses}
                     onEditingDirtyChange={setIsAuthoringDirty}
                     idToken={idToken}
+                    onCollapseSidebar={setIsSidebarCollapsed}
                   />
                 )
               )}
