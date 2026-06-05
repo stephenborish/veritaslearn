@@ -1,3 +1,4 @@
+import type React from "react";
 import { Timestamp } from "firebase/firestore";
 
 export type RichContentAsset = {
@@ -42,4 +43,13 @@ export type RichContentEditorProps = {
   documentKey?: string;
   /** When true, uses a smaller min-height (suitable for compact answer choices). */
   compactHeight?: boolean;
+  /**
+   * Optional explicit flush/commit hook. The editor populates `flushRef.current`
+   * with a function that synchronously re-emits the editor's current content via
+   * `onChange`. Parent components MAY call it before a workspace switch / save /
+   * navigation to force a final commit. It is a safety net: the editor already
+   * emits onChange synchronously on every keystroke, so the live-state contract
+   * does not depend on it.
+   */
+  flushRef?: React.MutableRefObject<(() => void) | null>;
 };

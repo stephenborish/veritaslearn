@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import {
   Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock,
@@ -22,6 +22,36 @@ import {
 
 function uid(prefix: string): string {
   return prefix + "_" + Math.random().toString(36).slice(2, 9);
+}
+
+/**
+ * Live state hook — the unified latest-authoring-state contract for top-level
+ * lesson fields (description, title, settings, …) that mirrors the existing
+ * `setCurrentBlocksLive` / `currentBlocksRef` protection used for blocks.
+ *
+ * Why this exists: RichContentEditor (Lexical) emits its onChange synchronously
+ * on every keystroke, but the resulting `setState` is async. Any code that runs
+ * before React re-renders — a navigation handler that unmounts the editor, an
+ * autosave timer that already captured the old closure value, a Save/Publish
+ * click, a local-recovery or dirty snapshot — would otherwise read a STALE value
+ * and silently drop the teacher's most recent keystrokes.
+ *
+ * `setLive` updates the ref SYNCHRONOUSLY (before the React re-render) and then
+ * schedules the normal state update. Snapshots/saves/autosaves read `ref.current`
+ * (always the latest), while rendering still uses `state`. The returned setter
+ * keeps the same call signature as a `useState` setter (value or updater) so
+ * existing call sites need no changes.
+ */
+function useLiveState<T>(initial: T): [T, (next: T | ((prev: T) => T)) => T, React.MutableRefObject<T>] {
+  const [state, setState] = useState<T>(initial);
+  const ref = useRef<T>(initial);
+  const setLive = useCallback((next: T | ((prev: T) => T)): T => {
+    const value = typeof next === "function" ? (next as (prev: T) => T)(ref.current) : next;
+    ref.current = value;
+    setState(value);
+    return value;
+  }, []);
+  return [state, setLive, ref];
 }
 
 function newQuestionTemplate(type: "mc" | "sa"): any {
@@ -64,15 +94,19 @@ export default function LessonsBuilder({
   idToken,
 }: LessonsBuilderProps) {
   const [selectedLesson, setSelectedLesson] = useState<any>(null);
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState<any>("");
-  const [estimatedMinutes, setEstimatedMinutes] = useState(30);
-  const [isPublished, setIsPublished] = useState(false);
-  const [restrictSeeking, setRestrictSeeking] = useState(true);
-  const [requireFullscreen, setRequireFullscreen] = useState(true);
-  const [allowRetakes, setAllowRetakes] = useState(false);
-  const [randomizeChoices, setRandomizeChoices] = useState(true);
-  const [immediateFeedback, setImmediateFeedback] = useState(false);
+  // Top-level lesson fields use the live-state contract (see useLiveState above) so
+  // that snapshots, autosave, local recovery, and Save/Publish always read the
+  // teacher's latest keystrokes — never a stale React closure. `description` is the
+  // critical rich-text field; the others are included for a uniform contract.
+  const [title, setTitle, titleRef] = useLiveState<string>("");
+  const [description, setDescription, descriptionRef] = useLiveState<any>("");
+  const [estimatedMinutes, setEstimatedMinutes, estimatedMinutesRef] = useLiveState<number>(30);
+  const [isPublished, setIsPublished, isPublishedRef] = useLiveState<boolean>(false);
+  const [restrictSeeking, setRestrictSeeking, restrictSeekingRef] = useLiveState<boolean>(true);
+  const [requireFullscreen, setRequireFullscreen, requireFullscreenRef] = useLiveState<boolean>(true);
+  const [allowRetakes, setAllowRetakes, allowRetakesRef] = useLiveState<boolean>(false);
+  const [randomizeChoices, setRandomizeChoices, randomizeChoicesRef] = useLiveState<boolean>(true);
+  const [immediateFeedback, setImmediateFeedback, immediateFeedbackRef] = useLiveState<boolean>(false);
 
   const [builderSubTab, setBuilderSubTab] = useState<"library" | "assignments">("library");
 
@@ -253,9 +287,18 @@ export default function LessonsBuilder({
   };
 
   // ---- Snapshot for dirty detection ----
+  // Reads every field from its live ref (not React closure state) so the dirty
+  // snapshot reflects the teacher's most recent keystrokes even mid-render.
   const getSnapshot = () => JSON.stringify({
-    title, description, estimatedMinutes, isPublished,
-    restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback,
+    title: titleRef.current,
+    description: descriptionRef.current,
+    estimatedMinutes: estimatedMinutesRef.current,
+    isPublished: isPublishedRef.current,
+    restrictSeeking: restrictSeekingRef.current,
+    requireFullscreen: requireFullscreenRef.current,
+    allowRetakes: allowRetakesRef.current,
+    randomizeChoices: randomizeChoicesRef.current,
+    immediateFeedback: immediateFeedbackRef.current,
     currentBlocks: currentBlocksRef.current
   });
 
@@ -623,10 +666,19 @@ export default function LessonsBuilder({
 
     if (!clean && activeDraftKeyRef.current) {
       const timer = setTimeout(() => {
+        // Read from live refs at fire time so a keystroke landing during the 1s
+        // debounce is included in the recovery draft.
         localStorage.setItem(activeDraftKeyRef.current, JSON.stringify({
           timestamp: Date.now(),
-          title, description, estimatedMinutes, isPublished,
-          restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback,
+          title: titleRef.current,
+          description: descriptionRef.current,
+          estimatedMinutes: estimatedMinutesRef.current,
+          isPublished: isPublishedRef.current,
+          restrictSeeking: restrictSeekingRef.current,
+          requireFullscreen: requireFullscreenRef.current,
+          allowRetakes: allowRetakesRef.current,
+          randomizeChoices: randomizeChoicesRef.current,
+          immediateFeedback: immediateFeedbackRef.current,
           currentBlocks: currentBlocksRef.current
         }));
       }, 1000);
@@ -691,18 +743,25 @@ export default function LessonsBuilder({
 
     const lessonId = selectedLesson.id;
     const baseLessonUpdatedAt = selectedLesson?.updatedAt || selectedLesson?.createdAt || new Date().toISOString();
-    const capturedTitle = title;
-    const capturedDescription = description;
-    const capturedEstimatedMinutes = estimatedMinutes;
-    const capturedIsPublished = isPublished;
-    const capturedSettings = { restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback };
     const capturedToken = idToken;
     const clientUpdatedAt = new Date().toISOString();
     latestDraftClientUpdatedAtRef.current = clientUpdatedAt;
 
     const timer = setTimeout(async () => {
-      // Read blocks from the live ref at execution time to pick up any Lexical
-      // onChange that was queued after this effect ran but before the timer fired.
+      // Read every field from its live ref at execution time so any Lexical
+      // onChange that landed after this effect ran but before the timer fired
+      // (including rich-text fields like description) is captured.
+      const capturedTitle = titleRef.current;
+      const capturedDescription = descriptionRef.current;
+      const capturedEstimatedMinutes = estimatedMinutesRef.current;
+      const capturedIsPublished = isPublishedRef.current;
+      const capturedSettings = {
+        restrictSeeking: restrictSeekingRef.current,
+        requireFullscreen: requireFullscreenRef.current,
+        allowRetakes: allowRetakesRef.current,
+        randomizeChoices: randomizeChoicesRef.current,
+        immediateFeedback: immediateFeedbackRef.current,
+      };
       const capturedBlocks = currentBlocksRef.current;
       setAutosaveStatus("saving");
       try {
@@ -852,13 +911,21 @@ export default function LessonsBuilder({
       }
     }
 
+    // Read from live refs so a Save/Publish click immediately after the last
+    // keystroke persists the latest authoritative state (not a stale closure).
     const payload = {
       id: selectedLesson?.id === "new" ? undefined : selectedLesson?.id,
-      title,
-      description,
-      estimatedMinutes,
+      title: titleRef.current,
+      description: descriptionRef.current,
+      estimatedMinutes: estimatedMinutesRef.current,
       isPublished: publishedStatus,
-      settings: { restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback },
+      settings: {
+        restrictSeeking: restrictSeekingRef.current,
+        requireFullscreen: requireFullscreenRef.current,
+        allowRetakes: allowRetakesRef.current,
+        randomizeChoices: randomizeChoicesRef.current,
+        immediateFeedback: immediateFeedbackRef.current,
+      },
       blocks: currentBlocksRef.current
     };
 
@@ -897,25 +964,45 @@ export default function LessonsBuilder({
 
         const resolvedBlocks = normalizeBlocksForEditor(savedResult.blocks || []);
         setCurrentBlocksLive(resolvedBlocks);
+
+        // Sync BOTH React state and the live refs to the canonical saved values so
+        // the editor (and every subsequent snapshot/autosave/recovery read) stays
+        // consistent with what the server persisted. setLive setters update refs
+        // synchronously, so the snapshot below reads the canonical values.
+        setTitle(savedResult.title ?? titleRef.current);
+        setDescription(savedResult.description ?? descriptionRef.current);
+        setEstimatedMinutes(savedResult.estimatedMinutes ?? estimatedMinutesRef.current);
         setIsPublished(savedResult.isPublished);
+        setRestrictSeeking(savedResult.settings?.restrictSeeking ?? restrictSeekingRef.current);
+        setRequireFullscreen(savedResult.settings?.requireFullscreen ?? requireFullscreenRef.current);
+        setAllowRetakes(savedResult.settings?.allowRetakes ?? allowRetakesRef.current);
+        setRandomizeChoices(savedResult.settings?.randomizeChoices ?? randomizeChoicesRef.current);
+        setImmediateFeedback(savedResult.settings?.immediateFeedback ?? immediateFeedbackRef.current);
 
         const newSnap = JSON.stringify({
-          title: savedResult.title || title,
-          description: savedResult.description ?? description,
-          estimatedMinutes: savedResult.estimatedMinutes ?? estimatedMinutes,
-          isPublished: savedResult.isPublished,
-          restrictSeeking: savedResult.settings?.restrictSeeking ?? restrictSeeking,
-          requireFullscreen: savedResult.settings?.requireFullscreen ?? requireFullscreen,
-          allowRetakes: savedResult.settings?.allowRetakes ?? allowRetakes,
-          randomizeChoices: savedResult.settings?.randomizeChoices ?? randomizeChoices,
-          immediateFeedback: savedResult.settings?.immediateFeedback ?? immediateFeedback,
+          title: titleRef.current,
+          description: descriptionRef.current,
+          estimatedMinutes: estimatedMinutesRef.current,
+          isPublished: isPublishedRef.current,
+          restrictSeeking: restrictSeekingRef.current,
+          requireFullscreen: requireFullscreenRef.current,
+          allowRetakes: allowRetakesRef.current,
+          randomizeChoices: randomizeChoicesRef.current,
+          immediateFeedback: immediateFeedbackRef.current,
           currentBlocks: resolvedBlocks
         });
         setInitialSnapshotStr(newSnap);
       } else {
         setInitialSnapshotStr(JSON.stringify({
-          title, description, estimatedMinutes, isPublished: publishedStatus,
-          restrictSeeking, requireFullscreen, allowRetakes, randomizeChoices, immediateFeedback,
+          title: titleRef.current,
+          description: descriptionRef.current,
+          estimatedMinutes: estimatedMinutesRef.current,
+          isPublished: publishedStatus,
+          restrictSeeking: restrictSeekingRef.current,
+          requireFullscreen: requireFullscreenRef.current,
+          allowRetakes: allowRetakesRef.current,
+          randomizeChoices: randomizeChoicesRef.current,
+          immediateFeedback: immediateFeedbackRef.current,
           currentBlocks: currentBlocksRef.current
         }));
       }

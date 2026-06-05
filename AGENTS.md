@@ -5012,3 +5012,204 @@ npm run verify:visual-math-chemistry-editor → all checks PASSED
 npm run verify:browser-ai-guard         → 77 passed, 0 failed
 npm run build                            → PASSED (2152 modules)
 ```
+---
+
+## Rich-Text Authoring Persistence — Unified Live-State Contract (2026-06-05)
+
+### 1. Root cause
+Teacher-authored rich-text fields were lost in scattered places across the Lesson
+Designer when the teacher typed and then switched workspace/block/question or hit
+Save/Publish immediately.
+
+`RichContentEditor` (Lexical) emits its `onChange` **synchronously on every
+keystroke**, but the resulting React `setState` is **async**. Nested
+block/question/checkpoint/choice/rubric fields were already protected by the
+existing `setCurrentBlocksLive` / `currentBlocksRef` live-ref layer, so their
+updaters always read the latest value. **Top-level lesson fields — most importantly
+`description` — lived in plain React state only.** Every consumer that ran before
+React re-rendered read a STALE closure value:
+
+- the dirty **snapshot** (`getSnapshot`),
+- the **server autosave** payload (`capturedDescription = description` was captured
+  at effect-run time, not at the 2.5s timer fire — unlike blocks which were read
+  live),
+- the **local recovery** draft write,
+- the **Save Draft / Publish** payload (`description` read from the render closure),
+- the **post-save canonical reload** snapshot.
+
+A secondary risk: `RichContentEditor`'s initial mount could emit an empty/normalized
+`onChange` that clobbered a non-empty parent value during a remount (workspace
+switch).
+
+### 2. Rich-text authoring fields audited
+Top-level (LessonsBuilder): **Lesson Description** (rich), title, estimatedMinutes,
+settings. Block (LessonsBuilder → setCurrentBlocksLive): **Reading content/body**.
+Question (QuestionEditor, parent-controlled via functional `patch`/`patchWith` →
+`handleBlockQuestionChange` / `updateCheckpointQuestion` → `setCurrentBlocksLive`):
+**MC/SA question stem/prompt**, **student instructions**, **MC answer-choice rich
+text**, **explanation / practice feedback**, **short-answer model answer**, **AI
+scoring guidance**, **rubric category descriptions**, **teacher notes**. Video
+checkpoint: **checkpoint question text** and **checkpoint answer choices** (same
+QuestionEditor, routed through `updateCheckpointQuestion`). Embedded
+formula/chemistry/image nodes flow through the same RichContent object.
+
+### 3. Fields fixed
+- **Lesson Description** — moved from plain React state to the live-state contract
+  (`descriptionRef`); all snapshot/autosave/recovery/save/post-save reads now use the
+  ref. (Primary fix.)
+- **title, estimatedMinutes, isPublished, and all 5 settings** — converted to the
+  same live-state contract for uniformity.
+- **All nested block/question/checkpoint/choice/rubric fields** — confirmed already
+  protected by `setCurrentBlocksLive`; left unchanged (do not weaken).
+- **RichContentEditor** — initial mount can no longer clobber non-empty parent
+  content with empty/mirrored content; added an optional explicit `flushRef` commit
+  hook.
+
+### 4. The unified rich-authoring persistence contract
+`useLiveState<T>(initial)` returns `[state, setLive, ref]`. `setLive` updates `ref`
+**synchronously** (before the React re-render) and then schedules the normal state
+update; rendering still uses `state`. Every authoritative read — snapshot, server
+autosave (read at timer fire), local recovery, Save/Publish payload, post-save
+canonical reload — reads from the live refs (`descriptionRef.current`,
+`titleRef.current`, …, `currentBlocksRef.current`). This mirrors the pre-existing
+`setCurrentBlocksLive` design for blocks. All restore paths (`startEditing`,
+`startNewLesson`, `handleRestoreDraft`, `handleRestoreServerDraft`, post-save reload)
+call the `setLive` setters, which sync both React state AND the refs in one step.
+`RichContentEditor` continues to emit the full RichContent object
+(`html` / `plainText` / `lexicalJson` / `assets`); `migrateToRichContent` preserves
+`lexicalJson` on object input and still loads legacy string/HTML-only values.
+
+### 5. Files changed
+- `src/components/TeacherDashboard/LessonsBuilder.tsx` — `useLiveState` hook;
+  top-level fields converted to live state; snapshot/autosave/recovery/save/post-save
+  reads switched to live refs.
+- `src/components/RichContent/RichContentEditor.tsx` — initial-emit clobber guard;
+  optional `flushRef` commit hook.
+- `src/components/RichContent/types.ts` — `flushRef` prop.
+- `scripts/verify-rich-authoring-persistence.ts` — NEW regression suite (60 checks).
+- `scripts/verify-teacher-state.ts` — added top-level live-state guards.
+- `package.json` — `verify:rich-authoring-persistence` script.
+
+Server (`server.ts`, `server/data/sanitize.ts`) needed **no changes**: create/update
+store `description` and `blocks` (with nested RichContent) as-is, LessonVersion
+snapshots deep-clone via `JSON.parse(JSON.stringify(...))`, and
+`sanitizeQuestionForStudent` already strips every teacher-only field while preserving
+rich `stem` / `studentInstructions` / `choices[].text`.
+
+### 6. Regression coverage added
+`npm run verify:rich-authoring-persistence` (60 assertions) — covers all 25 required
+checks: live-state infra, every rich field's routing, save/publish/autosave/recovery/
+snapshot reading refs, restore-path ref syncing, initial-mount clobber guard,
+RichContent shape preservation, legacy loading, student-sanitization integrity, and
+the intact currentBlocks protections. `verify:teacher-state` extended with 4 top-level
+live-state guards.
+
+### 7. Verification results (2026-06-05)
+```
+npm run lint                               → PASSED (tsc --noEmit)
+npm run build                              → PASSED
+npm run verify:rich-authoring-persistence  → 60 passed, 0 failed (NEW)
+npm run verify:builder                     → 73 passed, 0 failed
+npm run verify:teacher-state               → 26 passed, 0 failed (was 22; +4)
+npm run verify:reliability                 → all checks PASSED
+npm run verify:workflow                    → 61 passed, 0 failed
+npm run verify:hardening                   → all checks PASSED
+npm run verify:student-ui                  → 71 passed, 0 failed
+npm run verify:versioning                  → 55 passed, 0 failed
+npm run verify:completion                  → 47 passed, 0 failed
+npm run verify:video-sources-builder-ux    → 35 passed, 0 failed
+npm run verify:rich-formulas               → all checks PASSED
+npm run verify:visual-math-chemistry-editor→ all checks PASSED
+npm run verify:browser-ai-guard            → 77 passed, 0 failed
+npm run verify:ai-grading-safety           → all checks PASSED
+```
+
+### 8. Remaining risks / notes
+- The `flushRef` commit hook is available but intentionally **not** wired into every
+  navigation path: the live-ref contract already guarantees latest state because
+  Lexical emits `onChange` synchronously per keystroke and `setLive` commits to the
+  ref immediately. `flushRef` exists as a defensive safety net for future callers.
+- Visual Science Editor was intentionally left untouched (out of scope).
+- The initial-emit guard suppresses only empty or load-mirroring initial onChanges; a
+  genuine first keystroke (non-empty and different from the loaded baseline) still
+  emits, so no edit is dropped.
+
+---
+
+## Rich-Text Authoring — Reproduction-Level Regression Coverage (2026-06-05, PR #33 follow-up)
+
+Static source assertions (`verify:rich-authoring-persistence`) prove the wiring
+exists; this section adds **behavioral, real-component** proof that teacher text
+actually persists through real workflows. Runner: **Vitest + jsdom +
+@testing-library/react** (`npm run verify:rich-authoring-flows`).
+
+### Two test layers
+- **Layer A — `tests/richContentEditor.roundtrip.test.tsx` (6 tests).** Uses the
+  REAL `RichContentEditor` and a REAL headless Lexical editor. Proves: authentic
+  typed text serializes (html/plainText/lexicalJson) and survives the migrate
+  round-trip; the EXACT reload paths (`parseEditorState` for lexicalJson,
+  `$generateNodesFromDOM` for legacy HTML) rehydrate the original text; an
+  intentionally-cleared value rehydrates empty (no resurrection); media
+  (image/asset/table) is preserved (not flattened to a string); and the real
+  component mounts for every value shape the builder feeds it (RichContent object,
+  legacy HTML string, empty) without throwing or emitting clobbering content.
+- **Layer B — `tests/richAuthoringFlows.test.tsx` (9 tests).** Mounts the REAL
+  `LessonsBuilder` (real `useLiveState` refs, `setCurrentBlocksLive`, `getSnapshot`,
+  save, and `startEditing` restore) and drives the real UI: type → switch
+  workspace/block/question → return → assert text remains → **Save draft** → close +
+  reopen the lesson (real `startEditing`) → assert text remains. The only seam is
+  `RichContentEditor`, replaced by a faithful CONTROLLED `<textarea>` double that
+  emits the same RichContent shape the real editor emits; because it is controlled,
+  any dropped/clobbered parent value shows as blank after remount.
+
+### Fields covered by REAL interaction/persistence tests (Layer B)
+Description; Reading body; MC question stem; MC answer choices A & B (plain) and a
+rich "Go Rich/Math" choice; SA prompt, student instructions, model answer, AI
+scoring guidance, teacher notes, and rubric description; MC explanation / practice
+feedback; video checkpoint question text; intentional deletion (clear → save →
+reload stays blank). Each asserts persistence across navigation AND across
+save+reopen, and the save payload shape (e.g. `singleQuestion.stem.plainText`,
+`rubricCategories[0].description.plainText`, `videoCheckpoints[0].questions[0].stem`).
+
+### Fields/behaviours covered only by static or round-trip checks (NOT full UI flow)
+- Video checkpoint **answer choices** specifically: the checkpoint question uses the
+  same `QuestionEditor`/choice machinery proven in Layer B test 4/4b for inline
+  questions; only the checkpoint *stem* is exercised through the checkpoint UI.
+- Top-level `title`/`estimatedMinutes`/`settings` live-state (covered by
+  `verify:rich-authoring-persistence` + the save-payload assertions in Layer B).
+- The RichContentEditor initial-mount clobber guard and keystroke→serialize path are
+  covered by Layer A's real-Lexical round-trip + real-component mount, NOT by
+  synthetic keystrokes — see limitation below.
+
+### Load-bearing proof (the tests catch real regressions)
+- Reverting the `RichContentEditor` initial-emit guard did NOT fail Layer A — because
+  Lexical does not paint its contenteditable or fire `onChange` on synthetic input
+  events in jsdom (verified via probe). That is an environment limitation, so Layer A
+  deliberately asserts the deterministic real-Lexical serialize/reload paths instead
+  of synthetic typing.
+- Mutating the real Description `onChange` to a no-op (simulating "text disappears")
+  FAILS Layer B test 1. This confirms the Layer B suite detects the user-reported
+  symptom rather than passing vacuously.
+
+### Verification results (2026-06-05)
+```
+npm run lint                               → PASSED (tsc --noEmit, includes tests/)
+npm run build                              → PASSED
+npm run verify:rich-authoring-flows        → 15 passed (Layer A 6 + Layer B 9); stable over repeated runs (NEW)
+npm run verify:rich-authoring-persistence  → 60 passed, 0 failed
+npm run verify:builder                     → 73 passed, 0 failed
+npm run verify:teacher-state               → 26 passed, 0 failed
+npm run verify:reliability                 → all checks PASSED
+npm run verify:workflow                    → 61 passed, 0 failed
+```
+
+### Verdict
+**Proven fixed** for the end-to-end teacher workflow (type → navigate → return →
+save → reload) across Description, Reading body, MC stem, MC choices (plain + rich),
+SA prompt + instructions + model answer + AI guidance + teacher notes + rubric,
+explanation/feedback, and video checkpoint question — with intentional deletion also
+proven to stay blank. Residual limitation: keystroke-level Lexical editing cannot be
+driven headlessly in jsdom, so the editor's internal keystroke→serialize step is
+proven via real-Lexical round-trips (Layer A) rather than synthetic typing; a true
+browser (Playwright) run would close that last gap but is not feasible in this
+environment (no browser/Firebase server).

@@ -283,6 +283,8 @@ interface EditorInnerProps {
   onApplied: (html: string) => void;
   /** When true, uses a compact min-height (suitable for answer choices). */
   compactHeight?: boolean;
+  /** Optional: populated with a function that synchronously re-emits current content. */
+  flushRef?: React.MutableRefObject<(() => void) | null>;
 }
 
 const EditorInner: React.FC<EditorInnerProps> = ({
@@ -295,12 +297,24 @@ const EditorInner: React.FC<EditorInnerProps> = ({
   applyKey,
   onApplied,
   compactHeight,
+  flushRef,
 }) => {
   const [editor] = useLexicalComposerContext();
   const [showMath, setShowMath] = useState(false);
   const [showChem, setShowChem] = useState(false);
   // Prevents re-emitting content to parent when we're applying an external update
   const isApplyingRef = useRef(false);
+
+  // Expose an explicit flush: synchronously re-emit the editor's current content.
+  // Safety net for parents that want to force a commit before navigation/save.
+  useEffect(() => {
+    if (!flushRef) return;
+    flushRef.current = () => {
+      if (isApplyingRef.current) return;
+      onEditorChange(editor.getEditorState(), editor);
+    };
+    return () => { if (flushRef) flushRef.current = null; };
+  }, [editor, flushRef, onEditorChange]);
 
   // Apply external content whenever applyKey increments (skips on first render with key=0)
   useEffect(() => {
@@ -410,6 +424,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   disabled = false,
   documentKey = "",
   compactHeight = false,
+  flushRef,
 }) => {
   // Track focus state of this specific editor
   const [isFocused, setIsFocused] = useState(false);
@@ -434,6 +449,12 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
   const currentHtmlRef = useRef<string>('');
   // Track what we last serialized+emitted to parent (to break echo loops)
   const lastEmittedRef = useRef<string | null>(null);
+  // Guards the FIRST onChange after (re)mount. Lexical fires an initial onChange
+  // that merely reflects the content we just loaded from `value`. Emitting it can
+  // clobber the parent's authoritative value — e.g. with empty/normalized HTML
+  // during a remount triggered by a workspace switch. We record the baseline and
+  // suppress that first emission; real keystrokes thereafter emit normally.
+  const initialEmitGuardRef = useRef(true);
 
   // When applyKey > 0, EditorInner reads this ref and applies the content
   const contentToApplyRef = useRef<{ lexicalJson?: any; html?: string } | null>(null);
@@ -482,6 +503,22 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
       const htmlStr = $generateHtmlFromNodes(editor, null);
       const cleanHtml = richContentSanitizer(htmlStr);
       currentHtmlRef.current = cleanHtml;
+
+      // Guard the initial onChange after (re)mount. Lexical fires it to reflect the
+      // content we just loaded from `value`. Suppress it ONLY when it is empty or
+      // merely mirrors the loaded baseline — this is exactly the case that could
+      // clobber a non-empty parent value with empty/normalized HTML on a remount
+      // (e.g. workspace switch). A genuine first keystroke (non-empty AND different
+      // from the loaded baseline) still emits, so no edit is lost.
+      if (initialEmitGuardRef.current) {
+        initialEmitGuardRef.current = false;
+        const initialHtml = initialModelRef.current.html || '';
+        const strippedText = cleanHtml.replace(/<[^>]*>/g, '').trim();
+        if (strippedText === '' || cleanHtml === initialHtml) {
+          lastEmittedRef.current = JSON.stringify({ html: cleanHtml });
+          return;
+        }
+      }
 
       const newContent: RichContent = {
         version: 1,
@@ -590,6 +627,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
           applyKey={applyKey}
           onApplied={handleApplied}
           compactHeight={compactHeight}
+          flushRef={flushRef}
         />
       </LexicalComposer>
     </div>
