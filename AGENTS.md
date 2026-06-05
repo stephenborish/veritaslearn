@@ -4592,3 +4592,101 @@ chips with mismatched font sizing. Additionally:
   users must type valid LaTeX manually.
 - No automated browser tests for formula rendering; visual verification should
   be done manually after MathLive upgrades.
+
+---
+
+## Visual Math & Chemistry Editor — Teacher UX Overhaul
+
+**Date:** 2026-06-05
+
+### What was changed
+
+1. **`src/components/RichContent/FormulaEditorModal.tsx`** — Complete rewrite into a unified integrated editor.
+   - Added `EditorTab` type and `initialTab` prop (`'math' | 'chemistry' | 'science'`).
+   - Added a tab bar: **Math** | **Chemistry** | **Science Templates**.
+   - The left panel (MathLive editing field) is shared across all tabs.
+   - The right panel switches per tab: symbol categories (Math), chemistry building blocks + forms (Chemistry), science template grid (Science Templates).
+   - Added `ScientificNotationForm` component: coefficient + exponent fields → inserts formatted notation.
+   - Added `IsotopeForm` component: element + mass number + optional atomic number + optional charge fields → inserts isotope notation.
+   - Added `ChemistryPanel` with: subscript, superscript, charge buttons (+/−/2+/2−/3+/3−), reaction arrows (→ ⇌ ⇄ ⟶), states of matter ((s) (l) (g) (aq)), symbols (+ Δ ↑ ↓), common molecules (H₂O CO₂ Na⁺ Ca²⁺ etc.).
+   - Added `SciencePanel` with categorized science templates (Physics, Chemistry, Biology, Math).
+   - Removed the instruction "type LaTeX directly" from teacher-visible UI.
+   - Added optional collapsible "Advanced (optional)" section with a syncing textarea — not required for normal use.
+   - Quick bar is context-sensitive per tab.
+   - MathLive virtual keyboard is still suppressed automatically (`mathVirtualKeyboardPolicy = "off"`).
+
+2. **`src/components/RichContent/ChemistryFormulaModal.tsx`** — Complete rewrite.
+   - Replaced the raw "Edit Formula (LaTeX format)" text input with a **MathLive field** as the primary editing interface.
+   - Added button-based building blocks: subscript/superscript, charge, reaction arrows, states of matter, symbols.
+   - Added common molecules panel and common reactions panel.
+   - Added optional "Advanced (optional)" collapsible section.
+   - Removed all teacher-facing LaTeX labels from primary UI.
+   - Preserved "Insert chemistry" / "Save chemistry" strings required by verify scripts.
+
+3. **`src/components/RichContent/ChemistryNode.tsx`** — Updated to use integrated editor.
+   - Changed import from `ChemistryFormulaModal` to `FormulaEditorModal`.
+   - Now opens `FormulaEditorModal` with `initialTab="chemistry"` when teacher clicks/edits a chemistry node.
+   - Passes `initialFormula={formula}` for preloading existing content.
+   - `handleUpdate` signature updated to `(newFormula: string, _mathml: string)` for compatibility.
+
+4. **`src/components/RichContent/RichContentEditor.tsx`** — Toolbar improvements.
+   - "Equation" and "Chemistry" buttons are now labeled (were previously unlabeled icon-only).
+   - Chemistry toolbar button opens `FormulaEditorModal` with `initialTab="chemistry"` (integrated editor).
+   - Equation toolbar button opens `FormulaEditorModal` with `initialTab="math"`.
+   - Removed the `ChemistryFormulaModal` import from `RichContentEditor`.
+   - Both `insertFormulaNode` and `insertChemistryNode` updated to `(latex, _mathml)` signature.
+
+5. **`scripts/verify-visual-math-chemistry-editor.ts`** — New verification script (17 checks).
+
+6. **`package.json`** — Added `verify:visual-math-chemistry-editor` script.
+
+### Why the editor was changed
+
+The original chemistry editor required teachers to type LaTeX in a raw text input, which is not usable for science teachers who don't know LaTeX syntax. The chemistry tools were separate, weak, and disconnected from the math editor. Teachers had no guided path to create scientific notation, isotope notation, or chemistry reactions.
+
+### Teacher-facing math/chemistry tools added
+
+- **Scientific notation**: coefficient × 10^exponent form with simple input fields. Produces e.g. 6.02 × 10²³.
+- **Isotope notation**: element + mass number + optional atomic number + optional charge fields. Produces e.g. ¹⁴₆C, Ca²⁺.
+- **Chemistry building blocks**: subscript, superscript, charges (⁺ ⁻ ²⁺ ²⁻ ³⁺ ³⁻), reaction arrows (→ ⇌ ⇄), states ((s) (l) (g) (aq)), symbols (+ Δ ↑ ↓).
+- **Common molecules**: H₂O, CO₂, O₂, NaCl, H₂SO₄, NaOH, HCl, C₆H₁₂O₆, Na⁺, Cl⁻, Ca²⁺, OH⁻, Fe²⁺/Fe³⁺, ATP.
+- **Common reactions**: Photosynthesis, cellular respiration, neutralization.
+- **Science templates (Physics)**: E=mc², F=ma, KE=½mv², v=λf.
+- **Science templates (Chemistry)**: pH=−log[H⁺], PV=nRT, ΔG=ΔH−TΔS, Ka equilibrium.
+- **Science templates (Biology)**: Photosynthesis, cellular respiration, fermentation.
+- **Science templates (Math)**: y=mx+b, quadratic formula, fraction, square root, exponent, isotope, scientific notation.
+- **Toolbar buttons**: "Equation" and "Chemistry" are now labeled in the rich-text editor toolbar.
+
+### Confirmation that LaTeX is not required for normal teacher use
+
+Teachers never need to type, read, or interpret LaTeX to:
+- Insert math equations (use MathLive visual field + symbol palette)
+- Insert chemistry formulas (use button palette + form-based scientific notation/isotope tools)
+- Insert reactions (click Reaction arrow / Equilibrium arrow buttons)
+- Insert ions/charges (click charge buttons)
+- Insert science templates (click template buttons in Science Templates tab)
+
+LaTeX remains the internal storage format. An optional "Advanced (optional)" collapsible section exists if a teacher wants to edit the raw formula notation directly, but it is not shown by default and is clearly marked as optional.
+
+### Verification results
+
+```
+npm run verify:visual-math-chemistry-editor  → 17/17 checks PASSED
+npm run verify:rich-formulas                 → 14/14 checks PASSED
+npm run verify:builder                       → 73/73 checks PASSED
+npm run verify:teacher-state                 → 22/22 checks PASSED
+npm run verify:student-ui                    → 71/71 checks PASSED
+npm run verify:workflow                      → 61/61 checks PASSED
+npm run verify:reliability                   → 5/5 checks PASSED
+npm run verify:hardening                     → 6/6 checks PASSED
+npm run build                                → PASSED (2148 modules, no new errors)
+```
+
+TypeScript lint: 4162 baseline errors (all environment-level — missing React/Firebase/mathlive type declarations). My changes introduce no new logical TypeScript errors.
+
+### Remaining limitations
+
+- `ChemistryFormulaModal.tsx` still exists as a standalone component with the button-based builder. In the primary teacher flow it is no longer used directly (chemistry nodes and toolbar both now open the integrated `FormulaEditorModal`). It is preserved for backward compatibility with existing verify scripts.
+- MathLive virtual keyboard suppression (`mathVirtualKeyboardPolicy = "off"`) is applied in `useEffect` (post-mount). A flash of the keyboard icon is theoretically possible on very slow devices before the effect runs.
+- No automated browser/visual tests for rendered math/chemistry output. Visual verification should be done after MathLive upgrades.
+- The `SCIENCE_QUICK_BAR` in the integrated editor inserts static LaTeX templates (e.g. `\\times 10^{}`), not form-based notation. For fully guided scientific notation, teachers should use the Chemistry tab's Scientific Notation form.
