@@ -212,6 +212,31 @@ assert(
   builderSource.includes("setCurrentBlocksLive((prev) => prev.filter")
 );
 
+// ---------------------------------------------------------------------------
+// 6. Top-level rich-text field (description) must use the live-state contract,
+//    mirroring currentBlocksRef. Snapshot / save payload must read the live ref,
+//    never a stale React closure. (See verify:rich-authoring-persistence for the
+//    full per-field matrix.)
+// ---------------------------------------------------------------------------
+console.log("\n6. Static guard: top-level description uses live-state refs...");
+
+assert(
+  "useLiveState hook is declared in LessonsBuilder",
+  /function useLiveState<T>\(/.test(builderSource)
+);
+assert(
+  "description is backed by a live ref (descriptionRef)",
+  /\[description,\s*setDescription,\s*descriptionRef\]\s*=\s*useLiveState/.test(builderSource)
+);
+assert(
+  "dirty snapshot reads description from descriptionRef.current (not closure)",
+  /const getSnapshot = \(\) => JSON\.stringify\(\{[\s\S]{0,400}description: descriptionRef\.current/.test(builderSource)
+);
+assert(
+  "save payload reads description from descriptionRef.current (not closure)",
+  /const payload = \{[\s\S]{0,400}description: descriptionRef\.current/.test(builderSource)
+);
+
 console.log("\n========================================================");
 console.log(`📊 SUMMARY: ${passed} passed, ${failed} failed.`);
 console.log("========================================================\n");
