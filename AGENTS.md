@@ -4534,3 +4534,61 @@ npm run verify:hardening      ✓   6 passed, 0 failed
 - Firestore performance should be observed after switching key attempt/integrity routes to awaited durable commits, especially high-frequency video progress heartbeats.
 - Async AI grading already stores rubric/guidance snapshots, but a future guard should verify the response/input hash before applying delayed AI results.
 - Rich-content rendering across every teacher review, answer-key, analytics, and student surface should continue to be covered by image/rich-content verification scripts.
+
+---
+
+## Equation/Chemistry Rendering Fix — 2026-06-05
+
+### Root cause
+
+MathLive's `math-field` custom element renders with its own default box model
+(border, background, padding) that persists in exported/stored HTML. When
+`RichContentRenderer` rendered saved Lexical HTML via `dangerouslySetInnerHTML`,
+no CSS was present to override these defaults, so formulas appeared as gray
+chips with mismatched font sizing. Additionally:
+
+- `exportDOM()` used `mf.innerHTML = formula` which risks HTML injection from
+  LaTeX source strings.
+- `importDOM` legacy fallback read `innerHTML` instead of the safer `textContent`.
+- `RichContentRenderer` did not import MathLive, so the custom element was
+  unregistered when the lesson editor was not loaded on the page.
+- UI labels used "formula" (internal term) instead of the teacher-friendly
+  "equation".
+- Save button always said "Insert Formula", even when editing an existing
+  equation.
+
+### Files changed
+
+- `src/components/RichContent/FormulaNode.tsx` — aria-label/title → "Edit
+  equation"; `exportDOM` uses `textContent`; legacy `importDOM` prefers
+  `data-formula` then `textContent`.
+- `src/components/RichContent/ChemistryNode.tsx` — same fixes; "Edit chemistry
+  equation".
+- `src/components/RichContent/FormulaEditorModal.tsx` — save button:
+  "Insert equation" (new) / "Save equation" (editing).
+- `src/components/RichContent/ChemistryFormulaModal.tsx` — save button:
+  "Insert chemistry" (new) / "Save chemistry" (editing).
+- `src/components/RichContent/RichContentRenderer.tsx` — added
+  `import "mathlive"` to register custom element for read-only rendering.
+- `src/index.css` — added global CSS for `[data-lexical-formula]`,
+  `[data-lexical-chemistry]`, and `math-field[readonly]`: transparent
+  background, no border, inherited font size, inline-block display.
+- `scripts/verify-rich-formulas.ts` — new static source-assertion script.
+- `package.json` — added `"verify:rich-formulas"` script.
+
+### Verification run
+
+- `npm run verify:rich-formulas` — 14 checks, all passed.
+- `npm run lint` — zero errors.
+- `npm run build` — clean build.
+- All existing verify:* scripts — passed.
+
+### Remaining limitations
+
+- MathLive shadow DOM internals (inner spacing, baseline of complex expressions)
+  are not fully controllable from outside CSS; very tall formulas may produce
+  minor vertical-rhythm disruption in dense text.
+- Chemistry editor uses a plain `<input>` for LaTeX (not a MathLive field), so
+  users must type valid LaTeX manually.
+- No automated browser tests for formula rendering; visual verification should
+  be done manually after MathLive upgrades.

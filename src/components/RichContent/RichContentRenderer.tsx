@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { X } from "lucide-react";
+import "mathlive"; // Registers math-field custom element for read-only formula rendering
 import { RichContent } from "./types";
 import { richContentSanitizer } from "./richContentSanitizer";
 import { getRenderableHtml } from "./richContentMigration";

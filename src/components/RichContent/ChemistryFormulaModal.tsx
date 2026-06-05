@@ -20,6 +20,7 @@ const CHEM_TEMPLATES = [
 
 export const ChemistryFormulaModal: React.FC<ChemistryFormulaModalProps> = ({ initialFormula = "", onSave, onClose }) => {
   const [latex, setLatex] = useState(initialFormula);
+  const isEditing = !!(initialFormula && initialFormula.trim().length > 0);
 
   const insertAtCursor = (val: string) => {
     setLatex(prev => prev + val);
@@ -84,7 +85,7 @@ export const ChemistryFormulaModal: React.FC<ChemistryFormulaModalProps> = ({ in
             Cancel
           </button>
           <button onClick={() => { onSave(latex); onClose(); }} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-bold flex items-center gap-1.5 shadow-sm">
-            <Save className="w-4 h-4" /> Insert Chemistry
+            <Save className="w-4 h-4" /> {isEditing ? "Save chemistry" : "Insert chemistry"}
           </button>
         </div>
       </div>
