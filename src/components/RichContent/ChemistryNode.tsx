@@ -58,8 +58,8 @@ function ChemistryComponent({ formula, nodeKey }: { formula: string; nodeKey: No
       }}
       role={isEditable ? 'button' : undefined}
       tabIndex={isEditable ? 0 : undefined}
-      aria-label={isEditable ? 'Edit chemistry formula' : undefined}
-      title={isEditable ? 'Click or press Enter to edit chemistry formula' : undefined}
+      aria-label={isEditable ? 'Edit chemistry equation' : undefined}
+      title={isEditable ? 'Click or press Enter to edit chemistry equation' : undefined}
     >
       {/* @ts-ignore */}
       <math-field
@@ -151,7 +151,8 @@ export class ChemistryNode extends DecoratorNode<React.JSX.Element> {
     const mf = document.createElement('math-field');
     mf.setAttribute('readonly', 'true');
     mf.setAttribute('data-chem', 'true');
-    mf.innerHTML = this.__formula;
+    // Use textContent (not innerHTML) to avoid HTML injection from LaTeX source
+    mf.textContent = this.__formula;
     element.appendChild(mf);
     return { element };
   }
@@ -176,7 +177,8 @@ export class ChemistryNode extends DecoratorNode<React.JSX.Element> {
 }
 
 function convertChemMathFieldElement(domNode: HTMLElement): DOMConversionOutput | null {
-  const formula = domNode.innerHTML;
+  // Prefer data-formula (safe attribute), then textContent; avoid innerHTML
+  const formula = domNode.getAttribute('data-formula') || domNode.textContent?.trim() || '';
   if (formula) {
     return { node: $createChemistryNode(formula) };
   }

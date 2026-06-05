@@ -58,8 +58,8 @@ function FormulaComponent({ formula, nodeKey }: { formula: string; nodeKey: Node
       }}
       role={isEditable ? 'button' : undefined}
       tabIndex={isEditable ? 0 : undefined}
-      aria-label={isEditable ? 'Edit formula' : undefined}
-      title={isEditable ? 'Click or press Enter to edit formula' : undefined}
+      aria-label={isEditable ? 'Edit equation' : undefined}
+      title={isEditable ? 'Click or press Enter to edit equation' : undefined}
     >
       {/* @ts-ignore */}
       <math-field
@@ -150,7 +150,8 @@ export class FormulaNode extends DecoratorNode<React.JSX.Element> {
     element.setAttribute('data-formula', this.__formula);
     const mf = document.createElement('math-field');
     mf.setAttribute('readonly', 'true');
-    mf.innerHTML = this.__formula;
+    // Use textContent (not innerHTML) to avoid HTML injection from LaTeX source
+    mf.textContent = this.__formula;
     element.appendChild(mf);
     return { element };
   }
@@ -175,7 +176,8 @@ export class FormulaNode extends DecoratorNode<React.JSX.Element> {
 }
 
 function convertMathFieldElement(domNode: HTMLElement): DOMConversionOutput | null {
-  const formula = domNode.innerHTML;
+  // Prefer data-formula (safe attribute), then textContent; avoid innerHTML
+  const formula = domNode.getAttribute('data-formula') || domNode.textContent?.trim() || '';
   if (formula) {
     return { node: $createFormulaNode(formula) };
   }

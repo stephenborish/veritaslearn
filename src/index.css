@@ -23,6 +23,37 @@
   background: #94a3b8;
 }
 
+/* ── Inline math formula and chemistry rendering ──────────────────────────── */
+/* Removes MathLive's default box/chip/border so formulas render inline with   */
+/* surrounding text. Applied globally: editor, preview, student player, and    */
+/* RichContentRenderer all share these rules.                                  */
+
+/* Wrapper spans stay inline alongside surrounding text */
+[data-lexical-formula],
+[data-lexical-chemistry] {
+  display: inline;
+  line-height: inherit;
+}
+
+/* Read-only math-field: transparent, borderless, inherits font size */
+[data-lexical-formula] math-field,
+[data-lexical-chemistry] math-field,
+math-field[readonly] {
+  display: inline-block;
+  vertical-align: middle;
+  font-size: 1em;
+  background: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  min-height: unset;
+  /* MathLive theme properties: suppress internal highlight artifacts */
+  --contains-highlight-background-color: transparent;
+  --highlight-background-color: transparent;
+}
+
 /*
  * Respect the user's reduced-motion preference everywhere. Motion components also
  * honor this via useReducedMotion(); this is a CSS belt-and-suspenders for any
