@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { RichContentRenderer, getPlainText } from "../RichContent/RichContentRenderer";
 import { 
   AlertTriangle, 
   ShieldCheck, 
@@ -41,6 +42,40 @@ function formatVideoTime(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function resolveMultipleChoiceText(block: any, responseValue: any): string | null {
+  if (!responseValue) return null;
+  const valStr = String(responseValue);
+  
+  if (block?.singleQuestion?.choices) {
+    const found = block.singleQuestion.choices.find((c: any) => c.id === valStr);
+    if (found) return getPlainText(found.text);
+  }
+  
+  if (block?.questionPool?.questions) {
+    for (const q of block.questionPool.questions) {
+      if (q.choices) {
+        const found = q.choices.find((c: any) => c.id === valStr);
+        if (found) return getPlainText(found.text);
+      }
+    }
+  }
+
+  if (block?.videoCheckpoints) {
+    for (const cp of block.videoCheckpoints) {
+      if (cp.questions) {
+        for (const q of cp.questions) {
+          if (q.choices) {
+            const found = q.choices.find((c: any) => c.id === valStr);
+            if (found) return getPlainText(found.text);
+          }
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 export default function StudentDossierModal({ 
@@ -183,7 +218,7 @@ export default function StudentDossierModal({
   const renderFormattedDate = (rawStr: string | null | undefined) => {
     if (!rawStr) return "N/A";
     const d = new Date(rawStr);
-    return `${d.toLocaleDateString()} at ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    return d.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   };
 
   // Count blurs, screens, seek blocks
@@ -625,9 +660,9 @@ export default function StudentDossierModal({
                       <div className="text-xs space-y-3 pt-1">
                         <div className="p-3 bg-slate-50 border border-slate-150 rounded-lg">
                           <span className="text-[8.5px] font-bold font-mono uppercase text-slate-400 block mb-1 tracking-wider">Question Stem Description</span>
-                          <p className="font-serif leading-relaxed text-slate-700 text-xs italic">
-                            "{block.singleQuestion?.stem || block.questionPool?.description || "Assessed lesson item"}"
-                          </p>
+                          <div className="font-serif leading-relaxed text-slate-700 text-xs italic">
+                            <RichContentRenderer content={block.singleQuestion?.stem || block.questionPool?.description || "Assessed lesson item"} />
+                          </div>
                         </div>
                         
                         {bResponse ? (
@@ -636,9 +671,16 @@ export default function StudentDossierModal({
                               <span className="text-[8.5px] font-bold font-mono uppercase text-slate-400 block mb-1.5 tracking-wider">Submitted Student Evaluation</span>
                               <div className="font-semibold text-slate-800 text-[12px] bg-slate-50 border border-slate-100 p-2.5 rounded-sm">
                                 {bResponse.type === "mc" ? (
-                                  <div className="flex items-center gap-1.5">
-                                    <span>Selected Choice Index Key:</span>
-                                    <strong className="text-[#0A192F]">{bResponse.responseText || bResponse.responseValue}</strong>
+                                  <div className="flex flex-col gap-1">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="text-slate-500 font-medium">Selected Answer:</span>
+                                      <span className="text-slate-900 font-extrabold">
+                                        {resolveMultipleChoiceText(block, bResponse.responseValue) || bResponse.responseText || "Selected choice unavailable"}
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] font-mono text-slate-400 font-medium leading-none">
+                                      Choice ID: {bResponse.responseValue}
+                                    </span>
                                   </div>
                                 ) : (
                                   <div className="font-sans leading-relaxed text-slate-800">
@@ -803,9 +845,23 @@ export default function StudentDossierModal({
                                   <div key={cr.id} className="p-3 bg-white border border-slate-205 rounded-lg mt-2 space-y-3 shadow-xs">
                                     <div className="p-2.5 bg-slate-50/60 border border-slate-100 rounded-sm">
                                       <span className="text-[8px] font-bold text-slate-400 tracking-wider font-mono uppercase block mb-1">Response Value</span>
-                                      <p className="font-bold text-slate-800 text-[11.5px]">
-                                        {cr.type === "mc" ? `Selected choice text: ${cr.responseText || cr.responseValue}` : cr.responseValue}
-                                      </p>
+                                      <div className="font-bold text-slate-800 text-[11.5px]">
+                                        {cr.type === "mc" ? (
+                                          <div className="flex flex-col gap-1">
+                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                              <span className="text-slate-500 font-medium">Selected Answer:</span>
+                                              <span className="text-slate-900 font-extrabold">
+                                                {resolveMultipleChoiceText(block, cr.responseValue) || cr.responseText || "Selected choice unavailable"}
+                                              </span>
+                                            </div>
+                                            <span className="text-[10px] font-mono text-slate-400 font-medium leading-none">
+                                              Choice ID: {cr.responseValue}
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          cr.responseValue
+                                        )}
+                                      </div>
                                     </div>
 
                                     {/* CP Correctness info */}

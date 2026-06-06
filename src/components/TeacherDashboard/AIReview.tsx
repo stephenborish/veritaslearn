@@ -878,14 +878,20 @@ export default function AIReview({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {studentSignalEntries.map(([sid, sigs]) => {
               const student = students.find((s) => s.id === sid);
-              const attempt = attempts.find((a) => a.studentId === sid);
+              const firstSig = sigs[0];
+              const attempt = (firstSig?.attemptId ? attempts.find((a) => a.id === firstSig.attemptId) : null) || attempts.find((a) => a.studentId === sid);
               const lesson = attempt ? lessons.find((l) => l.id === attempt.lessonId) : null;
               const eventTypes = [...new Set(sigs.map((s) => s.eventType))];
               return (
                 <div
                   key={sid}
                   className="bg-white border border-amber-200 rounded p-4 shadow-sm hover:shadow transition cursor-pointer"
-                  onClick={() => attempt && lesson && onOpenDossier(sid, lesson.id)}
+                  onClick={() => {
+                    const finalLessonId = lesson?.id || attempt?.lessonId || lessons[0]?.id || "";
+                    if (finalLessonId) {
+                      onOpenDossier(sid, finalLessonId);
+                    }
+                  }}
                 >
                   <div className="flex justify-between items-start mb-2">
                     <div>

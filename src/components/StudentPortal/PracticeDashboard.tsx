@@ -84,9 +84,11 @@ export default function PracticeDashboard({
     }
   };
 
-  if (!enrollmentsLoaded && idToken) {
-    fetchEnrollments();
-  }
+  useEffect(() => {
+    if (!enrollmentsLoaded && idToken) {
+      fetchEnrollments();
+    }
+  }, [enrollmentsLoaded, idToken]);
 
   const handleJoin = async () => {
     if (!joinCode.trim()) return;

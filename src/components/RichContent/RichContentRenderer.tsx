@@ -73,3 +73,15 @@ export const RichContentRenderer: React.FC<{
     </>
   );
 };
+
+export function getPlainText(content: any): string {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (typeof content === "object" && content !== null) {
+    if (typeof content.plainText === "string") return content.plainText;
+    if (typeof content.html === "string") {
+      return content.html.replace(/<[^>]*>/g, "").trim();
+    }
+  }
+  return String(content);
+}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   ShieldAlert, Check, X, Expand, RefreshCw, AlertCircle, ArrowLeft,
   ChevronRight, ChevronLeft, Lock, Info, AlertTriangle, BookOpen, Video, FileQuestion, Flag,
@@ -114,6 +114,13 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const wasPlayingRef = useRef(false);
   const checkpointResumeTimestampRef = useRef<number>(0);
   const [furthestMaxTimestamp, setFurthestMaxTimestamp] = useState(0);
+  const furthestMaxTimestampRef = useRef<number>(0);
+  const lastNativeTimeRef = useRef<number>(0);
+
+  const updateFurthestMaxTimestamp = (time: number) => {
+    setFurthestMaxTimestamp(time);
+    furthestMaxTimestampRef.current = time;
+  };
   const [currentSpeed, setCurrentSpeed] = useState<number>(1);
   const [activeCheckpoint, setActiveCheckpoint] = useState<any>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
@@ -259,7 +266,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       if (savedFurthest && Object.keys(savedFurthest).length > 0) {
         const blockId = runtimeBlocks[data.attempt.currentBlockIndex]?.id;
         if (blockId && savedFurthest[blockId]) {
-          setFurthestMaxTimestamp(savedFurthest[blockId]);
+          updateFurthestMaxTimestamp(savedFurthest[blockId]);
         }
       }
 
@@ -360,7 +367,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       inactiveTimeRef.current = 0;
 
       if (data.success && data.furthestMaxTimestamp !== undefined) {
-        setFurthestMaxTimestamp(data.furthestMaxTimestamp);
+        updateFurthestMaxTimestamp(data.furthestMaxTimestamp);
         setAttemptData((prev: any) => {
           if (!prev) return prev;
           return {
@@ -392,7 +399,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     if (!block || block.type !== "video") return;
     const duration = block.duration ?? block.videoDuration ?? 0;
     if (duration > 0) {
-      setFurthestMaxTimestamp(duration);
+      updateFurthestMaxTimestamp(duration);
       await flushVideoProgress(Math.floor(duration));
     }
   };
@@ -618,14 +625,14 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     // Check milestones for progress sync
     const requiredSeconds = duration > 0 ? duration * 0.9 : 0;
     if (duration > 0 && currentTime >= duration - 1) {
-      if (furthestMaxTimestamp < duration) {
-        setFurthestMaxTimestamp(duration);
+      if (furthestMaxTimestampRef.current < duration) {
+        updateFurthestMaxTimestamp(duration);
         flushVideoProgress(duration);
       }
     } else if (duration > 0 && currentTime >= requiredSeconds) {
       // If we just hit the 90% milestone, flush to unlock Next button promptly
-      if (furthestMaxTimestamp < requiredSeconds) {
-        setFurthestMaxTimestamp(currentTime);
+      if (furthestMaxTimestampRef.current < requiredSeconds) {
+        updateFurthestMaxTimestamp(currentTime);
         flushVideoProgress(currentTime);
       }
     }
@@ -635,20 +642,25 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const video = videoRef.current;
       if (!video) return;
       const allowedGap = 3;
-      if (currentTime > furthestMaxTimestamp + allowedGap) {
-        video.currentTime = furthestMaxTimestamp;
+      const lastTime = lastNativeTimeRef.current;
+      lastNativeTimeRef.current = currentTime;
+
+      const isIllegalJump = currentTime > furthestMaxTimestampRef.current + allowedGap && (currentTime - lastTime > allowedGap || lastTime === 0);
+
+      if (isIllegalJump) {
+        video.currentTime = furthestMaxTimestampRef.current;
         logIntegritySignal("seek_attempt_blocked", "high", {
           detail: "Attempted to skip forward in restricted video.",
           requestedSeekPosition: Math.floor(currentTime),
-          furthestAllowedValue: furthestMaxTimestamp,
+          furthestAllowedValue: Math.floor(furthestMaxTimestampRef.current),
         });
         return;
-      } else if (currentTime > furthestMaxTimestamp) {
-        setFurthestMaxTimestamp(currentTime);
+      } else if (currentTime > furthestMaxTimestampRef.current) {
+        updateFurthestMaxTimestamp(currentTime);
       }
     } else {
-      if (currentTime > furthestMaxTimestamp) {
-        setFurthestMaxTimestamp(currentTime);
+      if (currentTime > furthestMaxTimestampRef.current) {
+        updateFurthestMaxTimestamp(currentTime);
       }
     }
 
@@ -716,7 +728,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const savedFurthest = attemptData?.furthestVideoTimestamps?.[targetBlock?.id] || 0;
       setCurrentBlockIndex(nextIdx);
       setActiveCheckpoint(null);
-      setFurthestMaxTimestamp(savedFurthest);
+      updateFurthestMaxTimestamp(savedFurthest);
+      lastNativeTimeRef.current = 0;
       setViolationBanner((prev: ViolationBanner) => ({ ...prev, show: false }));
     } catch {
       setNavigationError("Unable to navigate. Please check your connection and try again.");
@@ -1014,7 +1027,46 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   const activeBlock = blocks[currentBlockIndex];
   const totalBlocks = blocks.length;
-  const progressPercent = totalBlocks > 0 ? Math.round(((currentBlockIndex) / totalBlocks) * 100) : 0;
+
+  const studentProgression = useMemo(() => {
+    if (!blocks || blocks.length === 0) return { completed: 0, total: 0, percent: 0 };
+    
+    let totalStepsCount = 0;
+    let completedStepsCount = 0;
+    
+    blocks.forEach((b: any, idx: number) => {
+      // 1. Add the block itself
+      totalStepsCount++;
+      const blockStatus = getBlockStatus(b, idx);
+      const isBlockCompleted = blockStatus === "completed" || blockStatus === "current_complete";
+      if (isBlockCompleted) {
+        completedStepsCount++;
+      } else if (idx === currentBlockIndex && b.type === "video") {
+        // Partial video watched credit
+        const dur = b.duration ?? b.videoDuration ?? 0;
+        const furthest = attemptData?.furthestVideoTimestamps?.[b.id] || 0;
+        if (dur > 0 && furthest >= dur * 0.9) {
+          completedStepsCount++;
+        }
+      }
+      
+      // 2. Add checkpoints if video
+      if (b.type === "video" && b.videoCheckpoints && b.videoCheckpoints.length > 0) {
+        b.videoCheckpoints.forEach((cp: any) => {
+          totalStepsCount++;
+          const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
+          if (allAnswered || idx < currentBlockIndex) {
+            completedStepsCount++;
+          }
+        });
+      }
+    });
+    
+    const percent = totalStepsCount > 0 ? Math.round((completedStepsCount / totalStepsCount) * 100) : 0;
+    return { completed: completedStepsCount, total: totalStepsCount, percent };
+  }, [blocks, currentBlockIndex, submittedLocal, attemptData, assignments]);
+
+  const progressPercent = studentProgression.percent;
   const assignedSet = assignments.filter((asg: any) => asg.blockId === activeBlock?.id);
   const isLastBlock = currentBlockIndex === totalBlocks - 1;
 
@@ -1644,9 +1696,15 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                         restrictSeeking={attemptData?.lesson?.settings?.restrictSeeking ?? true}
                         furthestTimestamp={furthestMaxTimestamp}
                         startTimestamp={checkpointResumeTimestampRef.current > 0 && activeCheckpoint ? checkpointResumeTimestampRef.current : 0}
-                        onReady={(duration) => {
-                          if (duration > 0 && !activeBlock.duration) {
-                            // Update local block duration for completion checks when not pre-set
+                        onReady={(runtimeDuration) => {
+                          if (runtimeDuration > 0 && !activeBlock.duration) {
+                            setBlocks((prevBlocks) =>
+                              prevBlocks.map((b) =>
+                                b.id === activeBlock.id
+                                  ? { ...b, duration: runtimeDuration }
+                                  : b
+                              )
+                            );
                           }
                         }}
                         onPlay={handleVideoPlay}
@@ -1682,6 +1740,16 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                       onLoadedMetadata={() => {
                         if (videoRef.current) {
                           videoRef.current.playbackRate = currentSpeed;
+                          const dur = videoRef.current.duration;
+                          if (dur > 0 && !activeBlock.duration) {
+                            setBlocks((prevBlocks) =>
+                              prevBlocks.map((b) =>
+                                b.id === activeBlock.id
+                                  ? { ...b, duration: dur }
+                                  : b
+                              )
+                            );
+                          }
                           if (activeCheckpoint && checkpointResumeTimestampRef.current > 0) {
                             videoRef.current.currentTime = checkpointResumeTimestampRef.current;
                           }

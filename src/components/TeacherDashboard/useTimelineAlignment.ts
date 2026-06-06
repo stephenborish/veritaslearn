@@ -87,8 +87,13 @@ export function useTimelineAlignment({
             : 'Question'),
         index: stepIndex++,
         isPractice: !!b.isPractice,
-        points:
-          b.singleQuestion?.points || b.questionPool?.questions?.[0]?.points || 0,
+        points: b.isPractice
+          ? 0
+          : b.singleQuestion
+          ? (b.singleQuestion.points || 0)
+          : b.questionPool
+          ? (b.questionPool.questions?.[0]?.points || 0) * (b.questionPool.numToSelect || 1)
+          : 0,
         block: b,
       });
 
@@ -99,16 +104,17 @@ export function useTimelineAlignment({
       ) {
         // Sort checkpoints by time
         const sortedCPs = [...b.videoCheckpoints].sort(
-          (c1: any, c2: any) => c1.timeSeconds - c2.timeSeconds
+          (c1: any, c2: any) => (c1.timestamp ?? c1.timeSeconds ?? 0) - (c2.timestamp ?? c2.timeSeconds ?? 0)
         );
         sortedCPs.forEach((cp: any) => {
+          const cpTime = cp.timestamp ?? cp.timeSeconds ?? 0;
           steps.push({
             id: cp.id,
             blockId: b.id,
             checkpointId: cp.id,
             type: 'checkpoint',
-            title: `Check at ${Math.floor(cp.timeSeconds / 60)}:${String(
-              cp.timeSeconds % 60
+            title: `Check at ${Math.floor(cpTime / 60)}:${String(
+              cpTime % 60
             ).padStart(2, '0')}`,
             index: stepIndex++,
             isPractice: !!cp.isPractice,
@@ -191,14 +197,26 @@ export function useTimelineAlignment({
     }
 
     if (step.type === 'reading') {
-      const hasPassed =
-        attempt.currentBlockIndex > (step.block?.orderIndex || 0) ||
-        attempt.status === 'completed';
-      if (hasPassed) {
+      const itemIndex = step.block?.orderIndex || 0;
+      const isCompleted = attempt.status === 'completed' || attempt.currentBlockIndex > itemIndex;
+      const isCurrent = attempt.currentBlockIndex === itemIndex && attempt.status !== 'completed';
+      
+      if (isCompleted) {
         return {
           status: 'viewed',
           color: 'green',
           label: 'Viewed',
+          score: null,
+          maxScore: null,
+          signalSeverity: highestSeverity,
+          signals: stepSignals,
+          attempt,
+        };
+      } else if (isCurrent) {
+        return {
+          status: 'in_progress',
+          color: 'blue',
+          label: 'Viewing',
           score: null,
           maxScore: null,
           signalSeverity: highestSeverity,
@@ -228,7 +246,43 @@ export function useTimelineAlignment({
     );
 
     if (!response) {
-      if (attempt.status === 'completed') {
+      // Look for a saved draft
+      const possibleQuestionIds: string[] = [];
+      if (step.checkpoint) {
+        if (step.checkpoint.question?.id) possibleQuestionIds.push(step.checkpoint.question.id);
+        if (Array.isArray(step.checkpoint.questions)) {
+          step.checkpoint.questions.forEach((q: any) => {
+            if (q?.id) possibleQuestionIds.push(q.id);
+          });
+        }
+      } else if (step.block) {
+        if (step.block.singleQuestion?.id) possibleQuestionIds.push(step.block.singleQuestion.id);
+        if (step.block.questionPool?.questions) {
+          step.block.questionPool.questions.forEach((q: any) => {
+            if (q?.id) possibleQuestionIds.push(q.id);
+          });
+        }
+      }
+
+      const hasDraft = possibleQuestionIds.some(
+        (qId) => attempt.draftResponses?.[qId] && attempt.draftResponses[qId].trim() !== ""
+      );
+
+      if (hasDraft) {
+        return {
+          status: 'draft',
+          color: 'blue',
+          label: 'Draft Saved',
+          score: null,
+          maxScore: step.points,
+          signalSeverity: highestSeverity,
+          signals: stepSignals,
+          attempt,
+        };
+      }
+
+      const isPastBlock = attempt.status === 'completed' || attempt.currentBlockIndex > (step.block?.orderIndex || 0);
+      if (isPastBlock) {
         return {
           status: 'missing',
           color: 'red',

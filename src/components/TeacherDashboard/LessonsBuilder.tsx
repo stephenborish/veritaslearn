@@ -1171,20 +1171,6 @@ export default function LessonsBuilder({
       issues.push({ message: "Add at least one video, reading, or question.", target: "setup" });
     }
 
-    // Helper choice blank check
-    const isChoiceNonBlank = (c: any): boolean => {
-      if (!c) return false;
-      const t = c.text;
-      if (!t) return false;
-      if (typeof t === "string") return t.trim().length > 0;
-      if (typeof t === "object") {
-        const plain = (t.plainText || "").trim();
-        const html = (t.html || "").replace(/<[^>]*>/g, "").trim();
-        return plain.length > 0 || html.length > 0;
-      }
-      return false;
-    };
-
     // Advanced question inspector
     const checkQuestion = (q: any, blockIdx: number, contextLabel: string, isPractice: boolean) => {
       if (!q) {

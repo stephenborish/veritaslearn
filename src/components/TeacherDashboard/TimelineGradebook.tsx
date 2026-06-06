@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef } from "react";
+import { RichContentRenderer, getPlainText } from "../RichContent/RichContentRenderer";
 import {
   CheckSquare, HelpCircle, Minus, AlertCircle, Search, X, Eye, 
   Clock, RotateCcw, ThumbsUp, Video, FileText, LayoutList, 
@@ -8,6 +9,40 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useTimelineAlignment } from "./useTimelineAlignment";
+
+function resolveMultipleChoiceText(block: any, responseValue: any): string | null {
+  if (!responseValue) return null;
+  const valStr = String(responseValue);
+  
+  if (block?.singleQuestion?.choices) {
+    const found = block.singleQuestion.choices.find((c: any) => c.id === valStr);
+    if (found) return getPlainText(found.text);
+  }
+  
+  if (block?.questionPool?.questions) {
+    for (const q of block.questionPool.questions) {
+      if (q.choices) {
+        const found = q.choices.find((c: any) => c.id === valStr);
+        if (found) return getPlainText(found.text);
+      }
+    }
+  }
+
+  if (block?.videoCheckpoints) {
+    for (const cp of block.videoCheckpoints) {
+      if (cp.questions) {
+        for (const q of cp.questions) {
+          if (q.choices) {
+            const found = q.choices.find((c: any) => c.id === valStr);
+            if (found) return getPlainText(found.text);
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
 
 interface GradebookProps {
   students: any[];
@@ -477,12 +512,28 @@ export default function TimelineGradebook({
                         <div className="p-4">
                            {activeDrawerStepDef.block?.singleQuestion?.stem || activeDrawerStepDef.checkpoint?.question?.stem ? (
                              <div className="prose prose-sm prose-slate max-w-none text-slate-600 mb-4 bg-slate-50 p-3 rounded-md border border-slate-100">
-                                <strong>Prompt:</strong> {activeDrawerStepDef.block?.singleQuestion?.stem || activeDrawerStepDef.checkpoint?.question?.stem}
+                                <strong>Prompt:</strong> <div className="inline-block align-top ml-1"><RichContentRenderer content={activeDrawerStepDef.block?.singleQuestion?.stem || activeDrawerStepDef.checkpoint?.question?.stem} /></div>
                              </div>
                            ) : null}
                            
                            <div className="text-slate-800 font-medium whitespace-pre-wrap">
-                              {activeDrawerStepData.response.responseText || activeDrawerStepData.response.responseValue}
+                              {activeDrawerStepData.response.type === "mc" ? (
+                                 <div className="flex flex-col gap-1">
+                                   <div className="flex items-center gap-1.5 flex-wrap">
+                                     <span className="text-[#64748B] font-medium text-xs">Selected Answer:</span>
+                                     <span className="text-slate-900 font-extrabold text-xs">
+                                       {resolveMultipleChoiceText(activeDrawerStepDef.block, activeDrawerStepData.response.responseValue) || activeDrawerStepData.response.responseText || "Selected choice unavailable"}
+                                     </span>
+                                   </div>
+                                   <span className="text-[10px] font-mono text-slate-400 font-semibold leading-none mt-1">
+                                     Choice ID: {activeDrawerStepData.response.responseValue}
+                                   </span>
+                                 </div>
+                               ) : (
+                                 <div className="font-sans leading-relaxed text-slate-800 text-sm">
+                                   {activeDrawerStepData.response.responseValue || <span className="text-slate-400 italic font-mono">(Empty response provided)</span>}
+                                 </div>
+                               )}
                            </div>
                         </div>
                      </div>
@@ -562,7 +613,7 @@ export default function TimelineGradebook({
                                    <div className="font-bold text-sm text-slate-800">{getSignalLabel(sig.type)}</div>
                                    <div className="text-xs text-slate-500 mt-1">{sig.details || "No additional context."}</div>
                                    <div className="text-[10px] font-mono text-slate-400 mt-2 uppercase tracking-wide">
-                                     Recorded {new Date(sig.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                     Recorded {new Date(sig.timestamp).toLocaleDateString([], { month: "short", day: "numeric" })}, {new Date(sig.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                    </div>
                                  </div>
                               </div>

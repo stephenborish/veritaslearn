@@ -152,19 +152,30 @@ const YouTubeLessonPlayer = forwardRef<YouTubeLessonPlayerHandle, Props>(
           const state = player.getPlayerState();
           const isPlaying = state === 1; // YT.PlayerState.PLAYING
           const currentTime = player.getCurrentTime() ?? 0;
-          currentTimeRef.current = currentTime;
+          const lastTime = currentTimeRef.current;
 
           if (isPlaying) {
             onTimeUpdate(currentTime);
 
+            // Instantly update furthestRef.current for normal playing progression to prevent asynchronous state lag blocks
+            if (currentTime > furthestRef.current) {
+              const allowedGap = 3;
+              const isIllegalJump = currentTime > furthestRef.current + allowedGap && (currentTime - lastTime > allowedGap || lastTime === 0);
+              if (!isIllegalJump) {
+                furthestRef.current = currentTime;
+              }
+            }
+
             if (restrictSeeking) {
               const allowedGap = 3;
-              if (currentTime > furthestRef.current + allowedGap) {
+              const isIllegalJump = currentTime > furthestRef.current + allowedGap && (currentTime - lastTime > allowedGap || lastTime === 0);
+              if (isIllegalJump) {
                 player.seekTo(furthestRef.current, true);
-                if (onSeekBlocked) onSeekBlocked(Math.floor(currentTime), furthestRef.current);
+                if (onSeekBlocked) onSeekBlocked(Math.floor(currentTime), Math.floor(furthestRef.current));
               }
             }
           }
+          currentTimeRef.current = currentTime;
         } catch {
           // Player may not be ready yet; ignore
         }
