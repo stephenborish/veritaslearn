@@ -17,6 +17,7 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronUp,
+  Zap,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
@@ -122,6 +123,17 @@ export default function AIReview({
   const [actionState, setActionState] = useState<Record<string, "idle" | "loading" | "done" | "error">>({});
   const [filterAssignment, setFilterAssignment] = useState<string>("");
   const [filterCategory, setFilterCategory] = useState<string>("");
+  const [sortBy, setSortBy] = useState<string>("confidenceAsc");
+
+  // Quick Grade Mode & Modal States
+  const [quickGradeMode, setQuickGradeMode] = useState<boolean>(false);
+  const [quickGradeItem, setQuickGradeItem] = useState<QueueItem | null>(null);
+  const [quickScore, setQuickScore] = useState<number>(0);
+  const [quickNotes, setQuickNotes] = useState<string>("");
+  const [quickFeedback, setQuickFeedback] = useState<string>("");
+  const [quickGradeLoading, setQuickGradeLoading] = useState<boolean>(false);
+  const [quickGradeError, setQuickGradeError] = useState<string | null>(null);
+  const [quickGradeSuccess, setQuickGradeSuccess] = useState<boolean>(false);
 
   // Integrity signals
   const highSignals = signals.filter((s) => s.severity === "high");
@@ -213,6 +225,75 @@ export default function AIReview({
   const handleApprove = (item: QueueItem) =>
     apiAction(`/api/ai-review/${item.responseId}/approve`, "POST", {}, item.responseId);
 
+  const openQuickGrade = (item: QueueItem) => {
+    setQuickGradeItem(item);
+    setQuickScore(item.teacherOverride?.score ?? item.aiScore ?? 0);
+    setQuickNotes(item.teacherOverride?.notes || overrideNotes[item.responseId] || "");
+    setQuickFeedback(item.aiFeedback || studentFeedback[item.responseId] || "");
+    setQuickGradeError(null);
+    setQuickGradeSuccess(false);
+  };
+
+  const handleQuickGradeSubmit = async () => {
+    if (!quickGradeItem || !idToken) return;
+    setQuickGradeLoading(true);
+    setQuickGradeError(null);
+    try {
+      const res = await fetch(`/api/ai-review/${quickGradeItem.responseId}/override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          score: quickScore,
+          teacherOnlyNotes: quickNotes,
+          studentFacingFeedback: quickFeedback,
+        }),
+      });
+      if (res.ok) {
+        setQuickGradeSuccess(true);
+        setOverrideScores((prev) => ({ ...prev, [quickGradeItem.responseId]: quickScore }));
+        setOverrideNotes((prev) => ({ ...prev, [quickGradeItem.responseId]: quickNotes }));
+        setStudentFeedback((prev) => ({ ...prev, [quickGradeItem.responseId]: quickFeedback }));
+        await loadQueue();
+        if (onRefresh) onRefresh();
+        setTimeout(() => {
+          setQuickGradeItem(null);
+        }, 800);
+      } else {
+        setQuickGradeError("Failed to save grade. Please check constraints.");
+      }
+    } catch (e) {
+      setQuickGradeError("Network error occurred while saving grade.");
+    } finally {
+      setQuickGradeLoading(false);
+    }
+  };
+
+  const handleQuickGradeApprove = async () => {
+    if (!quickGradeItem || !idToken) return;
+    setQuickGradeLoading(true);
+    setQuickGradeError(null);
+    try {
+      const res = await fetch(`/api/ai-review/${quickGradeItem.responseId}/approve`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      if (res.ok) {
+        setQuickGradeSuccess(true);
+        await loadQueue();
+        if (onRefresh) onRefresh();
+        setTimeout(() => {
+          setQuickGradeItem(null);
+        }, 850);
+      } else {
+        setQuickGradeError("Failed to approve AI score.");
+      }
+    } catch {
+      setQuickGradeError("Network error.");
+    } finally {
+      setQuickGradeLoading(false);
+    }
+  };
+
   const handleOverride = (item: QueueItem) => {
     const score = overrideScores[item.responseId] ?? item.aiScore ?? 0;
     const notes = overrideNotes[item.responseId] || "";
@@ -245,12 +326,33 @@ export default function AIReview({
     anomalies: anomalies.length,
   };
 
-  const visibleQueueItems =
+  const filteredQueueItems =
     activeFilter === "all" ||
     activeFilter === "integrity" ||
     activeFilter === "anomalies"
       ? queueItems
       : queueItems.filter((i) => i.reviewStatus === activeFilter);
+
+  const visibleQueueItems = [...filteredQueueItems].sort((a, b) => {
+    if (sortBy === "confidenceAsc") {
+      const cA = a.confidence !== undefined ? a.confidence : 1;
+      const cB = b.confidence !== undefined ? b.confidence : 1;
+      return cA - cB;
+    } else if (sortBy === "confidenceDesc") {
+      const cA = a.confidence !== undefined ? a.confidence : 1;
+      const cB = b.confidence !== undefined ? b.confidence : 1;
+      return cB - cA;
+    } else if (sortBy === "submittedAtDesc") {
+      const tA = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
+      const tB = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
+      return tB - tA;
+    } else if (sortBy === "submittedAtAsc") {
+      const tA = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
+      const tB = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
+      return tA - tB;
+    }
+    return 0;
+  });
 
   const showSAQueue =
     activeFilter !== "integrity" && activeFilter !== "anomalies";
@@ -308,12 +410,28 @@ export default function AIReview({
         </div>
 
         {/* Refinement filters */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Quick Grade Mode Toggle */}
+          <button
+            onClick={() => setQuickGradeMode(!quickGradeMode)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded border shadow-sm transition cursor-pointer ${
+              quickGradeMode
+                ? "bg-amber-500 border-amber-500 text-white hover:bg-amber-600"
+                : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+            }`}
+            title="When active, clicking any response in the list will open the Quick Grade floating modal directly instead of expanding"
+          >
+            <Zap className={`w-3.5 h-3.5 ${quickGradeMode ? "fill-white text-white" : "text-amber-500"}`} />
+            Quick Grade Mode: <span className="font-extrabold">{quickGradeMode ? "ON" : "OFF"}</span>
+          </button>
+
+          <span className="h-4 w-px bg-slate-200 hidden sm:inline-block"></span>
+
           <Filter className="w-3.5 h-3.5 text-slate-400" />
           <select
             value={filterAssignment}
             onChange={(e) => setFilterAssignment(e.target.value)}
-            className="text-[10px] border border-slate-200 rounded px-2 py-1 text-slate-600 bg-white focus:outline-none"
+            className="text-[10px] border border-slate-200 rounded px-2 py-1.5 text-slate-600 bg-white focus:outline-none"
           >
             <option value="">All Assignments</option>
             {uniqueAssignments.map((a: any) => (
@@ -323,11 +441,22 @@ export default function AIReview({
           <select
             value={filterCategory}
             onChange={(e) => setFilterCategory(e.target.value)}
-            className="text-[10px] border border-slate-200 rounded px-2 py-1 text-slate-600 bg-white focus:outline-none"
+            className="text-[10px] border border-slate-200 rounded px-2 py-1.5 text-slate-600 bg-white focus:outline-none"
           >
             <option value="">All Categories</option>
             <option value="assessment">Assessment</option>
             <option value="practice">Practice</option>
+          </select>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+            className="text-[10px] border border-amber-200 rounded px-2 py-1.5 text-amber-950 bg-amber-50 font-semibold focus:outline-none hover:bg-amber-100 hover:border-amber-300 transition"
+            title="Sort to prioritize reviewing responses where the AI model was less certain"
+          >
+            <option value="confidenceAsc">Sort: Uncertain AI First (Prioritize)</option>
+            <option value="confidenceDesc">Sort: Certain AI First</option>
+            <option value="submittedAtDesc">Sort: Newest Submissions</option>
+            <option value="submittedAtAsc">Sort: Oldest Submissions</option>
           </select>
           <button
             onClick={loadQueue}
@@ -375,8 +504,18 @@ export default function AIReview({
               >
                 {/* Header */}
                 <div
-                  className="bg-slate-50 border-b border-slate-200 px-5 py-3 flex flex-wrap justify-between items-center gap-2 cursor-pointer"
-                  onClick={() => setExpandedItem(isExpanded ? null : item.responseId)}
+                  className={`border-b border-slate-200 px-5 py-3 flex flex-wrap justify-between items-center gap-2 cursor-pointer transition ${
+                    quickGradeMode
+                      ? "bg-amber-50/40 hover:bg-amber-50 border-l-2 border-l-amber-500"
+                      : "bg-slate-50 hover:bg-slate-100 border-l-2 border-l-transparent"
+                  }`}
+                  onClick={() => {
+                    if (quickGradeMode) {
+                      openQuickGrade(item);
+                    } else {
+                      setExpandedItem(isExpanded ? null : item.responseId);
+                    }
+                  }}
                 >
                   <div className="flex items-center gap-3 flex-wrap">
                     <div>
@@ -390,11 +529,38 @@ export default function AIReview({
                       {item.isPractice ? "Practice" : "Assessment"}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    {/* Floating Quick Grade button directly visible on header */}
+                    <button
+                      onClick={() => openQuickGrade(item)}
+                      className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white border border-amber-500 rounded text-[9px] font-extrabold uppercase tracking-widest flex items-center gap-1 transition cursor-pointer shadow-sm"
+                      title="Open immediate float grading entry modal"
+                    >
+                      <Zap className="w-3 h-3 fill-white" /> Quick Grade
+                    </button>
+
                     {/* Status badge */}
                     <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border ${statusMeta?.color} ${statusMeta?.bg} ${statusMeta?.border}`}>
                       {statusMeta?.label}
                     </span>
+                    {item.confidence !== undefined && (
+                      <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border flex items-center gap-1 ${
+                        item.confidence < 0.65
+                          ? "bg-rose-50 text-rose-700 border-rose-200 animate-pulse"
+                          : item.confidence < 0.85
+                          ? "bg-amber-50 text-amber-700 border-amber-200"
+                          : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      }`} title={`AI model completed this grading with ${Math.round(item.confidence * 100)}% confidence.`}>
+                        {item.confidence < 0.65 ? (
+                          <AlertTriangle className="w-3 h-3 text-rose-600" />
+                        ) : item.confidence < 0.85 ? (
+                          <AlertCircle className="w-3 h-3 text-amber-500" />
+                        ) : (
+                          <Check className="w-3 h-3 text-emerald-600" />
+                        )}
+                        <span>AI Confidence: {Math.round(item.confidence * 100)}%</span>
+                      </span>
+                    )}
                     {item.isLowEffort && (
                       <span className="text-[9px] font-mono uppercase bg-rose-50 text-rose-700 border border-rose-300 font-bold px-2 py-0.5 rounded-sm flex items-center gap-1">
                         <AlertTriangle className="w-3 h-3" /> Low Effort
@@ -405,7 +571,12 @@ export default function AIReview({
                         Override Applied
                       </span>
                     )}
-                    {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                    <button
+                      onClick={() => setExpandedItem(isExpanded ? null : item.responseId)}
+                      className="p-1 rounded hover:bg-slate-200 transition text-slate-500"
+                    >
+                      {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
+                    </button>
                   </div>
                 </div>
 
@@ -414,8 +585,14 @@ export default function AIReview({
                   <div className="px-5 py-2 flex items-center gap-4 text-[10px] font-mono text-slate-500 border-b border-slate-100">
                     <span>AI: <strong className="text-slate-700">{item.aiScore ?? "—"}/{item.maxScore ?? "—"}</strong></span>
                     {item.confidence !== undefined && (
-                      <span className={item.confidence > 0.8 ? "text-emerald-600" : "text-amber-600"}>
-                        {Math.round(item.confidence * 100)}% confidence
+                      <span className={`font-semibold ${
+                        item.confidence < 0.65
+                          ? "text-rose-600 font-bold animate-pulse"
+                          : item.confidence < 0.85
+                          ? "text-amber-600"
+                          : "text-emerald-600"
+                      }`}>
+                        {Math.round(item.confidence * 100)}% AI Confidence
                       </span>
                     )}
                     <span className="truncate max-w-xs italic text-slate-400">
@@ -515,11 +692,13 @@ export default function AIReview({
                                   <div className="flex justify-between border-b border-slate-100 pb-1.5">
                                     <span className="text-xs text-slate-500">Confidence</span>
                                     <span className={`text-[9px] uppercase font-mono font-bold px-1.5 py-0.5 rounded-sm border ${
-                                      item.confidence > 0.8
-                                        ? "bg-emerald-50 text-emerald-800 border-emerald-100"
-                                        : "bg-amber-50 text-amber-800 border-amber-100"
+                                      item.confidence < 0.65
+                                        ? "bg-rose-50 text-rose-800 border-rose-100 animate-pulse"
+                                        : item.confidence < 0.85
+                                        ? "bg-amber-50 text-amber-800 border-amber-100"
+                                        : "bg-emerald-50 text-emerald-800 border-emerald-100"
                                     }`}>
-                                      {Math.round(item.confidence * 100)}%
+                                      {Math.round(item.confidence * 100)}% {item.confidence < 0.65 ? "(Low)" : item.confidence < 0.85 ? "(Medium)" : "(High)"}
                                     </span>
                                   </div>
                                 )}
@@ -774,6 +953,240 @@ export default function AIReview({
           </div>
         </div>
       )}
+
+      {/* Quick Grade Floating Modal */}
+      <AnimatePresence>
+        {quickGradeItem && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              className="bg-white rounded-lg border border-slate-200 shadow-xl max-w-xl w-full flex flex-col max-h-[90vh]"
+            >
+              {/* Modal Header */}
+              <div className="flex justify-between items-center px-5 py-4 border-b border-slate-100 bg-slate-50/50 shrink-0">
+                <div className="flex items-center gap-2">
+                  <div className="p-1 bg-amber-50 rounded">
+                    <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800">Quick Grade Response</h3>
+                    <p className="text-[10px] text-slate-400 font-mono">
+                      {quickGradeItem.studentName} · {quickGradeItem.studentEmail}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setQuickGradeItem(null)}
+                  className="text-slate-400 hover:text-slate-600 p-1.5 rounded-full hover:bg-slate-100 transition cursor-pointer"
+                  aria-label="Close modal"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-5 overflow-y-auto space-y-4 flex-1">
+                {/* Meta details */}
+                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-500">
+                  <div>
+                    LESSON: <span className="font-semibold text-slate-700">{quickGradeItem.lessonTitle}</span>
+                  </div>
+                  <div>
+                    TYPE: <span className="font-semibold text-slate-700 uppercase">{quickGradeItem.category || (quickGradeItem.isPractice ? "Practice" : "Assessment")}</span>
+                  </div>
+                </div>
+
+                {/* Question Prompt */}
+                <div className="border border-slate-100 rounded bg-slate-50/30 p-3 max-h-24 overflow-y-auto">
+                  <span className="text-[9px] font-mono font-bold uppercase text-slate-400 tracking-wider">Question Prompt</span>
+                  <div className="text-xs text-slate-700 font-serif leading-relaxed mt-0.5">
+                    {quickGradeItem.questionText ? (
+                      <RichContentRenderer content={quickGradeItem.questionText} />
+                    ) : (
+                      <span className="italic text-slate-400">No prompt text</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Student Response */}
+                <div className="border border-slate-100 rounded bg-slate-50 p-3 max-h-36 overflow-y-auto">
+                  <span className="text-[9px] font-mono font-bold uppercase text-slate-400 tracking-wider">Student Response</span>
+                  <div className="text-xs text-slate-800 font-serif whitespace-pre-wrap leading-relaxed mt-0.5">
+                    {quickGradeItem.studentResponse || <span className="italic text-slate-400">Empty response</span>}
+                  </div>
+                </div>
+
+                {/* Grading Area */}
+                <div className="space-y-3 pt-2 border-t border-slate-100">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Grading Entry</span>
+                    <div className="flex items-center gap-2">
+                      {quickGradeItem.aiScore !== undefined && (
+                        <span className="text-[10px] text-slate-500">
+                          AI Recommended: <strong className="font-mono text-indigo-600">{quickGradeItem.aiScore}/{quickGradeItem.maxScore}</strong>
+                        </span>
+                      )}
+                      {quickGradeItem.confidence !== undefined && (
+                        <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border flex items-center gap-1 ${
+                          quickGradeItem.confidence < 0.65
+                            ? "bg-rose-50 text-rose-700 border-rose-200 animate-pulse"
+                            : quickGradeItem.confidence < 0.85
+                            ? "bg-amber-50 text-amber-700 border-amber-200"
+                            : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        }`}>
+                          {quickGradeItem.confidence < 0.65 ? (
+                            <AlertTriangle className="w-3 h-3 text-rose-600" />
+                          ) : quickGradeItem.confidence < 0.85 ? (
+                            <AlertCircle className="w-3 h-3 text-amber-500" />
+                          ) : (
+                            <Check className="w-3 h-3 text-emerald-600" />
+                          )}
+                          <span>Confidence: {Math.round(quickGradeItem.confidence * 100)}%</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-4 items-center">
+                    {/* Score input */}
+                    <div className="w-24 shrink-0">
+                      <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Score</label>
+                      <div className="relative flex items-center">
+                        <input
+                          type="number"
+                          min={0}
+                          max={quickGradeItem.maxScore}
+                          value={quickScore}
+                          onChange={(e) => setQuickScore(Number(e.target.value))}
+                          className="w-full text-sm font-mono font-bold text-center bg-slate-50 border border-slate-300 rounded p-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                        <span className="absolute right-2 text-xs text-slate-400">/{quickGradeItem.maxScore}</span>
+                      </div>
+                    </div>
+
+                    {/* Quick Points Shortcuts */}
+                    <div className="flex-1">
+                      <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Score Suggestions</label>
+                      <div className="flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setQuickScore(0)}
+                          className="px-2 py-1.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition cursor-pointer"
+                        >
+                          0 (No Credit)
+                        </button>
+                        {quickGradeItem.maxScore && quickGradeItem.maxScore > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setQuickScore(Math.round(quickGradeItem.maxScore! / 2))}
+                            className="px-2 py-1.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded transition cursor-pointer"
+                          >
+                            {Math.round(quickGradeItem.maxScore / 2)} (Half)
+                          </button>
+                        )}
+                        {quickGradeItem.aiScore !== undefined && quickGradeItem.aiScore !== 0 && quickGradeItem.aiScore !== quickGradeItem.maxScore && (
+                          <button
+                            type="button"
+                            onClick={() => setQuickScore(quickGradeItem.aiScore!)}
+                            className="px-2 py-1.5 text-[10px] font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded transition cursor-pointer"
+                          >
+                            {quickGradeItem.aiScore} (AI Choice)
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setQuickScore(quickGradeItem.maxScore ?? 0)}
+                          className="px-2 py-1.5 text-[10px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded transition cursor-pointer"
+                        >
+                          {quickGradeItem.maxScore} (Full Credit)
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Private Teacher Notes */}
+                  <div>
+                    <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Private Teacher Notes</label>
+                    <input
+                      type="text"
+                      value={quickNotes}
+                      onChange={(e) => setQuickNotes(e.target.value)}
+                      placeholder="Add a private note for your reference…"
+                      className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  {/* Student-facing feedback editing */}
+                  <div>
+                    <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Student-Facing Feedback</label>
+                    <textarea
+                      rows={2}
+                      value={quickFeedback}
+                      onChange={(e) => setQuickFeedback(e.target.value)}
+                      placeholder="Edit the feedback visible to this student…"
+                      className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-2 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-serif resize-none"
+                    />
+                  </div>
+                </div>
+
+                {quickGradeError && (
+                  <p className="text-xs text-rose-600 font-mono bg-rose-50 border border-rose-100 rounded p-2">
+                    {quickGradeError}
+                  </p>
+                )}
+                
+                {quickGradeSuccess && (
+                  <p className="text-xs text-emerald-600 font-mono bg-emerald-50 border border-emerald-100 rounded p-2">
+                    ✓ Grade saved successfully!
+                  </p>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-5 py-3.5 border-t border-slate-100 bg-slate-50/50 flex justify-end gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setQuickGradeItem(null)}
+                  disabled={quickGradeLoading}
+                  className="px-3 py-1.5 rounded text-xs font-bold text-slate-500 hover:bg-slate-200 border border-slate-200 transition cursor-pointer bg-white"
+                >
+                  Cancel
+                </button>
+                {quickGradeItem.reviewStatus === "ai_scored_awaiting_review" && (
+                  <button
+                    type="button"
+                    onClick={handleQuickGradeApprove}
+                    disabled={quickGradeLoading}
+                    className="px-3 py-1.5 rounded text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition cursor-pointer"
+                  >
+                    Approve AI Recommendation
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleQuickGradeSubmit}
+                  disabled={quickGradeLoading}
+                  className="px-3 py-1.5 rounded text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  {quickGradeLoading ? (
+                    <>
+                      <RotateCcw className="w-3.5 h-3.5 animate-spin" />
+                      Saving…
+                    </>
+                  ) : (
+                    "Save Grade"
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

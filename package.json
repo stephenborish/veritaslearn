@@ -44,6 +44,7 @@
     "@lexical/selection": "^0.45.0",
     "@lexical/utils": "^0.45.0",
     "@tailwindcss/vite": "^4.1.14",
+    "@tanstack/react-virtual": "^3.14.2",
     "@tiptap/extension-link": "^3.26.0",
     "@tiptap/extension-subscript": "^3.26.0",
     "@tiptap/extension-superscript": "^3.26.0",

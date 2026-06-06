@@ -236,17 +236,54 @@ function readDb() {
 // Join Code Generation
 // ==========================================
 
-const JOIN_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I, O, 0, 1 (ambiguous)
+function generateCourseJoinCode(name: string, schoolYear: string | undefined, existingCourses: any[]): string {
+  let namePart = name.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  
+  if (namePart.startsWith("AP") && namePart.length > 5) {
+    namePart = namePart.slice(0, 5);
+  } else {
+    namePart = namePart.slice(0, 6);
+  }
+  if (!namePart) namePart = "CRS";
 
-function generateJoinCode(prefix?: string): string {
-  const prefixPart = prefix 
-    ? prefix.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 2)
-    : "";
-  const neededLength = 5 - prefixPart.length;
-  const suffix = Array.from({ length: neededLength }, () =>
-    JOIN_CODE_CHARS[Math.floor(Math.random() * JOIN_CODE_CHARS.length)]
-  ).join("");
-  return (prefixPart + suffix).toUpperCase();
+  // Extract 2 digit year
+  let yearPart = "";
+  if (schoolYear) {
+    const digits = schoolYear.match(/\d+/g);
+    if (digits && digits.length > 0) {
+      const lastMatch = digits[digits.length - 1]; // e.g. "2027" or "27"
+      if (lastMatch.length >= 2) {
+        yearPart = lastMatch.slice(-2);
+      } else {
+        yearPart = lastMatch.padStart(2, "0");
+      }
+    }
+  }
+
+  if (!yearPart) {
+    const currentYear = new Date().getFullYear();
+    yearPart = String(currentYear % 100).padStart(2, "0");
+  }
+
+  const baseCode = `${namePart}${yearPart}`;
+
+  // Check against existing codes to prevent duplicate collision
+  const takenCodes = new Set(existingCourses.map((c: any) => c.joinCode?.trim().toUpperCase()).filter(Boolean));
+  if (!takenCodes.has(baseCode)) {
+    return baseCode;
+  }
+
+  // If duplicate, append letters A-Z successively
+  for (let i = 0; i < 26; i++) {
+    const char = String.fromCharCode(65 + i); // 'A', 'B', etc.
+    const candidate = `${baseCode}${char}`;
+    if (!takenCodes.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  // Fallback random
+  return `${baseCode}_${Math.floor(Math.random() * 100)}`;
 }
 
 // ==========================================
@@ -2482,16 +2519,8 @@ app.post("/api/courses", requireTeacher, async (req, res) => {
 
     const db = readDb();
 
-    // Generate unique join code with course abbreviation prefix
-    const prefix = name.trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) || "CRS";
-    let joinCode = generateJoinCode(prefix);
-    // Ensure uniqueness
-    const existingCodes = new Set((db.courses || []).map((c: any) => c.joinCode));
-    let attempts = 0;
-    while (existingCodes.has(joinCode) && attempts < 10) {
-      joinCode = generateJoinCode(prefix);
-      attempts++;
-    }
+    // Generate unique join code using the course name and 2-digit school year format
+    const joinCode = generateCourseJoinCode(name, schoolYear, db.courses || []);
 
     const now = new Date().toISOString();
     const newCourse = {
@@ -2555,14 +2584,8 @@ app.post("/api/courses/:id/regenerate-code", requireTeacher, async (req, res) =>
       return;
     }
 
-    const prefix = db.courses[idx].name.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) || "CRS";
-    const existingCodes = new Set((db.courses || []).map((c: any, i: number) => i !== idx ? c.joinCode : null).filter(Boolean));
-    let joinCode = generateJoinCode(prefix);
-    let tries = 0;
-    while (existingCodes.has(joinCode) && tries < 10) {
-      joinCode = generateJoinCode(prefix);
-      tries++;
-    }
+    const otherCourses = (db.courses || []).filter((_: any, i: number) => i !== idx);
+    const joinCode = generateCourseJoinCode(db.courses[idx].name, db.courses[idx].schoolYear, otherCourses);
 
     db.courses[idx].joinCode = joinCode;
     db.courses[idx].joinCodeEnabled = true;

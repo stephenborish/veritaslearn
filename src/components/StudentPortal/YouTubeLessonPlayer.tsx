@@ -123,7 +123,7 @@ const YouTubeLessonPlayer = forwardRef<YouTubeLessonPlayerHandle, Props>(
     },
     ref,
   ) => {
-    const containerRef = useRef<HTMLDivElement>(null);
+    const containerRef = useRef<HTMLIFrameElement>(null);
     const playerRef = useRef<YTPlayer | null>(null);
     const endedRef = useRef(false);
     const playingRef = useRef(false);
@@ -185,14 +185,6 @@ const YouTubeLessonPlayer = forwardRef<YouTubeLessonPlayerHandle, Props>(
         if (destroyed || !containerRef.current) return;
 
         playerRef.current = new window.YT!.Player(containerRef.current, {
-          videoId,
-          playerVars: {
-            enablejsapi: 1,
-            origin: window.location.origin,
-            rel: 0,
-            modestbranding: 1,
-            fs: 1,
-          },
           events: {
             onReady: (event: any) => {
               if (destroyed) return;
@@ -270,15 +262,19 @@ const YouTubeLessonPlayer = forwardRef<YouTubeLessonPlayerHandle, Props>(
     }));
 
     return (
-      <div className="w-full flex-1 flex flex-col min-h-0 bg-black" style={{ minHeight: 0 }} id={`yt-player-${blockId}`}>
-        {/* The YouTube IFrame API replaces this div with an <iframe> */}
-        <div
+      <div className="w-full flex-1 flex flex-col min-h-0 bg-black relative" style={{ minHeight: 0 }} id={`yt-player-${blockId}`}>
+        <iframe
           ref={containerRef}
-          className="w-full flex-1 bg-black"
+          title="YouTube Video Player"
+          className="w-full flex-1 bg-black border-none"
           style={{ aspectRatio: "16/9", maxHeight: "calc(100vh - 160px)" }}
+          src={`https://www.youtube-nocookie.com/embed/${videoId}?enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&rel=0&modestbranding=1&fs=1&playsinline=1`}
+          allow="autoplay; encrypted-media; picture-in-picture"
+          allowFullScreen
+          sandbox="allow-scripts allow-same-origin allow-presentation"
         />
         {!playerReady && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+          <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10 pointer-events-none">
             <div className="flex flex-col items-center gap-2 text-white text-sm">
               <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
               <span className="text-xs text-white/70">Loading video…</span>

@@ -187,7 +187,7 @@ export default function StudentDossierModal({
   };
 
   // Count blurs, screens, seek blocks
-  const blurs = sSignals.filter((s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden").length;
+  const blurs = sSignals.filter((s) => s.eventType === "blur_focus_lost" || s.eventType === "visibilitychange").length;
   const screens = sSignals.filter((s) => s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited").length;
   const copyPastes = sSignals.filter((s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked").length;
   const seekVio = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
@@ -202,7 +202,7 @@ export default function StudentDossierModal({
   const signalEventLabel = (eventType: string): string => {
     const labels: Record<string, string> = {
       blur_focus_lost: "Focus lost",
-      visibility_hidden: "Tab hidden",
+      visibilitychange: "Tab hidden",
       fullscreen_exit: "Fullscreen exit",
       fullscreen_exited: "Fullscreen exit",
       seek_attempt_blocked: "Seek blocked",

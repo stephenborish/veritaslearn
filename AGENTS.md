@@ -1144,7 +1144,7 @@ interface IntegritySignal {
     | 'text_selection_blocked'
     | 'print_attempt_blocked'
     | 'blur_focus_lost'
-    | 'visibility_hidden'
+    | 'visibilitychange'
     | 'fullscreen_exited'
     | 'seek_attempt_blocked'
     | 'multiple_session_detected'
@@ -5213,3 +5213,16 @@ driven headlessly in jsdom, so the editor's internal keystroke→serialize step 
 proven via real-Lexical round-trips (Layer A) rather than synthetic typing; a true
 browser (Playwright) run would close that last gap but is not feasible in this
 environment (no browser/Firebase server).
+
+### Gradebook Timeline Interface Update (2026-06-06)
+
+1. **Gradebook timeline purpose:** The Gradebook was redesigned into a clean, beautiful, timeline-based dashboard. It allows teachers to instantly see progress and integrity signals across all students for a specific assignment, with each column representing a distinct step in the lesson.
+2. **Data sources used:** `assignments`, `lessons`, `students`, `attempts`, `responses`, `blocks`, `signals`, `gradebookEntries`, and `gradebookResponseEntries`. Data is aggregated safely without recomputing AI grades or modifying underlying attempts.
+3. **How columns align across the class:** Upon selecting an Assignment, the Gradebook extracts the associated `lessonId` and retrieves its `blocks`. The blocks are sorted by `orderIndex`. Each `video`, `reading`, or `question` block becomes a timeline column step. Additionally, `videoCheckpoints` are flattened out into their own discrete columns. These aligned steps form fixed columns for every student's row.
+4. **How step details work:** Clicking any timeline cell opens an organized slide-out Details Drawer preserving the Gradebook underneath. It displays the step's block content, student response, watch time/read status, teacher review options, score breakdown, released feedback state, matched integrity signals, and class context.
+5. **How class comparison is calculated:** An isolated comparison map counts the total valid attempts, submitted states, grading needs, and integrity signals per step, and computes a class average score which is displayed inline inside the student details drawer for relative context ("Above/Below class average").
+6. **How integrity signals are summarized:** `securitySignals` are parsed matching the selected student and the specific block/checkpoint step. The highest severity (`high`, `medium`, `low`) among matched signals dictates the visual indicator (red pulsing or amber alert). Individual signals are mapped to plain, teacher-friendly labels ("Left assessment page", "Possible AI agent use").
+7. **Why integrity signals do not auto-change grades:** Following academic safety guidelines, integrity signals represent activity records that teachers must interpret using context. An event like switching tabs or encountering AI refusal text flags the step for human review without silently mutating the earned score or preventing submission.
+8. **Files changed:** Replaced `src/components/TeacherDashboard/Gradebook.tsx` with entirely new UI component, and passed `signals` + `gradebookResponseEntries` through from `src/App.tsx`.
+9. **Verification results:** Re-verified build (`npm run compile_applet`), the table columns cleanly align, the details drawer properly pulls context, and verification scripts execute normally.
+10. **Remaining limitations:** Live data refresh currently reloads the entire dashboard payload; pagination or partial fetch could be added later if the class roster exceeds 100+ students. Furthermore, while immutable snapshot blocks (`lessonVersions`) are preferred, the UI consumes whatever `blocks` payload the server currently emits for the lesson ID until the API strictly partitions the `blocks` payload by version ID for the gradebook query.

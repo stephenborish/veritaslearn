@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import LandingPage, { PENDING_COURSE_CODE_KEY } from "./components/Auth/LandingPage";
 import LiveMonitor from "./components/TeacherDashboard/LiveMonitor";
 import LessonsBuilder from "./components/TeacherDashboard/LessonsBuilder";
-import Gradebook from "./components/TeacherDashboard/Gradebook";
+import TimelineGradebook from "./components/TeacherDashboard/TimelineGradebook";
 import AIReview from "./components/TeacherDashboard/AIReview";
 import CourseManager from "./components/TeacherDashboard/CourseManager";
 import StudentDossierModal from "./components/TeacherDashboard/StudentDossierModal";
@@ -29,7 +29,8 @@ import {
   Activity,
   CheckSquare,
   Users,
-  Shield
+  Shield,
+  Bell
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -612,6 +613,10 @@ export default function App() {
   }
 
   // TEACHER PORTAL PATH
+  const pendingAiCount = (responses || []).filter(
+    (r: any) => r.type === "sa" && (!r.aiGrading?.status || r.aiGrading?.status === "pending")
+  ).length;
+
   return (
     <div className="flex flex-col h-screen bg-[#F4F5F7] text-[#1A1A1A] font-sans overflow-hidden">
       
@@ -632,6 +637,21 @@ export default function App() {
         </div>
         
         <div className="flex items-center gap-4">
+          {/* Notification Bell */}
+          <button
+            id="lms-teacher-notification-bell"
+            onClick={() => setActiveTab("ai")}
+            className="relative p-2 text-white/70 hover:text-white hover:bg-white/10 rounded-full transition cursor-pointer flex items-center justify-center focus:outline-none shrink-0"
+            aria-label={`${pendingAiCount} pending AI grading task${pendingAiCount === 1 ? "" : "s"}`}
+            title={pendingAiCount > 0 ? `${pendingAiCount} response${pendingAiCount === 1 ? "" : "s"} waiting for AI grading in the Review Queue` : "All caught up"}
+          >
+            <Bell className="w-5 h-5" />
+            {pendingAiCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[10px] font-bold text-white ring-2 ring-[#0A192F] shadow-sm animate-pulse">
+                {pendingAiCount}
+              </span>
+            )}
+          </button>
           <div className="flex flex-col items-end">
             <span className="text-[12px] leading-[15px] font-semibold">{currentUser.name}</span>
             <span className="text-[10px] text-white/60 font-medium">Faculty</span>
@@ -835,13 +855,15 @@ export default function App() {
                 isFetching && (students.length === 0 || lessons.length === 0) ? (
                    <GradebookSkeleton />
                  ) : (
-                   <Gradebook
+                   <TimelineGradebook
                      students={students}
                      lessons={lessons}
                      attempts={attempts}
                      responses={responses}
                      blocks={blocks}
                      assignments={assignments}
+                     signals={signals}
+                     gradebookResponseEntries={gradebookResponseEntries}
                      idToken={idToken}
                      onRefresh={() => fetchLmsPayload(currentUser)}
                      gradebookEntries={gradebookEntries}

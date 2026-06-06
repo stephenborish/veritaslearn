@@ -318,19 +318,27 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   };
 
   const flushVideoProgress = async (customTimestamp?: number) => {
-    const video = videoRef.current;
     const block = blocks[currentBlockIndex];
     if (!block || block.type !== "video") return;
 
     const duration = block.duration ?? block.videoDuration ?? 0;
-    let timestampToSend = video ? Math.floor(video.currentTime) : 0;
-    
+    let currentLocalTime = 0;
+    let isEnded = false;
+
     if (customTimestamp !== undefined) {
-      timestampToSend = customTimestamp;
-    } else if (video) {
-      if ((video.ended || video.currentTime >= duration - 1) && duration > 0) {
-        timestampToSend = Math.floor(duration);
-      }
+      currentLocalTime = customTimestamp;
+      isEnded = currentLocalTime >= duration - 1;
+    } else if (videoRef.current) {
+      currentLocalTime = videoRef.current.currentTime;
+      isEnded = videoRef.current.ended || currentLocalTime >= duration - 1;
+    } else if (youtubePlayerRef.current) {
+      currentLocalTime = youtubePlayerRef.current.getCurrentTime();
+      isEnded = youtubePlayerRef.current.isEnded() || currentLocalTime >= duration - 1;
+    }
+
+    let timestampToSend = Math.floor(currentLocalTime);
+    if (isEnded && duration > 0) {
+      timestampToSend = Math.floor(duration);
     }
 
     try {
@@ -385,16 +393,6 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     const duration = block.duration ?? block.videoDuration ?? 0;
     if (duration > 0) {
       setFurthestMaxTimestamp(duration);
-      setAttemptData((prev: any) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          furthestVideoTimestamps: {
-            ...(prev.furthestVideoTimestamps || {}),
-            [block.id]: duration
-          }
-        };
-      });
       await flushVideoProgress(Math.floor(duration));
     }
   };
@@ -406,17 +404,18 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     const requireFullscreenOpt = attemptData.lesson?.settings?.requireFullscreen ?? true;
 
     const attemptResumePlayback = () => {
-      const video = videoRef.current;
-      if (!video) return;
-
       const isFull = !!document.fullscreenElement;
       const isTabActive = document.hasFocus() && !document.hidden;
       const isCompliant = (!requireFullscreenOpt || isFull) && isTabActive && !isFullscreenLocked;
 
       if (isCompliant && wasPlayingRef.current) {
-        video.play().catch((err) => {
-          console.warn("Playback autoplay blocked or failed to resume:", err);
-        });
+        if (videoRef.current) {
+          videoRef.current.play().catch((err) => {
+            console.warn("Playback autoplay blocked or failed to resume:", err);
+          });
+        } else if (youtubePlayerRef.current) {
+          youtubePlayerRef.current.play();
+        }
         wasPlayingRef.current = false;
       }
     };
@@ -517,7 +516,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           wasPlayingRef.current = !youtubePlayerRef.current.isPaused();
           youtubePlayerRef.current.pause();
         }
-        logIntegritySignal("visibility_hidden", "high", { detail: "Tab hidden / switched." });
+        logIntegritySignal("visibilitychange", "high", { detail: "Tab hidden / switched." });
         setViolationBanner({
           show: true,
           level: "low",
@@ -616,20 +615,18 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
     const duration = block.duration ?? block.videoDuration ?? 0;
 
-    // Check near-ended tolerance
+    // Check milestones for progress sync
+    const requiredSeconds = duration > 0 ? duration * 0.9 : 0;
     if (duration > 0 && currentTime >= duration - 1) {
       if (furthestMaxTimestamp < duration) {
         setFurthestMaxTimestamp(duration);
-        setAttemptData((prev: any) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            furthestVideoTimestamps: {
-              ...(prev.furthestVideoTimestamps || {}),
-              [block.id]: duration
-            }
-          };
-        });
+        flushVideoProgress(duration);
+      }
+    } else if (duration > 0 && currentTime >= requiredSeconds) {
+      // If we just hit the 90% milestone, flush to unlock Next button promptly
+      if (furthestMaxTimestamp < requiredSeconds) {
+        setFurthestMaxTimestamp(currentTime);
+        flushVideoProgress(currentTime);
       }
     }
 
@@ -648,30 +645,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         return;
       } else if (currentTime > furthestMaxTimestamp) {
         setFurthestMaxTimestamp(currentTime);
-        setAttemptData((prev: any) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            furthestVideoTimestamps: {
-              ...(prev.furthestVideoTimestamps || {}),
-              [block.id]: currentTime
-            }
-          };
-        });
       }
     } else {
       if (currentTime > furthestMaxTimestamp) {
         setFurthestMaxTimestamp(currentTime);
-        setAttemptData((prev: any) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            furthestVideoTimestamps: {
-              ...(prev.furthestVideoTimestamps || {}),
-              [block.id]: currentTime
-            }
-          };
-        });
       }
     }
 
@@ -1067,12 +1044,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const duration = activeBlock.duration ?? activeBlock.videoDuration;
       if (restrictSeeking && duration) {
         const requiredSeconds = duration * 0.9;
-        const isEndedLocally = videoRef.current
-          ? (videoRef.current.ended || videoRef.current.currentTime >= duration - 1)
-          : youtubePlayerRef.current
-          ? (youtubePlayerRef.current.isEnded() || youtubePlayerRef.current.getCurrentTime() >= duration - 1)
-          : false;
-        if (furthestMaxTimestamp < requiredSeconds && !isEndedLocally) {
+        const furthestWatch = attemptData?.furthestVideoTimestamps?.[activeBlock.id] || 0;
+        if (furthestWatch < requiredSeconds) {
           return "Finish the video to continue.";
         }
       }
@@ -1112,9 +1085,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const duration = block.duration ?? block.videoDuration;
       if (restrictSeeking && duration) {
         const requiredSeconds = duration * 0.9;
-        const isEndedLocally = idx === currentBlockIndex && videoRef.current && (videoRef.current.ended || videoRef.current.currentTime >= duration - 1);
-        const furthestWatch = (attemptData?.furthestVideoTimestamps?.[block.id]) || (idx === currentBlockIndex ? furthestMaxTimestamp : 0);
-        if (furthestWatch < requiredSeconds && !isEndedLocally) {
+        const furthestWatch = attemptData?.furthestVideoTimestamps?.[block.id] || 0;
+        if (furthestWatch < requiredSeconds) {
           isThisBlockComplete = false;
         }
       }
@@ -1149,9 +1121,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         const duration = precBlock.duration ?? precBlock.videoDuration;
         if (restrictSeeking && duration) {
           const requiredSeconds = duration * 0.9;
-          const isEndedLocally = i === currentBlockIndex && videoRef.current && (videoRef.current.ended || videoRef.current.currentTime >= duration - 1);
-          const furthestWatch = (attemptData?.furthestVideoTimestamps?.[precBlock.id]) || (i === currentBlockIndex ? furthestMaxTimestamp : 0);
-          if (furthestWatch < requiredSeconds && !isEndedLocally) {
+          const furthestWatch = attemptData?.furthestVideoTimestamps?.[precBlock.id] || 0;
+          if (furthestWatch < requiredSeconds) {
             precComplete = false;
           }
         }
@@ -1980,19 +1951,14 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   {!isLastBlock ? (
                     <button
                       onClick={async () => {
-                        const reasonBefore = getNextBlockedReason();
-                        if (reasonBefore) {
-                          setNavigationError(reasonBefore);
-                          return;
-                        }
                         if (activeBlock?.type === "video") {
                           setNavigationError("Saving your progress…");
                           await flushVideoProgress();
                           setNavigationError(null);
                         }
-                        const reasonAfter = getNextBlockedReason();
-                        if (reasonAfter) {
-                          setNavigationError(reasonAfter);
+                        const reason = getNextBlockedReason();
+                        if (reason) {
+                          setNavigationError(reason);
                           return;
                         }
                         await handleBlockNavigation(currentBlockIndex + 1);
@@ -2013,19 +1979,14 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   ) : (
                     <button
                       onClick={async () => {
-                        const reasonBefore = getNextBlockedReason();
-                        if (reasonBefore) {
-                          setNavigationError(reasonBefore);
-                          return;
-                        }
                         if (activeBlock?.type === "video") {
                           setNavigationError("Saving your progress…");
                           await flushVideoProgress();
                           setNavigationError(null);
                         }
-                        const reasonAfter = getNextBlockedReason();
-                        if (reasonAfter) {
-                          setNavigationError(reasonAfter);
+                        const reason = getNextBlockedReason();
+                        if (reason) {
+                          setNavigationError(reason);
                           return;
                         }
                         handleCompleteLessonAttempt();

@@ -96,7 +96,7 @@ export default function LiveMonitor({
   const getAttemptSignalSummary = (attemptId: string) => {
     const sSignals = signals.filter((s) => s.attemptId === attemptId);
     const blurs = sSignals.filter(
-      (s) => s.eventType === "blur_focus_lost" || s.eventType === "visibility_hidden"
+      (s) => s.eventType === "blur_focus_lost" || s.eventType === "visibilitychange"
     ).length;
     const fullscreenExits = sSignals.filter(
       (s) => s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited"
@@ -248,7 +248,7 @@ export default function LiveMonitor({
   const signalEventLabel = (eventType: string): string => {
     const labels: Record<string, string> = {
       blur_focus_lost: "Focus lost",
-      visibility_hidden: "Tab hidden",
+      visibilitychange: "Tab hidden",
       fullscreen_exit: "Fullscreen exit",
       fullscreen_exited: "Fullscreen exit",
       seek_attempt_blocked: "Seek blocked",
