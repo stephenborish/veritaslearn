@@ -1,63 +1,166 @@
 export default function LandingArtBackground() {
   return (
     <div
-      className="absolute inset-0 w-full h-full pointer-events-none select-none z-0 overflow-hidden bg-[#FCFBFA]"
+      className="pointer-events-none absolute inset-0 z-0 overflow-hidden bg-[#202020] select-none"
       aria-hidden="true"
     >
-      {/* GPU-accelerated glowing ambient gradient anchors for buttery smooth, top-quality rendering */}
-      
-      {/* Top-Left Major Navy Anchor: deep, academic signature */}
-      <div className="absolute -top-[15%] -left-[10%] w-[55vw] h-[55vw] min-w-[320px] rounded-full bg-gradient-to-tr from-[#0B2342] to-[#143152] opacity-[0.11] blur-[100px] md:blur-[150px] transition-transform duration-700" />
-
-      {/* Auxiliary Mid-Left Deep Anchor Balance */}
-      <div className="absolute top-[10%] left-[5%] w-[35vw] h-[35vw] min-w-[220px] rounded-full bg-[#0F294A] opacity-[0.06] blur-[90px] md:blur-[130px]" />
-
-      {/* Top-Right Royal Academic Blue Support */}
-      <div className="absolute -top-[10%] right-[5%] w-[40vw] h-[40vw] min-w-[260px] rounded-full bg-[#3B82F6] opacity-[0.045] blur-[80px] md:blur-[120px]" />
-
-      {/* Bottom-Right Golden/Amber Glow: warm, premium contrast near student portal inputs */}
-      <div className="absolute -bottom-[15%] -right-[10%] w-[60vw] h-[60vw] min-w-[350px] rounded-full bg-gradient-to-br from-[#ECC25E] to-[#E5B53B] opacity-[0.13] blur-[110px] md:blur-[160px]" />
-
-      {/* Mid-Right Gold Connection */}
-      <div className="absolute bottom-[25%] right-[5%] w-[32vw] h-[32vw] min-w-[200px] rounded-full bg-[#ECC25E] opacity-[0.05] blur-[70px] md:blur-[110px]" />
-
-      {/* Bottom-Left Academic Soft Slate-Glow */}
-      <div className="absolute -bottom-[5%] left-[2%] w-[45vw] h-[45vw] min-w-[280px] rounded-full bg-gradient-to-bl from-[#8397B0] to-[#A4B7CE] opacity-[0.08] blur-[90px] md:blur-[140px]" />
-
-      {/* Center ambient connector */}
-      <div className="absolute top-[35%] left-[30%] w-[25vw] h-[25vw] rounded-full bg-[#8397B0] opacity-[0.03] blur-[80px] md:blur-[110px]" />
-
-      {/* Infinite high-definition fine vector grain texture layer at native 1:1 screen resolution */}
       <svg
-        width="100%"
-        height="100%"
-        className="absolute inset-0 w-full h-full opacity-[0.042] mix-blend-overlay"
+        className="absolute inset-0 h-full w-full"
+        viewBox="0 0 1600 900"
+        preserveAspectRatio="xMidYMid slice"
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
-          <filter id="premium-grain-filter" x="0" y="0" width="100%" height="100%" filterUnits="userSpaceOnUse">
+          <filter
+            id="veritas-grain"
+            colorInterpolationFilters="sRGB"
+            primitiveUnits="objectBoundingBox"
+          >
             <feTurbulence
               type="fractalNoise"
-              baseFrequency="0.78"
-              numOctaves="3"
-              result="noise"
+              baseFrequency=".713"
+              numOctaves="4"
             />
-            {/* Soften contrast of monochromatic noise to make it feel premium, like textured paper */}
-            <feColorMatrix
-              type="matrix"
-              values="0.33 0.33 0.33 0 0
-                      0.33 0.33 0.33 0 0
-                      0.33 0.33 0.33 0 0
-                      0 0 0 0.85 0"
-              in="noise"
+            <feDisplacementMap
+              in="SourceGraphic"
+              scale=".1"
+              xChannelSelector="R"
             />
+            <feBlend in2="SourceGraphic" />
           </filter>
+
+          <linearGradient id="veritas-bg-1" x1="0" y1="0" x2="1" y2="1">
+            <stop stopColor="#0b3145" />
+            <stop offset=".28" stopColor="#12c7d4" />
+            <stop offset=".55" stopColor="#b8a5ff" />
+            <stop offset=".78" stopColor="#e5d86a" />
+            <stop offset="1" stopColor="#8d3327" />
+          </linearGradient>
+
+          <linearGradient id="veritas-bg-2" x1="0" y1="1" x2="1" y2="0">
+            <stop stopColor="#061a2d" />
+            <stop offset=".35" stopColor="#2aa9ce" />
+            <stop offset=".65" stopColor="#d2b4ff" />
+            <stop offset="1" stopColor="#d78d3e" />
+          </linearGradient>
+
+          <linearGradient id="veritas-bg-3" x1="0" y1="0" x2="1" y2="0">
+            <stop stopColor="#0f4f67" />
+            <stop offset=".32" stopColor="#7de3f0" />
+            <stop offset=".56" stopColor="#bca9f7" />
+            <stop offset=".78" stopColor="#eee37d" />
+            <stop offset="1" stopColor="#59291f" />
+          </linearGradient>
+
+          <radialGradient id="veritas-glow-blue" cx="50%" cy="50%" r="50%">
+            <stop stopColor="#8cecff" />
+            <stop offset=".55" stopColor="#4ea9e8" />
+            <stop offset="1" stopColor="#102a6e" />
+          </radialGradient>
+
+          <radialGradient id="veritas-glow-yellow" cx="50%" cy="50%" r="50%">
+            <stop stopColor="#fff58d" />
+            <stop offset=".55" stopColor="#d6bb52" />
+            <stop offset="1" stopColor="#7a3323" />
+          </radialGradient>
+
+          <radialGradient id="veritas-glow-violet" cx="50%" cy="50%" r="50%">
+            <stop stopColor="#d8c8ff" />
+            <stop offset=".6" stopColor="#8c77df" />
+            <stop offset="1" stopColor="#2a286d" />
+          </radialGradient>
         </defs>
-        <rect width="100%" height="100%" filter="url(#premium-grain-filter)" />
+
+        <g filter="url(#veritas-grain)">
+          <rect width="1600" height="900" fill="#202020" />
+
+          <rect width="1600" height="900" fill="url(#veritas-bg-1)" />
+
+          <ellipse
+            cx="250"
+            cy="510"
+            rx="520"
+            ry="360"
+            fill="url(#veritas-glow-blue)"
+            opacity=".92"
+            transform="rotate(-19 250 510)"
+            style={{ filter: "blur(86px)" }}
+          />
+
+          <ellipse
+            cx="690"
+            cy="420"
+            rx="560"
+            ry="390"
+            fill="url(#veritas-bg-2)"
+            opacity=".88"
+            transform="rotate(-8 690 420)"
+            style={{ filter: "blur(92px)" }}
+          />
+
+          <ellipse
+            cx="1130"
+            cy="310"
+            rx="500"
+            ry="340"
+            fill="url(#veritas-glow-yellow)"
+            opacity=".82"
+            transform="rotate(18 1130 310)"
+            style={{ filter: "blur(96px)" }}
+          />
+
+          <circle
+            cx="760"
+            cy="510"
+            r="300"
+            fill="url(#veritas-glow-violet)"
+            opacity=".78"
+            style={{ filter: "blur(82px)" }}
+          />
+
+          <ellipse
+            cx="1370"
+            cy="565"
+            rx="410"
+            ry="320"
+            fill="#743124"
+            opacity=".72"
+            transform="rotate(-25 1370 565)"
+            style={{ filter: "blur(88px)" }}
+          />
+
+          <ellipse
+            cx="440"
+            cy="725"
+            rx="540"
+            ry="230"
+            fill="url(#veritas-bg-3)"
+            opacity=".48"
+            transform="rotate(5 440 725)"
+            style={{ filter: "blur(74px)" }}
+          />
+
+          <ellipse
+            cx="1080"
+            cy="690"
+            rx="520"
+            ry="220"
+            fill="#2b2a68"
+            opacity=".32"
+            transform="rotate(-6 1080 690)"
+            style={{ filter: "blur(72px)" }}
+          />
+        </g>
+
+        <rect width="1600" height="900" fill="rgba(0,0,0,.10)" />
       </svg>
 
-      {/* Micro-textured background noise fallback to prevent extreme banding on older 8-bit monitor channels */}
-      <div className="absolute inset-0 bg-white/5 backdrop-blur-[1px]" />
+      {/* Soft readability wash only in the center, not a full white veil */}
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_48%,rgba(255,255,255,0.76)_0%,rgba(255,255,255,0.54)_28%,rgba(255,255,255,0.18)_52%,rgba(255,255,255,0)_78%)]" />
+
+      {/* Slight top/bottom polish so header/footer remain clean */}
+      <div className="absolute inset-x-0 top-0 h-40 bg-gradient-to-b from-white/70 to-transparent" />
+      <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-white/55 to-transparent" />
     </div>
   );
 }

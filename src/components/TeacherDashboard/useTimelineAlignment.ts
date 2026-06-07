@@ -50,6 +50,44 @@ interface UseTimelineAlignmentProps {
   gradebookEntries: any[];
   gradebookResponseEntries: any[];
   assignments?: any[];
+  lessonVersions?: any[];
+}
+
+function getPointsFromSnapshot(snapshotBlocks: any[], step: any): number {
+  if (!snapshotBlocks || snapshotBlocks.length === 0) return step.points;
+  
+  const block = snapshotBlocks.find((b: any) => b.id === step.blockId);
+  if (!block) return step.points;
+
+  if (step.checkpointId) {
+    if (block.videoCheckpoints) {
+      const cp = block.videoCheckpoints.find((c: any) => c.id === step.checkpointId);
+      if (cp) {
+        if (cp.question && cp.question.points !== undefined && cp.question.points !== null) {
+          return cp.question.points;
+        }
+        if (Array.isArray(cp.questions) && cp.questions[0] && cp.questions[0].points !== undefined && cp.questions[0].points !== null) {
+          return cp.questions[0].points;
+        }
+        return cp.isPractice ? 0 : 3;
+      }
+    }
+  } else {
+    if (block.singleQuestion) {
+      if (block.singleQuestion.points !== undefined && block.singleQuestion.points !== null) {
+        return block.singleQuestion.points;
+      }
+      return block.isPractice ? 0 : (block.questionType === 'mc' ? 1 : 3);
+    }
+    if (block.questionPool) {
+      const qPoints = block.questionPool.questions?.[0]?.points;
+      if (qPoints !== undefined && qPoints !== null) {
+        return qPoints * (block.questionPool.numToSelect || 1);
+      }
+      return block.isPractice ? 0 : (block.questionType === 'mc' ? 1 : 3);
+    }
+  }
+  return step.points;
 }
 
 export function useTimelineAlignment({
@@ -63,6 +101,7 @@ export function useTimelineAlignment({
   gradebookEntries,
   gradebookResponseEntries,
   assignments = [],
+  lessonVersions = [],
 }: UseTimelineAlignmentProps) {
   // 1. Build Timeline Steps (Columns)
   const timelineSteps = useMemo(() => {
@@ -154,13 +193,25 @@ export function useTimelineAlignment({
       else highestSeverity = 'low';
     }
 
+    // Resolve points snapshot
+    const assignment = selectedAssignmentId
+      ? assignments.find((asg) => asg.id === selectedAssignmentId)
+      : null;
+    const versionId = attempt?.lessonVersionId || assignment?.lessonVersionId;
+    const version = versionId
+      ? lessonVersions.find((v: any) => v.id === versionId)
+      : null;
+    const actualMaxScore = version?.blocksSnapshot
+      ? getPointsFromSnapshot(version.blocksSnapshot, step)
+      : step.points;
+
     if (!attempt) {
       return {
         status: 'not_started',
         color: 'gray',
         label: 'Not Started',
         score: null,
-        maxScore: step.points,
+        maxScore: actualMaxScore,
         signalSeverity: highestSeverity,
         signals: stepSignals,
       };
@@ -281,7 +332,7 @@ export function useTimelineAlignment({
           color: 'blue',
           label: 'Draft Saved',
           score: null,
-          maxScore: step.points,
+          maxScore: actualMaxScore,
           signalSeverity: highestSeverity,
           signals: stepSignals,
           attempt,
@@ -296,7 +347,7 @@ export function useTimelineAlignment({
           color: 'red',
           label: 'Missing',
           score: 0,
-          maxScore: step.points,
+          maxScore: actualMaxScore,
           signalSeverity: highestSeverity,
           signals: stepSignals,
           attempt,
@@ -307,7 +358,7 @@ export function useTimelineAlignment({
         color: 'gray',
         label: 'Not Started',
         score: null,
-        maxScore: step.points,
+        maxScore: actualMaxScore,
         signalSeverity: highestSeverity,
         signals: stepSignals,
         attempt,
@@ -357,7 +408,7 @@ export function useTimelineAlignment({
       rStatus === 'teacher_reviewed' ||
       rStatus === 'feedback_released'
     ) {
-      if (rScore === step.points && step.points > 0) {
+      if (rScore === actualMaxScore && actualMaxScore > 0) {
         label = 'Full Credit';
         color = 'green';
       } else if (rScore > 0) {
@@ -374,7 +425,7 @@ export function useTimelineAlignment({
       color,
       label,
       score: rScore,
-      maxScore: step.points,
+      maxScore: actualMaxScore,
       signalSeverity: highestSeverity,
       signals: stepSignals,
       response,

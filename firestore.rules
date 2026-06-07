@@ -188,5 +188,11 @@ service cloud.firestore {
       allow read: if isTeacher();
       allow write: if false; // Only the Admin SDK (server) may write versions
     }
+
+    // 16. Student Activities — teachers can read all. Students/clients cannot write directly, system writes.
+    match /studentActivities/{activityId} {
+      allow read: if isTeacher();
+      allow write: if false;
+    }
   }
 }

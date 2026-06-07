@@ -23,6 +23,137 @@ const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000;   // 2 minutes
 const IDLE_THRESHOLD_MS = ACTIVE_THRESHOLD_MS; // alias kept for backward compat
 const STALE_THRESHOLD_MS = 30 * 60 * 1000;    // 30 minutes
 
+function formatRelativeTime(timestamp: string | undefined): string {
+  if (!timestamp) return "Never";
+  const ms = Date.now() - new Date(timestamp).getTime();
+  if (ms < 0) return "Just now";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return "Active seconds ago";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days === 1) return "Active yesterday";
+  if (days < 3) return `Active ${days}d ago`;
+  return "No recent activity";
+}
+
+function get7DayActivityHeatmap(studentId: string, studentActivities: any[]) {
+  const result = [];
+  const now = new Date();
+  
+  // Last 7 days, ending with today as index 6
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(now.getDate() - i);
+    d.setHours(0, 0, 0, 0);
+    const dayStr = d.toISOString().split('T')[0]; // YYYY-MM-DD
+    
+    // Day label: M, T, W, etc.
+    const daysName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const dayLabel = daysName[d.getDay()];
+    
+    // Filter activities for this student on this day
+    const dayActivities = (studentActivities || []).filter((act: any) => {
+      if (act.studentId !== studentId) return false;
+      const actDate = act.timestamp.split('T')[0];
+      return actDate === dayStr;
+    });
+
+    // Segment into morning (4 AM - 12 PM), afternoon (12 PM - 6 PM), and evening (6 PM - 4 AM)
+    let morningCount = 0;
+    let afternoonCount = 0;
+    let eveningCount = 0;
+
+    dayActivities.forEach((act: any) => {
+      const actDateObj = new Date(act.timestamp);
+      const hrs = actDateObj.getHours();
+      if (hrs >= 4 && hrs < 12) {
+        morningCount++;
+      } else if (hrs >= 12 && hrs < 18) {
+        afternoonCount++;
+      } else {
+        eveningCount++;
+      }
+    });
+
+    const total = dayActivities.length;
+    let intensity: 'none' | 'low' | 'medium' | 'high' = 'none';
+    if (total > 0 && total <= 2) {
+      intensity = 'low';
+    } else if (total > 2 && total <= 5) {
+      intensity = 'medium';
+    } else if (total > 5) {
+      intensity = 'high';
+    }
+
+    result.push({
+      dateStr: dayStr,
+      dayLabel,
+      formattedDate: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', weekday: 'short' }),
+      total,
+      intensity,
+      periods: {
+        morning: morningCount,
+        afternoon: afternoonCount,
+        evening: eveningCount
+      },
+      list: dayActivities
+    });
+  }
+
+  return result;
+}
+
+function TooltipWrapper({ children, day }: { children: React.ReactNode, day: any }) {
+  const [show, setShow] = useState(false);
+
+  const formatActivitySummary = () => {
+    if (day.total === 0) return "No activity recorded";
+    const parts = [];
+    if (day.periods.morning > 0) parts.push(`Morning: ${day.periods.morning} action(s)`);
+    if (day.periods.afternoon > 0) parts.push(`Afternoon: ${day.periods.afternoon} action(s)`);
+    if (day.periods.evening > 0) parts.push(`Evening: ${day.periods.evening} action(s)`);
+    return parts.join(", ");
+  };
+
+  return (
+    <div 
+      className="relative" 
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 bg-slate-900 border border-slate-800 text-[10px] text-white p-2.5 rounded shadow-lg z-50 pointer-events-none font-sans whitespace-normal normal-case text-center">
+          <p className="font-bold border-b border-slate-800 pb-1 mb-1">
+            {day.formattedDate}
+          </p>
+          <p className="text-slate-300 mb-1">
+            <strong>{day.total} activities</strong>: {formatActivitySummary()}
+          </p>
+          {day.total > 0 && (
+            <div className="text-[9px] text-slate-400 space-y-0.5 border-t border-slate-800/80 pt-1 mt-1 max-h-20 overflow-y-auto font-mono text-left">
+              {day.list.slice(0, 3).map((act: any) => (
+                <div key={act.id} className="truncate select-none">
+                  - {act.description}
+                </div>
+              ))}
+              {day.total > 3 && (
+                <div className="text-[8px] text-slate-500 italic text-center mt-1">
+                  + {day.total - 3} more activities
+                </div>
+              )}
+            </div>
+          )}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 rotate-45" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface LiveMonitorProps {
   students: any[];
   attempts: any[];
@@ -30,6 +161,7 @@ interface LiveMonitorProps {
   signals: any[];
   lessons: any[];
   blocks: any[];
+  studentActivities?: any[];
   onOpenDossier: (studentId: string, lessonId: string) => void;
   onUnlockStudent: (attemptId: string) => void;
 }
@@ -41,6 +173,7 @@ export default function LiveMonitor({
   signals,
   lessons,
   blocks,
+  studentActivities = [],
   onOpenDossier,
   onUnlockStudent,
 }: LiveMonitorProps) {
@@ -518,6 +651,46 @@ export default function LiveMonitor({
                       </div>
                     </div>
 
+                    {/* Activity Presence */}
+                    <div className="flex justify-between items-center bg-slate-50/60 border border-slate-100 px-3 py-2 rounded-md text-[10px] text-slate-500 font-medium">
+                      <div className="space-y-0.5">
+                        <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider block">last signed in</span>
+                        <span className="text-slate-700 font-semibold">{formatRelativeTime(student.lastSignedInAt)}</span>
+                      </div>
+                      <div className="text-right space-y-0.5">
+                        <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider block">last active</span>
+                        <span className="text-slate-700 font-semibold">{formatRelativeTime(latestAttempt.lastActiveAt || student.lastActiveAt)}</span>
+                      </div>
+                    </div>
+
+                    {/* Compact 7-Day Activity Heatmap */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block">Activity this week</span>
+                        <span className="text-[8px] text-slate-400 italic font-mono uppercase">7-Day Pacing</span>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1 border border-slate-100 bg-white p-1.5 rounded-md">
+                        {get7DayActivityHeatmap(student.id, studentActivities).map((day) => (
+                          <TooltipWrapper key={day.dateStr} day={day}>
+                            <div className="flex flex-col items-center">
+                              <span className="text-[7px] text-slate-400 font-bold scale-90 mb-0.5 select-none">{day.dayLabel}</span>
+                              <div className={`w-full aspect-square min-h-[1.5rem] rounded-sm border flex items-center justify-center transition-all ${
+                                day.intensity === 'high'
+                                  ? 'bg-indigo-600 text-white border-indigo-700 font-bold'
+                                  : day.intensity === 'medium'
+                                  ? 'bg-indigo-300 text-indigo-900 border-indigo-400 font-semibold'
+                                  : day.intensity === 'low'
+                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-200 font-medium'
+                                  : 'bg-slate-50 text-slate-300 border-slate-100'
+                              }`}>
+                                <span className="text-[9px] font-bold">{day.total}</span>
+                              </div>
+                            </div>
+                          </TooltipWrapper>
+                        ))}
+                      </div>
+                    </div>
+
                     {/* Stats grid */}
                     <div className="grid grid-cols-2 gap-2 bg-slate-50 border border-slate-100 p-2.5 rounded-md text-[11px]">
                       <div>
@@ -606,6 +779,8 @@ export default function LiveMonitor({
                       <th className="py-3 px-4">Progress</th>
                       <th className="py-3 px-4">Position</th>
                       <th className="py-3 px-4">Time / Responses</th>
+                      <th className="py-3 px-4">Last Active / Signed In</th>
+                      <th className="py-3 px-4">Weekly Pacing</th>
                       <th className="py-3 px-4">Score</th>
                       <th className="py-3 px-4">Actions</th>
                     </tr>
@@ -697,6 +872,29 @@ export default function LiveMonitor({
                               {sResponses.length} responses &bull; {signals_.total} signals
                             </div>
                           </td>
+                          <td className="py-2.5 px-4 whitespace-nowrap text-[10px] text-slate-500 font-medium">
+                            <div className="font-semibold text-slate-700">Active: {formatRelativeTime(attempt.lastActiveAt || student.lastActiveAt)}</div>
+                            <div className="text-[9px] text-slate-400 mt-0.5">Signed in: {formatRelativeTime(student.lastSignedInAt)}</div>
+                          </td>
+                          <td className="py-2.5 px-4 whitespace-nowrap">
+                            <div className="flex items-center gap-0.5">
+                              {get7DayActivityHeatmap(student.id, studentActivities).map((day) => (
+                                <TooltipWrapper key={day.dateStr} day={day}>
+                                  <div className={`w-5 h-5 rounded-sm border flex items-center justify-center text-[7.5px] transition-all select-none ${
+                                    day.intensity === 'high'
+                                      ? 'bg-indigo-600 text-white border-indigo-700 font-bold'
+                                      : day.intensity === 'medium'
+                                      ? 'bg-indigo-300 text-indigo-900 border-indigo-400'
+                                      : day.intensity === 'low'
+                                      ? 'bg-[#E0E7FF] text-indigo-800 border-indigo-200'
+                                      : 'bg-slate-50 text-slate-300 border-slate-150'
+                                  }`}>
+                                    {day.total > 0 ? day.total : ''}
+                                  </div>
+                                </TooltipWrapper>
+                              ))}
+                            </div>
+                          </td>
                           <td className="py-2.5 px-4 whitespace-nowrap font-bold text-slate-800">
                             <div className="font-mono text-[11px]">{earnedPoints}/{maxPoints} pts</div>
                             {hasPendingGrading && (
@@ -735,7 +933,7 @@ export default function LiveMonitor({
               </div>
             </div>
           )}
-
+          
           {/* NOT STARTED */}
           {showNotStarted && searchNotStarted.length > 0 && (
             <div className="space-y-3">

@@ -48,9 +48,11 @@ export default function App() {
   const [attempts, setAttempts] = useState<any[]>([]);
   const [responses, setResponses] = useState<any[]>([]);
   const [signals, setSignals] = useState<any[]>([]);
+  const [studentActivities, setStudentActivities] = useState<any[]>([]);
   const [courses, setCourses] = useState<any[]>([]);
   const [gradebookEntries, setGradebookEntries] = useState<any[]>([]);
   const [gradebookResponseEntries, setGradebookResponseEntries] = useState<any[]>([]);
+  const [lessonVersions, setLessonVersions] = useState<any[]>([]);
 
   // Selection states
   const [activeTab, setActiveTab] = useState<"live" | "builder" | "courses" | "gradebook" | "ai" | "admin">("live");
@@ -175,6 +177,8 @@ export default function App() {
             setSignals(analyticsRaw.signals || []);
             setGradebookEntries(analyticsRaw.gradebookEntries || []);
             setGradebookResponseEntries(analyticsRaw.gradebookResponseEntries || []);
+            setStudentActivities(analyticsRaw.studentActivities || []);
+            setLessonVersions(analyticsRaw.lessonVersions || []);
           } else {
             console.warn(`VERITAS Learn - Analytics fetch returned non-ok status: ${analyticsRes.status}`);
           }
@@ -443,6 +447,28 @@ export default function App() {
           "Authorization": `Bearer ${token}`
         },
         body: JSON.stringify({ score, notes })
+      });
+      fetchLmsPayload(currentUser, token);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleReviewAction = async (
+    action: "approve" | "mark-reviewed" | "release-feedback",
+    responseId: string,
+    payload?: any
+  ) => {
+    const token = await getFreshToken();
+    if (!token) return;
+    try {
+      await fetch(`/api/ai-review/${responseId}/${action}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify(payload || {})
       });
       fetchLmsPayload(currentUser, token);
     } catch (e) {
@@ -823,6 +849,7 @@ export default function App() {
                   signals={signals}
                   lessons={lessons}
                   blocks={blocks}
+                  studentActivities={studentActivities}
                   onOpenDossier={(studentId, lessonId) => {
                     setActiveDossier({ studentId, lessonId });
                   }}
@@ -874,7 +901,7 @@ export default function App() {
                      gradebookResponseEntries={gradebookResponseEntries}
                      idToken={idToken}
                      onRefresh={() => fetchLmsPayload(currentUser)}
-                     gradebookEntries={gradebookEntries}
+                     gradebookEntries={gradebookEntries} lessonVersions={lessonVersions}
                    />
                  )
                )}
@@ -921,7 +948,10 @@ export default function App() {
           lessons={lessons}
           blocks={blocks}
           assignments={assignments}
+          studentActivities={studentActivities}
+          lessonVersions={lessonVersions}
           onOverrideSave={handleOverrideScore}
+          onReviewAction={handleReviewAction}
           onUnlockStudent={handleUnlockStudent}
           onClose={() => setActiveDossier(null)}
         />

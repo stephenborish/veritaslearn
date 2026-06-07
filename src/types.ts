@@ -12,6 +12,8 @@ export interface User {
   email: string;
   role: UserRole;
   createdAt: string;
+  lastSignedInAt?: string;
+  lastActiveAt?: string;
 }
 
 export interface LessonSettings {
@@ -590,6 +592,17 @@ export interface CompletionValidationResult {
   practiceSummary?: Record<string, unknown>;
 }
 
+export interface StudentActivity {
+  id: string;
+  studentId: string;
+  assignmentId?: string | null;
+  attemptId?: string | null;
+  timestamp: string; // ISO string
+  activityType: 'dashboard_open' | 'attempt_start' | 'attempt_resume' | 'progress_save' | 'video_watch' | 'draft_save' | 'answer_submit' | 'checkpoint_complete' | 'lesson_complete' | 'fullscreen_exit' | 'tab_change';
+  description: string;
+  metadata?: any;
+}
+
 export interface DatabaseSchema {
   users: User[];
   courses: Course[];
@@ -611,4 +624,5 @@ export interface DatabaseSchema {
    * Never mutated after creation. Assignments and attempts reference a versionId.
    */
   lessonVersions?: LessonVersion[];
+  studentActivities?: StudentActivity[];
 }

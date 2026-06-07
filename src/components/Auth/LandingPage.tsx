@@ -18,7 +18,7 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingMode, setLoadingMode] = useState<"teacher" | "new_student" | "returning" | null>(null);
-  const [studentPath, setStudentPath] = useState<"choose" | "new_student">("choose");
+  const [studentPath, setStudentPath] = useState<"choose" | "new_student">("new_student");
 
   const signInWithGoogle = async (): Promise<any> => {
     const result = await signInWithPopup(auth, googleProvider);
@@ -89,7 +89,6 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
   };
 
   const handleBack = () => {
-    setStudentPath("choose");
     setErrorText("");
     setCourseCode("");
   };
@@ -119,23 +118,45 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
             </div>
           </div>
 
-          <button
-            onClick={handleTeacherSignIn}
-            disabled={loading}
-            className="flex items-center gap-2 border border-slate-200/80 bg-white/80 hover:bg-slate-50 text-slate-700 text-[14px] leading-[16px] font-semibold px-4 py-2.5 rounded-[10px] transition-all duration-200 active:scale-95 shadow-sm hover:border-slate-300 cursor-pointer disabled:opacity-60"
-          >
-            {loading && loadingMode === "teacher" ? (
-              <>
-                <span className="w-3.5 h-3.5 border-2 border-slate-500/30 border-t-slate-700 rounded-full animate-spin" />
-                Signing in…
-              </>
-            ) : (
-              <>
-                <ShieldCheck className="w-4 h-4 text-[#AB8423]" />
-                Teacher Portal
-              </>
-            )}
-          </button>
+          <div className="flex items-center gap-2.5">
+            <button
+              id="student-sign-in-btn"
+              onClick={handleReturningStudentSignIn}
+              disabled={loading}
+              className="flex items-center gap-2 border border-slate-200/80 bg-white/80 hover:bg-slate-50 text-slate-700 text-[14px] leading-[16px] font-semibold px-4 py-2.5 rounded-[10px] transition-all duration-200 active:scale-95 shadow-sm hover:border-slate-300 cursor-pointer disabled:opacity-60"
+            >
+              {loading && loadingMode === "returning" ? (
+                <>
+                  <span className="w-3.5 h-3.5 border-2 border-slate-500/30 border-t-indigo-600 rounded-full animate-spin" />
+                  Signing in…
+                </>
+              ) : (
+                <>
+                  <UserCheck className="w-4 h-4 text-indigo-600" />
+                  Student Sign In
+                </>
+              )}
+            </button>
+
+            <button
+              id="teacher-portal-btn"
+              onClick={handleTeacherSignIn}
+              disabled={loading}
+              className="flex items-center gap-2 border border-slate-200/80 bg-white/80 hover:bg-slate-50 text-slate-700 text-[14px] leading-[16px] font-semibold px-4 py-2.5 rounded-[10px] transition-all duration-200 active:scale-95 shadow-sm hover:border-slate-300 cursor-pointer disabled:opacity-60"
+            >
+              {loading && loadingMode === "teacher" ? (
+                <>
+                  <span className="w-3.5 h-3.5 border-2 border-slate-500/30 border-t-slate-700 rounded-full animate-spin" />
+                  Signing in…
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4 text-[#AB8423]" />
+                  Teacher Portal
+                </>
+              )}
+            </button>
+          </div>
         </header>
 
         {/* Error banner */}
@@ -176,9 +197,6 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
             <h1 className="text-[30px] sm:text-[34px] font-extrabold tracking-tight text-slate-900 leading-tight">
               Welcome to VERITAS Learn
             </h1>
-            <p className="text-[15px] text-slate-500 max-w-sm mx-auto leading-relaxed">
-              Sign in with your Malvern Prep Google account to access your lessons and assignments.
-            </p>
           </motion.div>
 
           {/* Student entry cards */}
@@ -192,13 +210,14 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
                   transition={{ duration: 0.2 }}
-                  className="grid grid-cols-1 sm:grid-cols-2 gap-4"
+                  className="w-full max-w-md mx-auto"
                 >
                   {/* New student — enter course code */}
                   <button
+                    id="new-student-join-btn"
                     onClick={() => setStudentPath("new_student")}
                     disabled={loading}
-                    className="group bg-white/85 border border-emerald-200/70 hover:border-emerald-300 rounded-[12px] p-7 shadow-sm hover:shadow-md backdrop-blur-md text-left transition-all duration-200 active:scale-[0.99] flex flex-col gap-4 cursor-pointer disabled:opacity-60"
+                    className="w-full group bg-white/85 border border-emerald-200/70 hover:border-emerald-300 rounded-[12px] p-7 shadow-sm hover:shadow-md backdrop-blur-md text-left transition-all duration-200 active:scale-[0.99] flex flex-col gap-4 cursor-pointer disabled:opacity-60"
                   >
                     <div className="w-11 h-11 bg-emerald-800 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
                       <Users className="w-5 h-5 text-white" />
@@ -209,39 +228,9 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
                         Enter the course code from your teacher to join.
                       </p>
                     </div>
-                    <div className="flex items-center gap-1.5 text-emerald-700 text-sm font-semibold mt-auto pt-1">
+                    <div className="flex items-center gap-1.5 text-emerald-700 text-sm font-semibold mt-auto pt-4">
                       Enter course code
                       <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-                    </div>
-                  </button>
-
-                  {/* Returning student — sign in directly */}
-                  <button
-                    onClick={handleReturningStudentSignIn}
-                    disabled={loading}
-                    className="group bg-white/85 border border-slate-200/80 hover:border-indigo-200 rounded-[12px] p-7 shadow-sm hover:shadow-md backdrop-blur-md text-left transition-all duration-200 active:scale-[0.99] flex flex-col gap-4 cursor-pointer disabled:opacity-60"
-                  >
-                    <div className="w-11 h-11 bg-[#0A192F] rounded-lg flex items-center justify-center shrink-0 shadow-sm">
-                      <UserCheck className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                      <h2 className="text-[18px] font-bold text-slate-900 leading-snug">Returning student</h2>
-                      <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
-                        Already enrolled? Sign in to your account directly.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-indigo-700 text-sm font-semibold mt-auto pt-1">
-                      {loading && loadingMode === "returning" ? (
-                        <>
-                          <span className="w-3.5 h-3.5 border-2 border-indigo-400/40 border-t-indigo-600 rounded-full animate-spin" />
-                          Signing in…
-                        </>
-                      ) : (
-                        <>
-                          Sign in
-                          <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-                        </>
-                      )}
                     </div>
                   </button>
                 </motion.div>
@@ -255,16 +244,8 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
                   transition={{ duration: 0.2 }}
                   className="bg-white/88 border border-slate-200/50 rounded-[12px] p-8 shadow-sm backdrop-blur-md space-y-6"
                 >
-                  {/* Back + heading */}
+                  {/* Heading */}
                   <div className="flex items-center gap-3">
-                    <button
-                      onClick={handleBack}
-                      disabled={loading}
-                      className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer -ml-1 disabled:opacity-50"
-                      aria-label="Go back"
-                    >
-                      <ArrowLeft className="w-4 h-4" />
-                    </button>
                     <div className="w-11 h-11 bg-emerald-800 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
                       <Users className="w-5 h-5 text-white" />
                     </div>
@@ -300,9 +281,6 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
                       spellCheck={false}
                       autoFocus
                     />
-                    <p className="text-[11px] text-slate-400 leading-snug">
-                      Course codes are uppercase letters and numbers only — no spaces.
-                    </p>
                   </div>
 
                   <button
@@ -322,34 +300,11 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
                       </>
                     )}
                   </button>
-
-                  <p className="text-center text-xs text-slate-400">
-                    Already enrolled?{" "}
-                    <button
-                      onClick={handleReturningStudentSignIn}
-                      disabled={loading}
-                      className="text-indigo-600 font-semibold hover:underline cursor-pointer disabled:opacity-50"
-                    >
-                      Sign in without a code
-                    </button>
-                  </p>
                 </motion.div>
               )}
 
             </AnimatePresence>
           </div>
-
-          {/* Teacher note */}
-          <motion.p
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.5 }}
-            className="mt-8 text-xs text-slate-400 text-center"
-          >
-            Teachers: use the{" "}
-            <span className="font-semibold text-slate-500">Teacher Portal</span>{" "}
-            button in the upper right.
-          </motion.p>
         </div>
 
         {/* Footer */}

@@ -229,7 +229,62 @@ function readDb() {
     dbMemory.questionAssignments = Array.isArray(dbMemory.assignments) ? dbMemory.assignments : [];
   }
   if (!Array.isArray(dbMemory.enrollments)) dbMemory.enrollments = [];
+  if (!Array.isArray(dbMemory.studentActivities)) dbMemory.studentActivities = [];
   return dbMemory;
+}
+
+function updateLastActiveTimestamps(db: any, studentId: string, attemptId?: string | null) {
+  const nowStr = new Date().toISOString();
+  
+  if (db.users) {
+    const user = db.users.find((u: any) => u.id === studentId);
+    if (user) {
+      user.lastActiveAt = nowStr;
+    }
+  }
+  
+  if (attemptId && db.attempts) {
+    const attempt = db.attempts.find((a: any) => a.id === attemptId);
+    if (attempt) {
+      attempt.lastActiveAt = nowStr;
+    }
+  }
+}
+
+function recordStudentActivity(db: any, studentId: string, activityType: string, description: string, attemptId?: string | null, assignmentId?: string | null, metadata?: any) {
+  if (!db.studentActivities) {
+    db.studentActivities = [];
+  }
+  
+  // Debounce consecutive 'video_watch' or focus events if they happen within a short time (e.g., 2 minutes) to prevent spam
+  if (activityType === 'video_watch' || activityType === 'progress_save' || activityType === 'draft_save') {
+    const lastActivity = [...db.studentActivities]
+      .reverse()
+      .find((a: any) => a.studentId === studentId && a.activityType === activityType && a.attemptId === attemptId);
+    if (lastActivity) {
+      const elapsedMs = Date.now() - new Date(lastActivity.timestamp).getTime();
+      if (elapsedMs < 2 * 60 * 1000) {
+        // Update its timestamp instead of creating a new one to prevent spam
+        lastActivity.timestamp = new Date().toISOString();
+        updateLastActiveTimestamps(db, studentId, attemptId);
+        return;
+      }
+    }
+  }
+
+  const activity = {
+    id: "act_" + Math.random().toString(36).substring(2, 9),
+    studentId,
+    timestamp: new Date().toISOString(),
+    activityType,
+    description,
+    attemptId: attemptId || null,
+    assignmentId: assignmentId || null,
+    metadata: metadata || {}
+  };
+
+  db.studentActivities.push(activity);
+  updateLastActiveTimestamps(db, studentId, attemptId);
 }
 
 // ==========================================
@@ -1723,6 +1778,8 @@ app.post("/api/auth/login", async (req, res) => {
 
     let user = db.users.find((u: any) => u.id === decodedToken.uid || u.email.toLowerCase() === email);
 
+    const nowIso = new Date().toISOString();
+
     if (!user) {
       // New users default to student. Teacher role dynamically checked.
       const isTeacher = isUserTeacher(email, db);
@@ -1731,12 +1788,17 @@ app.post("/api/auth/login", async (req, res) => {
         name: decodedToken.name || email.split("@")[0].replace(/[._]/g, " "),
         email,
         role: isTeacher ? "teacher" : "student",
-        createdAt: new Date().toISOString()
+        createdAt: nowIso,
+        lastSignedInAt: nowIso,
+        lastActiveAt: nowIso
       };
       if (email === "stephenborish@gmail.com") {
         user.isSuperAdmin = true;
       }
       db.users.push(user);
+      if (user.role === "student") {
+        recordStudentActivity(db, user.id, "dashboard_open", "Signed up and opened student portal", null, null);
+      }
       writeDb(db);
     } else {
       let changed = false;
@@ -1753,9 +1815,17 @@ app.post("/api/auth/login", async (req, res) => {
         user.isSuperAdmin = true;
         changed = true;
       }
-      if (changed) {
-        writeDb(db);
+      
+      // Update lastSignedInAt
+      user.lastSignedInAt = nowIso;
+      user.lastActiveAt = nowIso;
+      changed = true;
+
+      if (user.role === "student") {
+        recordStudentActivity(db, user.id, "dashboard_open", "Signed into student portal", null, null);
       }
+      
+      writeDb(db);
     }
 
     if (email === "stephenborish@gmail.com") {
@@ -1775,6 +1845,25 @@ app.get("/api/auth/me", async (req, res) => {
     res.status(401).json({ loggedIn: false });
     return;
   }
+  
+  if (user.role === "student") {
+    const db = readDb();
+    const dbUser = db.users.find((u: any) => u.id === user.id);
+    if (dbUser) {
+      const tenMinAgo = Date.now() - 10 * 60 * 1000;
+      if (!dbUser.lastSignedInAt || new Date(dbUser.lastSignedInAt).getTime() < tenMinAgo) {
+        const nowIso = new Date().toISOString();
+        dbUser.lastSignedInAt = nowIso;
+        dbUser.lastActiveAt = nowIso;
+        recordStudentActivity(db, dbUser.id, "dashboard_open", "Opened student portal", null, null);
+        await commitDb(db).catch((e) => console.error("VERITAS Learn - Failed to persist authed me activity:", e));
+        // Update user object fields returned as well
+        user.lastSignedInAt = nowIso;
+        user.lastActiveAt = nowIso;
+      }
+    }
+  }
+  
   res.json({ loggedIn: true, user });
 });
 
@@ -3596,6 +3685,10 @@ app.post("/api/attempts", requireAuth, async (req, res) => {
       return;
     }
 
+    if (user.role === "student") {
+      recordStudentActivity(db, user.id, "attempt_start", `Started attempt for lesson "${lesson.title}"`, newAttempt.id, resolvedAssignmentId);
+    }
+
     await commitDb(db);
     res.status(201).json({ attempt: user.role === "student" ? sanitizeAttemptForStudent(newAttempt) : newAttempt });
   } catch (err) {
@@ -3805,6 +3898,20 @@ app.post("/api/attempts/:id/progress", requireAuth, async (req, res) => {
   if (blockId && Number(activeTime) > 0) {
     if (!attempt.blockTimeSpent) attempt.blockTimeSpent = {};
     attempt.blockTimeSpent[blockId] = (attempt.blockTimeSpent[blockId] || 0) + Number(activeTime);
+  }
+
+  // Record student activity log if student
+  if (user.role === "student") {
+    const currentBlockObj = db.blocks.find((b: any) => b.id === blockId);
+    if (currentBlockObj) {
+      if (currentBlockObj.type === "video") {
+        recordStudentActivity(db, attempt.studentId, "video_watch", `Watched required video: "${currentBlockObj.title}"`, attempt.id, attempt.assignmentId);
+      } else {
+        recordStudentActivity(db, attempt.studentId, "progress_save", `Reviewed academic content: "${currentBlockObj.title}"`, attempt.id, attempt.assignmentId);
+      }
+    } else {
+      recordStudentActivity(db, attempt.studentId, "progress_save", "Saved lesson progress", attempt.id, attempt.assignmentId);
+    }
   }
 
   // Record last active timestamp for "inactive > 24h" anomaly detection
@@ -4143,6 +4250,13 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
 
       db.responses.push(newResponse);
       
+      if (submitUser?.role === "student") {
+        const blockObj = db.blocks.find((b: any) => b.id === blockId);
+        const titleLabel = blockObj ? blockObj.title : "Lesson Question";
+        const checkLabel = checkpointId ? " (Checkpoint)" : "";
+        recordStudentActivity(db, attempt.studentId, "answer_submit", `Submitted Multiple Choice answer for "${titleLabel}"${checkLabel}`, attempt.id, attempt.assignmentId);
+      }
+      
       // Write the response-level GradebookEntry
       upsertResponseGradebookEntry(newResponse, attempt, "auto_scored", "multiple_choice", undefined, db);
 
@@ -4286,6 +4400,13 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
 
     db.aiGradingRecords.push(newGradingRecord);
     db.responses.push(newResponse);
+
+    if (submitUser?.role === "student") {
+      const blockObj = db.blocks.find((b: any) => b.id === blockId);
+      const titleLabel = blockObj ? blockObj.title : "Lesson Question";
+      const checkLabel = checkpointId ? " (Checkpoint)" : "";
+      recordStudentActivity(db, attempt.studentId, "answer_submit", `Submitted Short Answer response for "${titleLabel}"${checkLabel}`, attempt.id, attempt.assignmentId);
+    }
 
     // Initial response-level GradebookEntry for Short Answer: pending AI
     upsertResponseGradebookEntry(newResponse, attempt, "pending_ai", "ai_short_answer", undefined, db);
@@ -4547,6 +4668,12 @@ app.post("/api/attempts/:id/complete", requireAuth, async (req, res) => {
 
   // Update GradebookEntry status to 'completed' (unless AI still pending)
   const attempt = db.attempts[attemptIdx];
+  
+  if (completeUser?.role === "student") {
+    const lessonTitle = db.lessons.find((l: any) => l.id === attempt.lessonId)?.title || "lesson";
+    recordStudentActivity(db, attempt.studentId, "lesson_complete", `Successfully completed lesson: "${lessonTitle}"`, attempt.id, attempt.assignmentId);
+  }
+
   const assignmentId = attempt.assignmentId ||
     (db.lessonAssignments || []).find((la: any) => la.lessonId === attempt.lessonId)?.id;
   if (assignmentId) {
@@ -4773,6 +4900,12 @@ app.post("/api/attempts/:id/draft", requireAuth, async (req, res) => {
   };
   db.attempts[attemptIdx].lastActiveAt = savedAt;
 
+  if (user?.role === "student") {
+    const qObj = db.blocks.find((b: any) => b.type === "question" && (b.singleQuestion?.id === questionId || (b.questionPool?.questions || []).some((q: any) => q.id === questionId)));
+    const qTitle = qObj ? qObj.title : "Short Answer Prompt";
+    recordStudentActivity(db, db.attempts[attemptIdx].studentId, "draft_save", `Drafted essay response for "${qTitle}"`, db.attempts[attemptIdx].id, db.attempts[attemptIdx].assignmentId);
+  }
+
   try {
     await commitDb(db);
     res.json({ success: true, savedAt, clientUpdatedAt: incomingClientUpdatedAt });
@@ -4858,6 +4991,8 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
   const signals = db.securitySignals;
   const gradebookEntries = db.gradebookEntries || [];
   const gradebookResponseEntries = db.gradebookResponseEntries || [];
+  const studentActivities = db.studentActivities || [];
+  const lessonVersions = db.lessonVersions || [];
 
   res.json({
     students,
@@ -4867,6 +5002,8 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
     signals,
     gradebookEntries,
     gradebookResponseEntries,
+    studentActivities,
+    lessonVersions,
   });
 });
 

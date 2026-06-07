@@ -9,7 +9,9 @@
         "name": { "type": "string" },
         "email": { "type": "string" },
         "role": { "type": "string", "enum": ["teacher", "student"] },
-        "createdAt": { "type": "string" }
+        "createdAt": { "type": "string" },
+        "lastSignedInAt": { "type": "string" },
+        "lastActiveAt": { "type": "string" }
       },
       "required": ["id", "name", "email", "role", "createdAt"]
     },
@@ -244,6 +246,21 @@
         "status": { "type": "string", "enum": ["published", "archived"] }
       },
       "required": ["id", "lessonId", "versionNumber", "title", "createdBy", "createdAt", "sourceLessonUpdatedAt", "status"]
+    },
+    "StudentActivity": {
+      "title": "StudentActivity",
+      "description": "Student generated activity tracking records",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "activityType": { "type": "string" },
+        "description": { "type": "string" },
+        "attemptId": { "type": "string" },
+        "assignmentId": { "type": "string" }
+      },
+      "required": ["id", "studentId", "timestamp", "activityType", "description"]
     }
   },
   "firestore": {
@@ -310,6 +327,10 @@
     "lessonVersions/{versionId}": {
       "schema": "LessonVersion",
       "description": "Immutable historic version snapshorts of published lessons"
+    },
+    "studentActivities/{activityId}": {
+      "schema": "StudentActivity",
+      "description": "Student activity logs for heatmaps and dossiers"
     }
   }
 }

@@ -57,6 +57,7 @@ interface GradebookProps {
   signals?: any[];
   idToken?: string | null;
   onRefresh?: () => void;
+  lessonVersions?: any[];
 }
 
 export default function TimelineGradebook({
@@ -70,7 +71,8 @@ export default function TimelineGradebook({
   gradebookResponseEntries = [],
   signals = [],
   idToken = null,
-  onRefresh
+  onRefresh,
+  lessonVersions = []
 }: GradebookProps) {
   const [showPreviewAttempts, setShowPreviewAttempts] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -137,6 +139,7 @@ export default function TimelineGradebook({
     gradebookEntries,
     gradebookResponseEntries,
     assignments,
+    lessonVersions,
   });
 
   const parentRef = useRef<HTMLDivElement>(null);

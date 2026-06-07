@@ -29,10 +29,10 @@ export function safeScore(score: any, maxPoints: any, fallback: string = "—"):
   if (score === null || score === undefined || isNaN(Number(score))) {
     return fallback;
   }
-  if (maxPoints === null || maxPoints === undefined || isNaN(Number(maxPoints)) || Number(maxPoints) <= 0) {
-    return `${Number(score)} (Point value unavailable)`;
-  }
   const s = Number(score);
+  if (maxPoints === null || maxPoints === undefined || isNaN(Number(maxPoints)) || Number(maxPoints) <= 0) {
+    return `${s} / Point value not saved in this older version`;
+  }
   const p = Number(maxPoints);
   if (!isFinite(s) || !isFinite(p)) {
     return "Score unavailable";
