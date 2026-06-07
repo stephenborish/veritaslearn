@@ -541,7 +541,7 @@ export default function LiveMonitor({
                         </span>
                       </div>
                       <div>
-                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Security signals</span>
+                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Integrity signals</span>
                         <span className={`font-semibold ${signals_.total > 0 ? "text-amber-700" : "text-slate-500"}`}>
                           {signals_.total === 0 ? "None" : `${signals_.total} events`}
                           {signals_.fullscreenExits > 0 && (

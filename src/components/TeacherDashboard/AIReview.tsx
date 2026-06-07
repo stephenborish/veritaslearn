@@ -361,8 +361,28 @@ export default function AIReview({
   const showAnomalies =
     activeFilter === "all" || activeFilter === "anomalies";
 
-  const formatEventType = (t: string) =>
-    t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const formatEventType = (t: string): string => {
+    const labels: Record<string, string> = {
+      fullscreen_exit: "Fullscreen exited",
+      fullscreen_enter: "Fullscreen entered",
+      visibility_hidden: "Visibility hidden",
+      visibility_visible: "Visibility visible",
+      tab_change: "Tab/window changed",
+      blur: "Tab/window changed",
+      focus_lost: "Tab/window changed",
+      window_blur: "Tab/window changed",
+      ai_agent_detected: "Possible AI agent use",
+      ai_agent_use: "Possible AI agent use",
+      lockout: "Attempt blocked",
+      focus_lockout: "Attempt blocked",
+      lockout_override: "Block removed by teacher",
+      copy: "Copy detected",
+      paste: "Paste detected",
+      right_click: "Right-click detected",
+      devtools_open: "Developer tools opened",
+    };
+    return labels[t] ?? t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  };
 
   const uniqueAssignments = Array.from(
     new Map(
@@ -395,7 +415,7 @@ export default function AIReview({
                 {f === "all"
                   ? "All"
                   : f === "integrity"
-                  ? "Focus Events"
+                  ? "Integrity Signals"
                   : f === "anomalies"
                   ? "Anomalies"
                   : STATUS_LABELS[f as ReviewStatus]?.label || f}
@@ -872,7 +892,7 @@ export default function AIReview({
           {(activeFilter === "all" || activeFilter === "integrity") && (
             <div className="flex items-center gap-2 mt-2">
               <AlertTriangle className="w-4 h-4 text-amber-500" />
-              <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-500 font-mono">Focus Events</h3>
+              <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-500 font-mono">Integrity Signals</h3>
             </div>
           )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
