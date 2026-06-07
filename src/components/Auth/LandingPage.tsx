@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ShieldCheck, AlertCircle, BookOpen, Users, ArrowRight, GraduationCap } from "lucide-react";
 import { motion } from "motion/react";
 import { auth, googleProvider, signInWithPopup } from "../../lib/firebase";
+import LandingArtBackground from "./LandingArtBackground";
 
 export const PENDING_COURSE_CODE_KEY = "veritas_pending_course_code";
 
@@ -71,182 +72,154 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
   };
 
   return (
-    <div className="min-h-screen bg-[#F4F5F7] text-[#1A1A1A] font-sans flex flex-col">
-      {/* Header */}
-      <header className="bg-[#0A192F] text-white px-6 py-4 flex items-center gap-3 shrink-0">
-        <img
-          src="/favicon.png"
-          alt="Veritas Learn Logo"
-          referrerPolicy="no-referrer"
-          className="w-9 h-9 object-contain rounded-sm shadow-sm"
-        />
-        <div className="flex flex-col">
-          <span className="text-xl font-semibold tracking-tight leading-none">
-            VERITAS <span className="font-light opacity-80">Learn</span>
-          </span>
-          <span className="text-[10px] text-white/50 uppercase tracking-widest font-mono">
-            Malvern Prep
-          </span>
-        </div>
-      </header>
+    <div className="relative min-h-screen text-[#1A1A1A] font-sans flex flex-col bg-[#FCFBFA] overflow-hidden">
+      {/* Decorative, premium abstract grainy base background */}
+      <LandingArtBackground />
 
-      {/* Hero */}
-      <section className="bg-[#0A192F] text-white px-6 pb-16 pt-10 text-center shrink-0">
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-        >
-          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight max-w-3xl mx-auto leading-tight">
-            Assessment that uncovers the learning behind every answer.
-          </h1>
-          <p className="text-white/65 mt-4 text-base max-w-2xl mx-auto leading-relaxed">
-            Design lessons, guide practice, score responses, and review student thinking from one
-            secure learning workspace.
-          </p>
-        </motion.div>
-      </section>
-
-      {/* Error banner */}
-      {errorText && (
-        <div className="bg-red-50 border-b border-red-200 px-6 py-3 flex items-center gap-2 shrink-0">
-          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-          <span className="text-sm text-red-800 flex-1">{errorText}</span>
+      {/* Actual foreground layout - elevated above the background art */}
+      <div className="relative z-10 flex-1 flex flex-col justify-between min-h-screen">
+        
+        {/* Header */}
+        <header className="px-6 py-5 flex items-center justify-between shrink-0 border-b border-slate-200/40 bg-white/35 backdrop-blur-sm">
+          <div className="flex items-center gap-3">
+            <img
+              src="/favicon.png"
+              alt="Veritas Learn Logo"
+              referrerPolicy="no-referrer"
+              className="w-10 h-10 object-contain rounded-[8px] shadow-sm"
+            />
+            <div className="flex flex-col">
+              <span className="text-[23px] leading-[23px] mt-[5px] font-extrabold tracking-tight text-slate-950">
+                VERITAS <span className="font-light text-slate-800">Learn</span>
+              </span>
+              <span className="text-[11px] leading-[12.5px] font-sans text-left mt-[6px] text-[#AB8423] uppercase tracking-widest font-bold">
+                Malvern Prep
+              </span>
+            </div>
+          </div>
+          
           <button
-            onClick={() => setErrorText("")}
-            className="text-red-400 hover:text-red-600 text-xs font-bold uppercase tracking-wide shrink-0"
+            onClick={handleTeacherSignIn}
+            disabled={loading}
+            className="flex items-center gap-2 border border-slate-200/80 bg-white/80 hover:bg-slate-50 text-slate-700 text-[14px] leading-[16px] font-semibold px-4 py-2.5 rounded-[10px] transition-all duration-200 active:scale-95 shadow-sm hover:border-slate-300 pointer-events-auto cursor-pointer"
           >
-            Dismiss
+            {loading && loadingMode === "teacher" ? (
+              <>
+                <span className="w-3.5 h-3.5 border-2 border-slate-500/30 border-t-slate-700 rounded-full animate-spin" />
+                Signing in…
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="w-4 h-4 text-[#AB8423]" />
+                Teacher Portal
+              </>
+            )}
           </button>
-        </div>
-      )}
+        </header>
 
-      {/* Entry panels */}
-      <div className="flex-1 max-w-4xl w-full mx-auto px-6 py-12">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
 
-          {/* Teacher card */}
-          <motion.div
-            initial={{ opacity: 0, x: -16 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.4, delay: 0.15 }}
-            className="bg-white border border-slate-200 rounded-lg p-8 shadow-sm flex flex-col gap-5"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 bg-[#0A192F] rounded-lg flex items-center justify-center shrink-0 shadow-sm">
-                <BookOpen className="w-5 h-5 text-[#E5B53B]" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">Teachers</h2>
-                <p className="text-xs text-slate-400 font-medium">Lesson design &amp; assessment</p>
-              </div>
-            </div>
 
-            <p className="text-sm text-slate-600 leading-relaxed">
-              Design lessons, assign learning activities, and review student thinking in one secure
-              workspace.
-            </p>
-
-            <button
-              onClick={handleTeacherSignIn}
-              disabled={loading}
-              className="w-full bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-sm py-3 px-4 rounded font-semibold tracking-wide transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+        {/* Error banner */}
+        {errorText && (
+          <div className="max-w-4xl w-full mx-auto px-6 mb-2 shrink-0">
+            <motion.div 
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              className="bg-rose-50 border border-rose-200 rounded-lg px-4 py-3.5 flex items-center gap-2.5 shadow-sm"
             >
-              {loading && loadingMode === "teacher" ? (
-                <>
-                  <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin inline-block" />
-                  Signing in…
-                </>
-              ) : (
-                <>
-                  <ShieldCheck className="w-4 h-4" />
-                  Sign in with Google
-                </>
-              )}
-            </button>
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span className="text-xs sm:text-sm text-rose-800 flex-1 font-medium">{errorText}</span>
+              <button
+                onClick={() => setErrorText("")}
+                className="text-rose-500 hover:text-rose-700 text-xs font-bold uppercase tracking-wider shrink-0"
+              >
+                Dismiss
+              </button>
+            </motion.div>
+          </div>
+        )}
 
-            <p className="text-[11px] text-slate-400 text-center">
-              Use your school Google account.
-            </p>
-          </motion.div>
+        {/* Entry panels */}
+        <div className="flex-1 max-w-md w-full mx-auto px-6 py-12 flex items-center justify-center">
+          <div className="w-full">
 
-          {/* Student card */}
-          <motion.div
-            initial={{ opacity: 0, x: 16 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ duration: 0.4, delay: 0.25 }}
-            className="bg-white border border-slate-200 rounded-lg p-8 shadow-sm flex flex-col gap-5"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-11 h-11 bg-emerald-600 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
-                <Users className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-slate-900">Students</h2>
-                <p className="text-xs text-slate-400 font-medium">Join a course &amp; begin learning</p>
-              </div>
-            </div>
-
-            <p className="text-sm text-slate-600 leading-relaxed">
-              Enter the course code from your teacher, then continue with your school Google account.
-            </p>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wide">
-                Course Code
-              </label>
-              <input
-                type="text"
-                value={courseCode}
-                onChange={(e) => {
-                  setCourseCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ""));
-                  if (errorText) setErrorText("");
-                }}
-                onKeyDown={(e) => e.key === "Enter" && !loading && handleStudentContinue()}
-                placeholder="e.g. APBIO-4M8X"
-                className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2.5 text-slate-800 font-mono font-semibold uppercase tracking-widest focus:outline-none focus:border-[#0A192F] text-sm placeholder:normal-case placeholder:tracking-normal placeholder:font-normal placeholder:text-slate-400"
-                disabled={loading}
-                autoComplete="off"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-            </div>
-
-            <button
-              onClick={handleStudentContinue}
-              disabled={loading}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-sm py-3 px-4 rounded font-semibold tracking-wide transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+            {/* Student card - centered layout */}
+            <motion.div
+              initial={{ opacity: 0, y: 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.15 }}
+              className="bg-white/85 border border-slate-200/50 rounded-[10px] p-8 shadow-sm hover:shadow-md backdrop-blur-md flex flex-col justify-between gap-6 transition-all duration-300"
             >
-              {loading && loadingMode === "student" ? (
-                <>
-                  <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin inline-block" />
-                  Signing in…
-                </>
-              ) : (
-                <>
-                  Continue to Learning
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
-            </button>
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 bg-emerald-750 bg-emerald-800 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                    <Users className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-[23px] font-bold text-slate-900">Students</h2>
+                    <p className="text-xs text-[#065F46] font-sans font-bold uppercase tracking-wider">Join a course &amp; begin learning</p>
+                  </div>
+                </div>
 
-            <p className="text-[11px] text-slate-400 text-center">
-              You'll sign in with your school Google account after entering your code.
-            </p>
-          </motion.div>
+                <p className="text-sm text-slate-600 leading-relaxed">
+                  To enroll in a course, enter the code shared by your teacher to begin.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 mb-2 uppercase tracking-widest font-sans">
+                    Course Join Code
+                  </label>
+                  <input
+                    type="text"
+                    value={courseCode}
+                    onChange={(e) => {
+                      setCourseCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ""));
+                      if (errorText) setErrorText("");
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && !loading && handleStudentContinue()}
+                    placeholder="e.g. MATH34"
+                    className="w-full bg-slate-100/65 border border-slate-200/60 rounded-lg px-3 py-3 text-slate-800 font-mono font-bold uppercase tracking-widest focus:outline-none focus:border-emerald-600 focus:bg-white text-sm placeholder:normal-case placeholder:tracking-normal placeholder:font-normal placeholder:text-slate-400 transition-colors"
+                    disabled={loading}
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                </div>
+
+                <button
+                  onClick={handleStudentContinue}
+                  disabled={loading}
+                  className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-[16px] py-3.5 px-4 rounded-[10px] font-semibold tracking-wide transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                >
+                  {loading && loadingMode === "student" ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin inline-block" />
+                      Signing in…
+                    </>
+                  ) : (
+                    <>
+                      Continue to Learning
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
         </div>
+
+        {/* Footer */}
+        <footer className="shrink-0 border-t border-slate-200/40 bg-white/20 backdrop-blur-sm py-5 text-center mt-6">
+          <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-500 px-4">
+            <GraduationCap className="w-4 h-4 text-slate-400" />
+            <span>
+              Secure single sign-on powered by Google. Student progress records and activity signals are saved securely.
+            </span>
+          </div>
+        </footer>
       </div>
-
-      {/* Footer */}
-      <footer className="shrink-0 border-t border-slate-200 py-6 text-center">
-        <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
-          <GraduationCap className="w-3.5 h-3.5" />
-          <span>
-            Secure sign-in powered by Google. All activity is recorded in compliance with FERPA
-            guidelines.
-          </span>
-        </div>
-      </footer>
     </div>
   );
 }
