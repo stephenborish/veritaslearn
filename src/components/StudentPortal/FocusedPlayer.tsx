@@ -297,6 +297,21 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     setIsFullscreenLocked(false);
   };
 
+  const exitFullscreenGracefully = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.warn("Smooth exit from fullscreen failed or was already exited:", err);
+    }
+  };
+
+  const handleSaveAndExit = async () => {
+    await exitFullscreenGracefully();
+    onExit();
+  };
+
   // Log integrity signal — returns server response
   const logIntegritySignal = async (
     eventType: string,
@@ -443,19 +458,25 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         }
       }
       if (!isFull && requireFullscreenOpt) {
+        // Set state synchronously and immediately to block content
+        setIsFullscreenLocked(true);
+        setLockMessage("Please return to fullscreen to continue.");
+
         const result = await logIntegritySignal("fullscreen_exit", "high", {
           detail: "User exited fullscreen.",
+          attemptId,
           lessonId: attemptData?.lessonId,
           assignmentId: attemptData?.assignmentId,
-          lessonVersionId: attemptData?.lessonVersionId,
+          versionId: attemptData?.lessonVersionId || attemptData?.versionId || attemptData?.lesson?.versionId,
+          lessonVersionId: attemptData?.lessonVersionId || attemptData?.versionId || attemptData?.lesson?.versionId,
+          blockId: blocks[currentBlockIndex]?.id,
+          timestamp: new Date().toISOString(),
+          userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
         });
         if (result?.lockState === "locked_awaiting_teacher") {
           setIsTeacherLocked(true);
           isTeacherLockedRef.current = true;
           setIsFullscreenLocked(false);
-        } else {
-          setIsFullscreenLocked(true);
-          setLockMessage("Please return to fullscreen to continue.");
         }
       } else {
         setIsFullscreenLocked(false);
@@ -567,12 +588,29 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
     if (requireFullscreenOpt && !document.fullscreenElement) {
       setIsFullscreenLocked(true);
-      setLockMessage("This assignment requires fullscreen focus mode. Enter fullscreen to begin.");
+      setLockMessage("Please return to fullscreen to continue.");
     } else {
       attemptResumePlayback();
     }
 
     const tickInterval = setInterval(() => {
+      const isFull = !!document.fullscreenElement;
+      if (requireFullscreenOpt && !isFull && !isFullscreenLocked && !isTeacherLocked) {
+        setIsFullscreenLocked(true);
+        setLockMessage("Please return to fullscreen to continue.");
+        logIntegritySignal("fullscreen_exit", "high", {
+          detail: "User exited fullscreen (detected via interval check).",
+          attemptId,
+          lessonId: attemptData?.lessonId,
+          assignmentId: attemptData?.assignmentId,
+          versionId: attemptData?.lessonVersionId || attemptData?.versionId || attemptData?.lesson?.versionId,
+          lessonVersionId: attemptData?.lessonVersionId || attemptData?.versionId || attemptData?.lesson?.versionId,
+          blockId: blocks[currentBlockIndex]?.id,
+          timestamp: new Date().toISOString(),
+          userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+        });
+      }
+
       if (document.hasFocus() && !isFullscreenLocked && !document.hidden && activeTab) {
         activeTimeRef.current += 1;
       } else {
@@ -983,6 +1021,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         setNavigationError(data.error || "Unable to finish the lesson yet. Please try again.");
         return;
       }
+      await exitFullscreenGracefully();
       onExit();
     } catch {
       // Keep player open if complete fails
@@ -1254,7 +1293,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>Student Preview — teacher-only fields are hidden. Test data is excluded from analytics.</span>
           <button
-            onClick={onExit}
+            onClick={handleSaveAndExit}
             className="ml-4 bg-slate-950 text-white rounded px-3 py-0.5 text-[10px] uppercase font-mono hover:bg-slate-800 transition cursor-pointer"
           >
             Exit Preview
@@ -1380,6 +1419,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         )}
       </AnimatePresence>
 
+      {/* Blurred, locked background wrapper */}
+      <div className={cn(
+        "flex-1 min-h-0 flex flex-col overflow-hidden relative w-full",
+        (isFullscreenLocked || !activeTab) && "blur-xl select-none pointer-events-none transition-all duration-200"
+      )}>
+
       {/* Student top bar — VERITAS Learn identity, progress, status */}
       <header className={`bg-white border-b border-slate-200 shadow-sm shrink-0 z-30 ${violationBanner.show && !isFullscreenLocked && !isTeacherLocked ? "mt-10" : ""}`}>
         <div className="px-4 md:px-6 py-2.5 flex items-center justify-between gap-4">
@@ -1445,7 +1490,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             </span>
 
             <button
-              onClick={onExit}
+              onClick={handleSaveAndExit}
               className="learn-focusable inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 hover:bg-slate-50 rounded-lg px-3 py-1.5 transition cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
               title="Save your progress and exit"
             >
@@ -1620,16 +1665,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         </aside>
 
         {/* Main Workspace content */}
-        <main className={`flex-1 min-h-0 flex flex-col ${activeBlock?.type === "video" ? "w-full" : "max-w-6xl mx-auto w-full px-4 md:px-6 py-4 md:py-6"}`}>
+        <main className="flex-1 min-h-0 flex flex-col w-full bg-slate-50 overflow-hidden">
 
         {activeBlock && (
-          <div
-            className={cn(
-              "overflow-hidden flex-1 flex flex-col",
-              activeBlock.type === "video" && "bg-white",
-              activeBlock.type === "reading" && "bg-white border border-slate-200 rounded-2xl shadow-sm",
-            )}
-          >
+          <div className="flex-1 flex flex-col min-h-0 bg-slate-50">
 
             {/* Block header — kept for video/reading; question cards carry their own header */}
             {activeBlock.type !== "question" && (
@@ -1649,7 +1688,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
               <div 
                 ref={readingScrollContainerRef}
                 onScroll={handleReadingScroll}
-                className="max-w-[920px] mx-auto w-full overflow-y-auto flex-1 select-text relative flex flex-col student-reading-scroll-container"
+                className="w-full overflow-y-auto flex-1 select-text relative flex flex-col student-reading-scroll-container px-4 py-6 md:py-8"
               >
                 {/* Subtle Sticky Reading Progress Indicator */}
                 <div className="sticky top-0 left-0 right-0 z-30 w-full h-1 bg-slate-100 shrink-0">
@@ -1660,7 +1699,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                     transition={reduceMotion ? { duration: 0 } : { duration: 0.1, ease: "easeOut" }}
                   />
                 </div>
-                <div className="p-6 md:p-12 flex-1 flex flex-col">
+                <div className="max-w-[920px] mx-auto w-full bg-white border border-slate-200 rounded-2xl shadow-sm p-6 md:p-12 flex-1 flex flex-col">
                   {activeBlock.content ? (
                     <RichContentRenderer content={activeBlock.content} variant="student-reading" />
                   ) : (
@@ -1981,96 +2020,99 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             )}
 
             {/* Navigation footer */}
-            <div className={`border-t border-slate-200 bg-white/80 backdrop-blur-sm shrink-0 ${activeBlock.type === "video" ? "px-4 md:px-6 py-3" : "px-4 md:px-6 py-4"}`}>
-              {navigationError && (
-                <div className="mb-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-sm text-amber-800">
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    <span>{navigationError}</span>
+            <div className="border-t border-slate-200 bg-white/80 backdrop-blur-sm shrink-0 w-full sticky bottom-0 z-20">
+              <div className="max-w-6xl mx-auto w-full px-4 md:px-6 py-4 flex flex-col gap-2">
+                {navigationError && (
+                  <div className="mb-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-sm text-amber-800">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{navigationError}</span>
+                    </div>
+                    <button
+                      onClick={() => setNavigationError(null)}
+                      className="text-amber-600 hover:text-amber-800 cursor-pointer shrink-0"
+                      aria-label="Dismiss"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
                   </div>
+                )}
+
+                <div className="flex justify-between items-center gap-4">
                   <button
-                    onClick={() => setNavigationError(null)}
-                    className="text-amber-600 hover:text-amber-800 cursor-pointer shrink-0"
-                    aria-label="Dismiss"
+                    disabled={currentBlockIndex === 0}
+                    onClick={() => handleBlockNavigation(currentBlockIndex - 1)}
+                    className="learn-focusable flex items-center gap-1.5 text-sm font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 shrink-0"
                   >
-                    <X className="w-4 h-4" />
+                    <ChevronLeft className="w-4 h-4" /> Back
                   </button>
-                </div>
-              )}
 
-              <div className="flex justify-between items-center gap-4">
-                <button
-                  disabled={currentBlockIndex === 0}
-                  onClick={() => handleBlockNavigation(currentBlockIndex - 1)}
-                  className="learn-focusable flex items-center gap-1.5 text-sm font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-                >
-                  <ChevronLeft className="w-4 h-4" /> Back
-                </button>
+                  <div className="flex flex-col items-end gap-1 min-w-0">
+                    {nextBlockedReason ? (
+                      <p className="text-xs text-amber-600 text-right max-w-[240px] font-medium truncate">{nextBlockedReason}</p>
+                    ) : (
+                      <p className="text-xs text-emerald-600 text-right font-medium flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" /> You’re ready to continue
+                      </p>
+                    )}
 
-                <div className="flex flex-col items-end gap-1">
-                  {nextBlockedReason ? (
-                    <p className="text-xs text-amber-600 text-right max-w-[240px] font-medium">{nextBlockedReason}</p>
-                  ) : (
-                    <p className="text-xs text-emerald-600 text-right font-medium flex items-center gap-1">
-                      <Check className="w-3.5 h-3.5" /> You’re ready to continue
-                    </p>
-                  )}
-
-                  {!isLastBlock ? (
-                    <button
-                      onClick={async () => {
-                        if (activeBlock?.type === "video") {
-                          setNavigationError("Saving your progress…");
-                          await flushVideoProgress();
-                          setNavigationError(null);
-                        }
-                        const reason = getNextBlockedReason();
-                        if (reason) {
-                          setNavigationError(reason);
-                          return;
-                        }
-                        await handleBlockNavigation(currentBlockIndex + 1);
-                      }}
-                      disabled={isNavigating}
-                      className="learn-focusable flex items-center gap-1.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2.5 rounded-xl transition cursor-pointer outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/30"
-                    >
-                      {isNavigating ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading…
-                        </>
-                      ) : (
-                        <>
-                          Next <ChevronRight className="w-4 h-4" />
-                        </>
-                      )}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={async () => {
-                        if (activeBlock?.type === "video") {
-                          setNavigationError("Saving your progress…");
-                          await flushVideoProgress();
-                          setNavigationError(null);
-                        }
-                        const reason = getNextBlockedReason();
-                        if (reason) {
-                          setNavigationError(reason);
-                          return;
-                        }
-                        handleCompleteLessonAttempt();
-                      }}
-                      disabled={isNavigating}
-                      className="learn-focusable flex items-center gap-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2.5 rounded-xl transition cursor-pointer outline-none focus-visible:ring-4 focus-visible:ring-emerald-500/30"
-                    >
-                      <Flag className="w-4 h-4" /> Finish lesson
-                    </button>
-                  )}
+                    {!isLastBlock ? (
+                      <button
+                        onClick={async () => {
+                          if (activeBlock?.type === "video") {
+                            setNavigationError("Saving your progress…");
+                            await flushVideoProgress();
+                            setNavigationError(null);
+                          }
+                          const reason = getNextBlockedReason();
+                          if (reason) {
+                            setNavigationError(reason);
+                            return;
+                          }
+                          await handleBlockNavigation(currentBlockIndex + 1);
+                        }}
+                        disabled={isNavigating}
+                        className="learn-focusable flex items-center gap-1.5 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2.5 rounded-xl transition cursor-pointer outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/30 shrink-0"
+                      >
+                        {isNavigating ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading…
+                          </>
+                        ) : (
+                          <>
+                            Next <ChevronRight className="w-4 h-4" />
+                          </>
+                        )}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={async () => {
+                          if (activeBlock?.type === "video") {
+                            setNavigationError("Saving your progress…");
+                            await flushVideoProgress();
+                            setNavigationError(null);
+                          }
+                          const reason = getNextBlockedReason();
+                          if (reason) {
+                            setNavigationError(reason);
+                            return;
+                          }
+                          handleCompleteLessonAttempt();
+                        }}
+                        disabled={isNavigating}
+                        className="learn-focusable flex items-center gap-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2.5 rounded-xl transition cursor-pointer outline-none focus-visible:ring-4 focus-visible:ring-emerald-500/30 shrink-0"
+                      >
+                        <Flag className="w-4 h-4" /> Finish lesson
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           </div>
         )}
       </main>
+      </div> {/* Blurred, locked background wrapper */}
     </div>
   </div>
   );

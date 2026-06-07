@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef } from "react";
 import { RichContentRenderer, getPlainText } from "../RichContent/RichContentRenderer";
+import { safeScore, safeText } from "../../lib/dataIntegrity";
 import {
   CheckSquare, HelpCircle, Minus, AlertCircle, Search, X, Eye, 
   Clock, RotateCcw, ThumbsUp, Video, FileText, LayoutList, 
@@ -403,7 +404,7 @@ export default function TimelineGradebook({
                               <div className="flex items-center justify-between min-h-[16px]">
                                 {cell.score !== null ? (
                                    <span className="text-[11px] text-slate-600 font-mono font-bold bg-slate-50 px-1 rounded select-none">
-                                     {cell.score}/{cell.maxScore}
+                                     {safeScore(cell.score, cell.maxScore)}
                                    </span>
                                 ) : (
                                    <span className="text-[10px] text-slate-300 font-mono select-none">—</span>
@@ -483,14 +484,14 @@ export default function TimelineGradebook({
                       {activeDrawerStepData.score !== null && (
                         <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
                            <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">Score</span>
-                           <span className="text-lg font-mono font-bold text-slate-800">{activeDrawerStepData.score}<span className="text-sm text-slate-400">/{activeDrawerStepData.maxScore}</span></span>
+                           <span className="text-lg font-mono font-bold text-slate-800">{safeScore(activeDrawerStepData.score, activeDrawerStepData.maxScore)}</span>
                         </div>
                       )}
                       
                       {activeClassStats && activeClassStats.avgScore !== null && (
                         <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
                            <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">Class Avg</span>
-                           <span className="text-lg font-mono font-bold text-slate-600">{Math.round(activeClassStats.avgScore * 10)/10}<span className="text-sm text-slate-300">/{activeDrawerStepData.maxScore}</span></span>
+                           <span className="text-lg font-mono font-bold text-slate-600">{safeScore(Math.round(activeClassStats.avgScore * 10)/10, activeDrawerStepData.maxScore)}</span>
                         </div>
                       )}
                       
@@ -501,13 +502,18 @@ export default function TimelineGradebook({
                         </div>
                       )}
                    </div>
-
-                   {/* Student Response Section */}
-                   {activeDrawerStepData.response && (
+                   {(activeDrawerStepData.response || activeDrawerStepData.draftText) && (
                      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
                         <div className="bg-slate-50 border-b border-slate-100 px-4 py-3 flex items-center gap-2">
                            <FileText className="w-4 h-4 text-slate-500" />
-                           <h4 className="text-sm font-bold text-slate-700">Student response</h4>
+                           <h4 className="text-sm font-bold text-slate-700">
+                             {activeDrawerStepData.response ? "Student response" : "Student Draft (Unsubmitted)"}
+                           </h4>
+                           {!activeDrawerStepData.response && (
+                             <span className="ml-auto text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-bold px-1.5 py-0.5 rounded uppercase tracking-wider">
+                               Draft
+                             </span>
+                           )}
                         </div>
                         <div className="p-4">
                            {activeDrawerStepDef.block?.singleQuestion?.stem || activeDrawerStepDef.checkpoint?.question?.stem ? (
@@ -517,23 +523,29 @@ export default function TimelineGradebook({
                            ) : null}
                            
                            <div className="text-slate-800 font-medium whitespace-pre-wrap">
-                              {activeDrawerStepData.response.type === "mc" ? (
-                                 <div className="flex flex-col gap-1">
-                                   <div className="flex items-center gap-1.5 flex-wrap">
-                                     <span className="text-[#64748B] font-medium text-xs">Selected Answer:</span>
-                                     <span className="text-slate-900 font-extrabold text-xs">
-                                       {resolveMultipleChoiceText(activeDrawerStepDef.block, activeDrawerStepData.response.responseValue) || activeDrawerStepData.response.responseText || "Selected choice unavailable"}
+                              {activeDrawerStepData.response ? (
+                                activeDrawerStepData.response.type === "mc" ? (
+                                   <div className="flex flex-col gap-1">
+                                     <div className="flex items-center gap-1.5 flex-wrap">
+                                       <span className="text-[#64748B] font-medium text-xs">Selected Answer:</span>
+                                       <span className="text-slate-900 font-extrabold text-xs">
+                                         {resolveMultipleChoiceText(activeDrawerStepDef.block, activeDrawerStepData.response.responseValue) || activeDrawerStepData.response.responseText || "Selected choice unavailable"}
+                                       </span>
+                                     </div>
+                                     <span className="text-[10px] font-mono text-slate-400 font-semibold leading-none mt-1">
+                                       Choice ID: {activeDrawerStepData.response.responseValue}
                                      </span>
                                    </div>
-                                   <span className="text-[10px] font-mono text-slate-400 font-semibold leading-none mt-1">
-                                     Choice ID: {activeDrawerStepData.response.responseValue}
-                                   </span>
-                                 </div>
-                               ) : (
-                                 <div className="font-sans leading-relaxed text-slate-800 text-sm">
-                                   {activeDrawerStepData.response.responseValue || <span className="text-slate-400 italic font-mono">(Empty response provided)</span>}
-                                 </div>
-                               )}
+                                ) : (
+                                   <div className="font-sans leading-relaxed text-slate-800 text-sm">
+                                     {activeDrawerStepData.response.responseValue || <span className="text-slate-400 italic font-mono">(Empty response provided)</span>}
+                                   </div>
+                                )
+                              ) : (
+                                <div className="font-sans leading-relaxed text-slate-800 text-sm">
+                                  {activeDrawerStepData.draftText || <span className="text-slate-400 italic font-mono">(Empty draft response)</span>}
+                                </div>
+                              )}
                            </div>
                         </div>
                      </div>

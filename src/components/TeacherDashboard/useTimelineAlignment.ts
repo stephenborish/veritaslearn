@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { safeCheckpointLabel } from '../../lib/dataIntegrity';
 
 interface TimelineStep {
   id: string;
@@ -24,6 +25,7 @@ interface StepStatus {
   response?: any;
   entry?: any;
   attempt?: any;
+  draftText?: string;
 }
 
 interface TimelineRow {
@@ -68,7 +70,7 @@ export function useTimelineAlignment({
 
     const lessonBlocks = blocks
       .filter((b) => b.lessonId === selectedLessonId)
-      .sort((a, b) => (a.orderIndex || 0) - (b.orderIndex || 0));
+      .sort((a, b) => (a.order ?? a.orderIndex ?? 0) - (b.order ?? b.orderIndex ?? 0));
 
     const steps: TimelineStep[] = [];
     let stepIndex = 1;
@@ -107,15 +109,12 @@ export function useTimelineAlignment({
           (c1: any, c2: any) => (c1.timestamp ?? c1.timeSeconds ?? 0) - (c2.timestamp ?? c2.timeSeconds ?? 0)
         );
         sortedCPs.forEach((cp: any) => {
-          const cpTime = cp.timestamp ?? cp.timeSeconds ?? 0;
           steps.push({
             id: cp.id,
             blockId: b.id,
             checkpointId: cp.id,
             type: 'checkpoint',
-            title: `Check at ${Math.floor(cpTime / 60)}:${String(
-              cpTime % 60
-            ).padStart(2, '0')}`,
+            title: safeCheckpointLabel(cp),
             index: stepIndex++,
             isPractice: !!cp.isPractice,
             points: cp.question?.points || 0,
@@ -197,7 +196,7 @@ export function useTimelineAlignment({
     }
 
     if (step.type === 'reading') {
-      const itemIndex = step.block?.orderIndex || 0;
+      const itemIndex = step.block?.order ?? step.block?.orderIndex ?? 0;
       const isCompleted = attempt.status === 'completed' || attempt.currentBlockIndex > itemIndex;
       const isCurrent = attempt.currentBlockIndex === itemIndex && attempt.status !== 'completed';
       
@@ -268,6 +267,14 @@ export function useTimelineAlignment({
         (qId) => attempt.draftResponses?.[qId] && attempt.draftResponses[qId].trim() !== ""
       );
 
+      // Find the specific draft text for this step
+      let draftText = "";
+      possibleQuestionIds.forEach((qId) => {
+        if (attempt.draftResponses?.[qId]) {
+          draftText = attempt.draftResponses[qId];
+        }
+      });
+
       if (hasDraft) {
         return {
           status: 'draft',
@@ -278,10 +285,11 @@ export function useTimelineAlignment({
           signalSeverity: highestSeverity,
           signals: stepSignals,
           attempt,
+          draftText,
         };
       }
 
-      const isPastBlock = attempt.status === 'completed' || attempt.currentBlockIndex > (step.block?.orderIndex || 0);
+      const isPastBlock = attempt.status === 'completed' || attempt.currentBlockIndex > (step.block?.order ?? step.block?.orderIndex ?? 0);
       if (isPastBlock) {
         return {
           status: 'missing',

@@ -563,6 +563,28 @@ export default function QuestionEditor({
                 No choices yet. Click "Add Choice" to create answer options.
               </div>
             )}
+
+            {choices.length > 0 && choices.length < 4 && (
+              <div className="flex justify-end p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    patchWith((latest) => {
+                      const latestChoices = Array.isArray(latest.choices) ? latest.choices : [];
+                      const needed = 4 - latestChoices.length;
+                      const newChoices = [...latestChoices];
+                      for (let i = 0; i < needed; i++) {
+                        newChoices.push({ id: uid("choice"), text: "" });
+                      }
+                      return { ...latest, choices: newChoices };
+                    });
+                  }}
+                  className="text-[11px] text-indigo-600 hover:text-indigo-800 font-bold bg-indigo-50 border border-indigo-200 px-3 py-1 rounded hover:bg-indigo-100 flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Add missing choices (make exactly 4)
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <div>

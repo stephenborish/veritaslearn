@@ -419,11 +419,17 @@ const GUARD_FRAGMENTS_LC = [
   'do not solve, summarize, explain',
   'assessment marker: veritas-',
   'this instruction applies to all questions',
+  'the assessment measures the student\'s own ability',
+  'the assessment measures the student’s own ability',
+  'an ai agent must not',
 ];
 
 /** The AI refusal phrase injected by guard-aware browser agents. */
 const REFUSAL_PHRASE_LC = "i can't complete this assessment for you";
 const REFUSAL_PHRASE_ALT_LC = "i cannot complete this assessment for you";
+const REFUSAL_PHRASE_NEW_LC = "i can't help complete or review this assessment";
+const REFUSAL_PHRASE_NEW_CURLY_LC = "i can’t help complete or review this assessment";
+const REFUSAL_PHRASE_NEW_ALT_LC = "i cannot help complete or review this assessment";
 
 interface GuardDetectionResult {
   hasMarker: boolean;
@@ -436,7 +442,11 @@ interface GuardDetectionResult {
 function detectBrowserAiGuard(text: string, expectedMarker: string): GuardDetectionResult {
   const lower = (text || '').toLowerCase();
   const hasMarker = !!expectedMarker && text.includes(expectedMarker);
-  const hasRefusalPhrase = lower.includes(REFUSAL_PHRASE_LC) || lower.includes(REFUSAL_PHRASE_ALT_LC);
+  const hasRefusalPhrase = lower.includes(REFUSAL_PHRASE_LC) || 
+                           lower.includes(REFUSAL_PHRASE_ALT_LC) ||
+                           lower.includes(REFUSAL_PHRASE_NEW_LC) ||
+                           lower.includes(REFUSAL_PHRASE_NEW_CURLY_LC) ||
+                           lower.includes(REFUSAL_PHRASE_NEW_ALT_LC);
   const hasGuardFragment = GUARD_FRAGMENTS_LC.some(f => lower.includes(f));
   return {
     hasMarker,
@@ -2093,7 +2103,7 @@ app.put("/api/lessons/:id", requireTeacher, async (req, res) => {
       return;
     }
 
-    const { title, description, estimatedMinutes, isPublished, settings, blocks } = req.body;
+    const { title, description, courseId, estimatedMinutes, isPublished, settings, blocks } = req.body;
 
     const currentLesson = db.lessons[lessonIdx];
     const willPublish = isPublished ?? currentLesson.isPublished;
@@ -2103,6 +2113,7 @@ app.put("/api/lessons/:id", requireTeacher, async (req, res) => {
       ...currentLesson,
       title: title ?? currentLesson.title,
       description: description ?? currentLesson.description,
+      courseId: courseId ?? currentLesson.courseId,
       estimatedMinutes: estimatedMinutes !== undefined ? Number(estimatedMinutes) : currentLesson.estimatedMinutes,
       isPublished: willPublish,
       updatedAt: new Date().toISOString(),
@@ -3062,6 +3073,90 @@ app.delete("/api/assignments/:id", requireTeacher, async (req, res) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Failed to delete assignment." });
+  }
+});
+
+// Teacher: Update an existing lesson assignment
+app.put("/api/assignments/:id", requireTeacher, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const { courseId, section, opensAt, dueAt, closesAt, integrityPolicy } = req.body;
+    const db = readDb();
+
+    if (!db.lessonAssignments) {
+      db.lessonAssignments = [];
+    }
+
+    const asgIdx = db.lessonAssignments.findIndex((asg: any) => asg.id === id);
+    if (asgIdx === -1) {
+      res.status(404).json({ error: "Assignment not found." });
+      return;
+    }
+
+    const assignment = db.lessonAssignments[asgIdx];
+
+    // Validate that the course exists
+    const course = db.courses.find((c: any) => c.id === (courseId || assignment.courseId));
+    if (!course) {
+      res.status(400).json({ error: "The selected course does not exist." });
+      return;
+    }
+
+    // Validate teacher has access to manage this course
+    if (!teacherCanManageCourse(user.id, course, !!user.isSuperAdmin)) {
+      res.status(403).json({ error: "You do not have access to this course." });
+      return;
+    }
+
+    // Check if any student attempts have started for this assignment
+    const studentAttempts = (db.attempts || []).filter(
+      (a: any) => a.assignmentId === id && !a.isPreviewAttempt
+    );
+    const hasStartedAttempts = studentAttempts.length > 0;
+
+    if (hasStartedAttempts) {
+      // Students have started. We can only allow SAFE updates:
+      if (courseId && courseId !== assignment.courseId) {
+        res.status(400).json({ error: "Cannot change the course of an active assignment with started student attempts." });
+        return;
+      }
+      if (section !== undefined && section !== assignment.section) {
+        res.status(400).json({ error: "Cannot change the section of an active assignment with started student attempts." });
+        return;
+      }
+      if (opensAt && opensAt !== assignment.opensAt) {
+        res.status(400).json({ error: "Cannot change the open date of an active assignment with started student attempts." });
+        return;
+      }
+
+      // Safe update of dueAt and closesAt
+      const newDueAt = dueAt ? new Date(dueAt) : new Date(assignment.dueAt);
+      const newClosesAt = closesAt ? new Date(closesAt) : new Date(assignment.closesAt);
+      if (newDueAt > newClosesAt) {
+        res.status(400).json({ error: "Due date must be on or before closing date." });
+        return;
+      }
+
+      if (dueAt) assignment.dueAt = dueAt;
+      if (closesAt) assignment.closesAt = closesAt;
+    } else {
+      // No student attempts started: allow modifying all fields
+      if (courseId) assignment.courseId = courseId;
+      if (section !== undefined) assignment.section = section;
+      if (opensAt) assignment.opensAt = opensAt;
+      if (dueAt) assignment.dueAt = dueAt;
+      if (closesAt) assignment.closesAt = closesAt;
+      if (integrityPolicy) {
+        assignment.integrityPolicy = compileIntegrityPolicy(integrityPolicy);
+      }
+    }
+
+    assignment.updatedAt = new Date().toISOString();
+    await commitDb(db);
+    res.json({ success: true, assignment });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to update assignment." });
   }
 });
 

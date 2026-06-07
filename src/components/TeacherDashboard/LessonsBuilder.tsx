@@ -4,7 +4,7 @@ import {
   Plus, Trash, Settings, Save, AlertCircle, FileText, Video, Clock,
   ArrowUp, ArrowDown, BookOpen, Calendar, Eye, Play, CheckCircle,
   ChevronRight, ChevronLeft, HelpCircle, Info, Send, GraduationCap,
-  BarChart2, Layers, Sparkles, ArrowRight, BookMarked
+  BarChart2, Layers, Sparkles, ArrowRight, BookMarked, Lock, AlertTriangle
 } from "lucide-react";
 import { Lesson, LessonBlock } from "../../types";
 import VideoUploader from "./VideoUploader";
@@ -18,6 +18,8 @@ import {
   modeLabel,
   type NextActionTarget,
   type ReadinessSeverity,
+  calculateEstimatedLessonMinutes,
+  formatEstimatedTime,
 } from "./builderWorkflow";
 
 function uid(prefix: string): string {
@@ -55,9 +57,11 @@ function useLiveState<T>(initial: T): [T, (next: T | ((prev: T) => T)) => T, Rea
 }
 
 function newQuestionTemplate(type: "mc" | "sa"): any {
-  const base = { id: uid("q"), type, stem: "", points: 5 };
+  const base = { id: uid("q"), type, stem: "", points: type === "mc" ? 1 : 3 };
   if (type === "mc") {
     const choices = [
+      { id: uid("choice"), text: "" },
+      { id: uid("choice"), text: "" },
       { id: uid("choice"), text: "" },
       { id: uid("choice"), text: "" },
     ];
@@ -69,6 +73,7 @@ function newQuestionTemplate(type: "mc" | "sa"): any {
 interface LessonsBuilderProps {
   lessons: Lesson[];
   blocks: LessonBlock[];
+  attempts?: any[];
   onSaveLesson: (lessonData: any) => Promise<any>;
   onArchived: (id: string) => Promise<void>;
   assignments?: any[];
@@ -84,6 +89,7 @@ interface LessonsBuilderProps {
 export default function LessonsBuilder({
   lessons,
   blocks,
+  attempts = [],
   onSaveLesson,
   onArchived,
   assignments = [],
@@ -102,6 +108,7 @@ export default function LessonsBuilder({
   // critical rich-text field; the others are included for a uniform contract.
   const [title, setTitle, titleRef] = useLiveState<string>("");
   const [description, setDescription, descriptionRef] = useLiveState<any>("");
+  const [courseId, setCourseId, courseIdRef] = useLiveState<string>("");
   const [estimatedMinutes, setEstimatedMinutes, estimatedMinutesRef] = useLiveState<number>(30);
   const [isPublished, setIsPublished, isPublishedRef] = useLiveState<boolean>(false);
   const [restrictSeeking, setRestrictSeeking, restrictSeekingRef] = useLiveState<boolean>(true);
@@ -117,6 +124,7 @@ export default function LessonsBuilder({
   const [asgCourseId, setAsgCourseId] = useState("");
   const [asgSection, setAsgSection] = useState("");
   const [asgIntegrityPolicy, setAsgIntegrityPolicy] = useState<IntegrityPolicy>(buildDefaultPolicy("open"));
+  const [editingAssignmentId, setEditingAssignmentId] = useState<string | null>(null);
 
   const getDefaultOpenDate = () => {
     const d = new Date();
@@ -133,8 +141,8 @@ export default function LessonsBuilder({
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   };
 
-  // activeWorkspace: "setup" | number (block index)
-  const [activeWorkspace, setActiveWorkspace] = useState<"setup" | number>("setup");
+  // activeWorkspace: "setup" | "publish" | "assign" | "preview" | number (block index)
+  const [activeWorkspace, setActiveWorkspace] = useState<"setup" | "publish" | "assign" | "preview" | number>("setup");
 
   // Recovery draft loaded from localStorage when opening an editor
   const [recoveryDraft, setRecoveryDraft] = useState<any>(null);
@@ -173,6 +181,16 @@ export default function LessonsBuilder({
     setCurrentBlocks(next);
     return next;
   };
+
+  // Synchronize and calculate estimatedMinutes live based on currentBlocks changes immediately
+  useEffect(() => {
+    if (!selectedLesson) return;
+    const calc = calculateEstimatedLessonMinutes(currentBlocks);
+    const roundedMinutes = calc.isIncomplete
+      ? Math.max(1, Math.ceil(calc.minutes || 25))
+      : Math.max(1, Math.ceil(calc.minutes));
+    setEstimatedMinutes(roundedMinutes);
+  }, [currentBlocks, selectedLesson, setEstimatedMinutes]);
 
   // Briefly highlights a freshly added block so the add feels satisfying.
   const [justAddedBlockId, setJustAddedBlockId] = useState<string | null>(null);
@@ -251,17 +269,20 @@ export default function LessonsBuilder({
   // Type-safe question type converter — preserves id, stem, points and nested data
   const convertQuestionType = (existing: any, nextType: "mc" | "sa"): any => {
     const q = existing || {};
+    const finalPoints = nextType === "mc" ? 1 : 3;
     const base = {
       id: q.id || uid("q"),
       type: nextType,
       stem: q.stem ?? "",
-      points: q.points ?? 5,
+      points: finalPoints,
     };
 
     if (nextType === "mc") {
       let choices = q.choices;
       if (!Array.isArray(choices) || choices.length === 0) {
         choices = [
+          { id: uid("choice"), text: "" },
+          { id: uid("choice"), text: "" },
           { id: uid("choice"), text: "" },
           { id: uid("choice"), text: "" },
         ];
@@ -309,6 +330,7 @@ export default function LessonsBuilder({
     setSelectedLesson(lesson);
     setTitle(lesson.title);
     setDescription(lesson.description);
+    setCourseId(lesson.courseId || "");
     setEstimatedMinutes(lesson.estimatedMinutes);
     setIsPublished(lesson.isPublished);
     setRestrictSeeking(lesson.settings.restrictSeeking);
@@ -335,6 +357,7 @@ export default function LessonsBuilder({
     const snap = JSON.stringify({
       title: lesson.title,
       description: lesson.description,
+      courseId: lesson.courseId || "",
       estimatedMinutes: lesson.estimatedMinutes,
       isPublished: lesson.isPublished,
       restrictSeeking: lesson.settings.restrictSeeking,
@@ -369,6 +392,7 @@ export default function LessonsBuilder({
     setSelectedLesson({ id: "new" });
     setTitle("");
     setDescription("");
+    setCourseId("");
     setEstimatedMinutes(25);
     setIsPublished(false);
     setRestrictSeeking(true);
@@ -387,7 +411,7 @@ export default function LessonsBuilder({
     editingStartedAtRef.current = new Date().toISOString();
 
     const snap = JSON.stringify({
-      title: "", description: "", estimatedMinutes: 25, isPublished: false,
+      title: "", description: "", courseId: "", estimatedMinutes: 25, isPublished: false,
       restrictSeeking: true, requireFullscreen: true, allowRetakes: false,
       randomizeChoices: true, immediateFeedback: false, currentBlocks: []
     });
@@ -926,6 +950,7 @@ export default function LessonsBuilder({
       id: selectedLesson?.id === "new" ? undefined : selectedLesson?.id,
       title: titleRef.current,
       description: descriptionRef.current,
+      courseId: courseIdRef.current,
       estimatedMinutes: estimatedMinutesRef.current,
       isPublished: publishedStatus,
       settings: {
@@ -1073,8 +1098,17 @@ export default function LessonsBuilder({
     const savedLesson = await saveWithPublishedStatus(isPublished);
     if (savedLesson && savedLesson.id) {
       setAsgLessonId(savedLesson.id);
-      setShowAssignmentForm(true);
-      setBuilderSubTab("assignments");
+      if (savedLesson.courseId) {
+        setAsgCourseId(savedLesson.courseId);
+        const selectedC = courses.find((c: any) => c.id === savedLesson.courseId);
+        setAsgSection(selectedC?.sectionName || "");
+      } else if (courseId) {
+        setAsgCourseId(courseId);
+        const selectedC = courses.find((c: any) => c.id === courseId);
+        setAsgSection(selectedC?.sectionName || "");
+      }
+      setEditingAssignmentId(null);
+      setActiveWorkspace("assign");
     }
   };
 
@@ -1093,14 +1127,15 @@ export default function LessonsBuilder({
   // ---- Next best action navigation ----
   // Sends the teacher to the single most useful next step. Pure routing only.
   const goToAction = (target: NextActionTarget) => {
-    if (target === "publish") { handlePublishLive(); return; }
+    if (target === "publish") { setEditingAssignmentId(null); setActiveWorkspace("publish"); return; }
     if (target === "assign") { handleAssignAndLaunch(); return; }
-    if (target === "preview") { handlePreviewAsStudent(); return; }
+    if (target === "preview") { setEditingAssignmentId(null); setActiveWorkspace("preview"); return; }
     if (target === "progress") {
       setSelectedLesson(null);
       setBuilderSubTab("assignments");
       return;
     }
+    setEditingAssignmentId(null);
     setActiveWorkspace(target as "setup" | number);
   };
 
@@ -1630,6 +1665,8 @@ export default function LessonsBuilder({
               ready: "bg-emerald-600 hover:bg-emerald-700",
               done: "bg-indigo-600 hover:bg-indigo-700",
             };
+            const estTimeResult = calculateEstimatedLessonMinutes(currentBlocks);
+            const estTimeStr = formatEstimatedTime(estTimeResult);
             return (
               <div className="sticky top-0 z-30 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow-sm mb-0 overflow-hidden">
                 <div className="px-4 py-3 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
@@ -1637,6 +1674,10 @@ export default function LessonsBuilder({
                     <BookOpen className="w-5 h-5 text-[#0A192F] shrink-0" />
                     <span className="font-bold text-slate-900 text-base truncate max-w-[16rem]">{title || "Untitled lesson"}</span>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${statusStyle[status]}`}>{status}</span>
+                    <div className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded-full shrink-0">
+                      <Clock className="w-3 h-3 text-slate-400" />
+                      <span>{estTimeStr}</span>
+                    </div>
                     {/* Save state — animated */}
                     <SaveStateChip saveStatus={saveStatus} autosaveStatus={autosaveStatus} isDirty={isDirty} lastSavedAt={lastSavedAt} />
                   </div>
@@ -1931,31 +1972,59 @@ export default function LessonsBuilder({
                 const stages = [
                   {
                     key: "setup", label: "Setup", icon: Settings,
-                    done: setupDone, action: () => setActiveWorkspace("setup"),
+                    done: setupDone, action: () => {
+                      setEditingAssignmentId(null);
+                      setActiveWorkspace("setup");
+                    },
                     active: activeWorkspace === "setup",
                     note: setupDone ? undefined : "Start here",
                   },
                   {
                     key: "content", label: "Content & Questions", icon: Layers,
-                    done: questionsDone, action: () => setActiveWorkspace(currentBlocks.length > 0 ? (typeof activeWorkspace === "number" ? activeWorkspace : 0) : "setup"),
+                    done: questionsDone, action: () => {
+                      setEditingAssignmentId(null);
+                      setActiveWorkspace(currentBlocks.length > 0 ? (typeof activeWorkspace === "number" ? activeWorkspace : 0) : "setup");
+                    },
                     active: onContent,
                     note: r.issues.length > 0 ? `${r.issues.length} to fix` : !contentDone ? "Add content" : undefined,
                     warn: r.issues.length > 0,
                   },
                   {
                     key: "preview", label: "Preview", icon: Eye,
-                    done: false, action: handlePreviewAsStudent, active: false,
+                    done: false, action: () => {
+                      setEditingAssignmentId(null);
+                      setActiveWorkspace("preview");
+                    },
+                    active: activeWorkspace === "preview",
                     note: isDirty ? "Saves first" : undefined,
                   },
                   {
                     key: "publish", label: "Publish", icon: Send,
-                    done: isPublished, action: handlePublishLive, active: false,
+                    done: !!isPublished, action: () => {
+                      setEditingAssignmentId(null);
+                      setActiveWorkspace("publish");
+                    },
+                    active: activeWorkspace === "publish",
                     note: isPublished ? "Done" : questionsDone ? "Ready" : "Fix first",
                     warn: !isPublished && !questionsDone,
                   },
                   {
                     key: "assign", label: "Assign", icon: Calendar,
-                    done: lessonAsgs.length > 0, action: handleAssignAndLaunch, active: false,
+                    done: lessonAsgs.length > 0, action: () => {
+                      setAsgLessonId(selectedLesson?.id || "");
+                      if (selectedLesson?.courseId) {
+                        setAsgCourseId(selectedLesson.courseId);
+                        const selectedC = courses.find((c: any) => c.id === selectedLesson.courseId);
+                        setAsgSection(selectedC?.sectionName || "");
+                      } else if (courseId) {
+                        setAsgCourseId(courseId);
+                        const selectedC = courses.find((c: any) => c.id === courseId);
+                        setAsgSection(selectedC?.sectionName || "");
+                      }
+                      setEditingAssignmentId(null);
+                      setActiveWorkspace("assign");
+                    },
+                    active: activeWorkspace === "assign",
                     note: !isPublished ? "Publish first" : lessonAsgs.length > 0 ? "Done" : "Ready",
                   },
                 ];
@@ -2111,6 +2180,21 @@ export default function LessonsBuilder({
                     </div>
 
                     <div>
+                      <label className="font-bold text-slate-700 block mb-1">Target Course <span className="font-normal text-slate-400">(optional during design)</span></label>
+                      <select
+                        value={courseId}
+                        onChange={(e) => setCourseId(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 pr-8 focus:outline-none focus:border-[#0A192F] text-slate-800"
+                      >
+                        <option value="">-- No course selected --</option>
+                        {courses.filter((c: any) => c.status !== "archived").map((c: any) => (
+                          <option key={c.id} value={c.id}>{c.name}{c.sectionName ? ` — ${c.sectionName}` : ""}</option>
+                        ))}
+                      </select>
+                      <p className="text-[10px] text-slate-400 mt-1">Selecting a course here pre-fills the assignment settings automatically.</p>
+                    </div>
+
+                    <div>
                       <label className="font-bold text-slate-700 block mb-1">Description <span className="font-normal text-slate-400">(optional)</span></label>
                       <RichContentEditor
                         value={description}
@@ -2124,14 +2208,11 @@ export default function LessonsBuilder({
                     <div>
                       <label className="font-bold text-slate-700 block mb-1">Estimated time</label>
                       <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min={1}
-                          value={estimatedMinutes}
-                          onChange={(e) => setEstimatedMinutes(Number(e.target.value))}
-                          className="w-24 bg-slate-50 border border-slate-200 rounded px-3 py-2 focus:outline-none focus:border-[#0A192F] text-slate-800"
-                        />
-                        <span className="text-slate-500">minutes</span>
+                        <div className="bg-slate-50 border border-slate-200 rounded px-3 py-2 text-slate-800 flex items-center gap-2 font-semibold text-xs">
+                          <Clock className="w-4 h-4 text-slate-400" />
+                          {formatEstimatedTime(calculateEstimatedLessonMinutes(currentBlocks))}
+                        </div>
+                        <span className="text-[11px] text-slate-400 font-medium">Calculated automatically from lesson content</span>
                       </div>
                     </div>
 
@@ -2174,6 +2255,507 @@ export default function LessonsBuilder({
                     </div>
                   </div>
                 </div>
+              ) : activeWorkspace === "preview" ? (
+                // ---- PREVIEW WORKSPACE ----
+                <div className="bg-white border border-slate-200 rounded-lg p-8 space-y-6">
+                  <div className="border-b border-slate-100 pb-3">
+                    <h4 className="text-sm font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1.5">
+                      <Eye className="w-4 h-4" /> Student Experience Preview
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-1">See exactly what your students will experience during the lesson.</p>
+                  </div>
+
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-3 text-xs leading-normal">
+                    <p className="text-slate-700">
+                      You are about to launch an interactive preview of <strong>“{title || "Untitled Lesson"}”</strong>.
+                    </p>
+                    <ul className="text-slate-500 space-y-1 list-disc list-inside">
+                      <li>Practice questions will show correctness and teacher explanations immediately on submission.</li>
+                      <li>Assessment questions and video checkpoints will record progress and keep grades/feedback hidden.</li>
+                      <li>Any changes you made will be autosaved first so your preview contains your latest blocks.</li>
+                    </ul>
+                  </div>
+
+                  <div className="flex gap-3 text-xs">
+                    <button
+                      onClick={handlePreviewAsStudent}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-5 py-2.5 rounded-lg transition cursor-pointer shadow-sm flex items-center gap-1.5"
+                    >
+                      <Eye className="w-4 h-4" /> Launch Student Preview
+                    </button>
+                    <button
+                      onClick={() => setActiveWorkspace(currentBlocks.length > 0 ? 0 : "setup")}
+                      className="border border-slate-200 hover:bg-slate-50 text-slate-600 font-bold px-4 py-2.5 rounded-lg transition"
+                    >
+                      Back to Editor
+                    </button>
+                  </div>
+                </div>
+
+              ) : activeWorkspace === "publish" ? (
+                // ---- PUBLISH WORKSPACE ----
+                <div className="bg-white border border-slate-200 rounded-lg p-8 space-y-6">
+                  <div className="border-b border-slate-100 pb-3">
+                    <h4 className="text-sm font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1.5">
+                      <Send className="w-4 h-4" /> Publish Lesson Version
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-1">Publishing makes the current version of the lesson available for assignment.</p>
+                  </div>
+
+                  {(() => {
+                    const r = computeReadiness();
+                    const isPublishable = r.issues.length === 0;
+
+                    return (
+                      <div className="space-y-5">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                          <div className="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Status</span>
+                            <span className={`text-xs font-bold ${isPublished ? "text-emerald-600" : "text-amber-500"}`}>
+                              {isPublished ? "Published" : "Draft (Unpublished)"}
+                            </span>
+                          </div>
+                          <div className="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Content Blocks</span>
+                            <span className="text-xs font-bold text-slate-800">{currentBlocks.length} blocks</span>
+                          </div>
+                          <div className="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Practice Checks</span>
+                            <span className="text-xs font-bold text-slate-800">{r.practiceQCount} questions</span>
+                          </div>
+                          <div className="border border-slate-100 rounded-lg p-3 bg-slate-50/50">
+                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Graded Checks</span>
+                            <span className="text-xs font-bold text-[#0A192F]">{r.gradedQCount} questions</span>
+                          </div>
+                        </div>
+
+                        {/* Blockers alert */}
+                        {!isPublishable ? (
+                          <div className="bg-red-50 border border-red-200 rounded-xl p-5 space-y-3 text-xs leading-normal">
+                            <div className="flex items-center gap-2 text-red-800 font-bold uppercase tracking-wide">
+                              <AlertCircle className="w-4 h-4" /> Cannot Publish — Blockers Found
+                            </div>
+                            <ul className="space-y-1 list-disc list-inside text-red-700">
+                              {r.issues.map((iss, i) => (
+                                <li key={i} className="cursor-pointer hover:underline" onClick={() => setActiveWorkspace(iss.target)}>
+                                  {iss.message}
+                                </li>
+                              ))}
+                            </ul>
+                            <p className="text-[10px] text-red-500 leading-relaxed pt-1 border-t border-red-100">
+                              Please resolve all blockers listed above. Clicking an item will navigate directly to that block.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-5 space-y-2 text-xs">
+                            <div className="flex items-center gap-1.5 text-emerald-800 font-bold uppercase tracking-wide">
+                              <CheckCircle className="w-4 h-4" /> All Clear for Publishing
+                            </div>
+                            <p className="text-emerald-750 leading-relaxed">
+                              This lesson plan meets all instructional readiness criteria. You can safely publish it now.
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="flex gap-3 text-xs">
+                          <button
+                            onClick={handlePublishLive}
+                            disabled={!isPublishable || saveStatus === "saving"}
+                            className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white font-bold px-5 py-2.5 rounded-lg transition cursor-pointer shadow-sm flex items-center gap-1.5"
+                          >
+                            <Send className="w-4 h-4" /> {isPublished ? "Republish Lesson" : "Publish Version"}
+                          </button>
+                          {isPublished && (
+                            <button
+                              onClick={() => {
+                                setAsgLessonId(selectedLesson?.id || "");
+                                if (selectedLesson?.courseId) {
+                                  setAsgCourseId(selectedLesson.courseId);
+                                  const selectedC = courses.find((c: any) => c.id === selectedLesson.courseId);
+                                  setAsgSection(selectedC?.sectionName || "");
+                                } else if (courseId) {
+                                  setAsgCourseId(courseId);
+                                  const selectedC = courses.find((c: any) => c.id === courseId);
+                                  setAsgSection(selectedC?.sectionName || "");
+                                }
+                                setActiveWorkspace("assign");
+                              }}
+                              className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-5 py-2.5 rounded-lg transition cursor-pointer shadow-sm flex items-center gap-1.5"
+                            >
+                              Continue to Assign step <ChevronRight className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+              ) : activeWorkspace === "assign" ? (
+                // ---- ASSIGN DIRECTLY IN WIZARD WORKSPACE ----
+                <div className="bg-white border border-slate-200 rounded-lg p-8 space-y-6">
+                  {/* Outer flex container */}
+                  <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
+                    <div>
+                      <h4 className="text-sm font-bold uppercase tracking-widest text-[#0A192F] flex items-center gap-1.5">
+                        <Calendar className="w-4 h-4" /> Assign Lesson
+                      </h4>
+                      <p className="text-[11px] text-slate-500 mt-1">Configure section dates, learning conditions, and assign to courses directly.</p>
+                    </div>
+
+                    {/* Status badge */}
+                    {(() => {
+                      const isAsgDirty = editingAssignmentId
+                        ? (() => {
+                            const asg = assignments.find((a) => a.id === editingAssignmentId);
+                            if (!asg) return false;
+                            return (
+                              asg.courseId !== asgCourseId ||
+                              asg.section !== asgSection ||
+                              new Date(asg.opensAt).getTime() !== new Date(asgOpensAt).getTime() ||
+                              new Date(asg.dueAt).getTime() !== new Date(asgDueAt).getTime() ||
+                              new Date(asg.closesAt).getTime() !== new Date(asgClosesAt).getTime() ||
+                              JSON.stringify(asg.integrityPolicy) !== JSON.stringify(asgIntegrityPolicy)
+                            );
+                          })()
+                        : (asgCourseId !== "" || asgSection !== "" || asgOpensAt !== getDefaultOpenDate());
+
+                      let asgStatusText = "Ready to assign";
+                      let asgStatusColor = "bg-emerald-50 text-emerald-700 border-emerald-200";
+
+                      if (editingAssignmentId) {
+                        const asgAttempts = (attempts || []).filter((a: any) => a.assignmentId === editingAssignmentId && !a.isPreviewAttempt);
+                        const hasAttempts = asgAttempts.length > 0;
+                        if (hasAttempts) {
+                          asgStatusText = "Assigned, students started · Locked for integrity";
+                          asgStatusColor = "bg-[#0A192F] text-white border-none";
+                        } else {
+                          asgStatusText = "Assigned, no students started";
+                          asgStatusColor = "bg-indigo-50 text-indigo-700 border-indigo-200";
+                        }
+                      } else {
+                        if (isAsgDirty) {
+                          asgStatusText = "Draft (Unsaved)";
+                          asgStatusColor = "bg-amber-50 text-amber-700 border-amber-100 animate-pulse";
+                        }
+                      }
+
+                      return (
+                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wider border ${asgStatusColor}`}>
+                          {asgStatusText}
+                        </span>
+                      );
+                    })()}
+                  </div>
+
+                  {/* If lesson plan is unpublished, show alert */}
+                  {!isPublished && (
+                    <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl space-y-1.5 text-xs text-amber-800">
+                      <div className="font-bold flex items-center gap-1.5 uppercase">
+                        <AlertTriangle className="w-4 h-4 text-amber-600" /> Publish Required First
+                      </div>
+                      <p className="leading-relaxed">
+                        To activate student assignment creation, you must publish the lesson first. You can still pre-fill settings below.
+                      </p>
+                      <button
+                        onClick={() => setActiveWorkspace("publish")}
+                        className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] uppercase tracking-wider px-3 py-1 rounded transition mt-1"
+                      >
+                        Go to Publish stage
+                      </button>
+                    </div>
+                  )}
+
+                  {asgError && (
+                    <div className="bg-red-50 text-red-700 text-xs p-3 rounded flex items-center gap-2 border border-red-100">
+                      <AlertCircle className="w-4 h-4 shrink-0" /><span>{asgError}</span>
+                    </div>
+                  )}
+
+                  {/* ACTIVE ASSIGNMENTS LIST FOR THIS LESSON */}
+                  {(() => {
+                    const lessonAsgs = assignments.filter((a: any) => a.lessonId === selectedLesson?.id && selectedLesson?.id !== "new");
+                    if (lessonAsgs.length === 0) return null;
+                    return (
+                      <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
+                        <div className="px-4 py-2.5 bg-slate-100/80 border-b border-indigo-50/60 flex justify-between items-center">
+                          <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Active Course Assignments ({lessonAsgs.length})</span>
+                        </div>
+                        <div className="divide-y divide-slate-100 max-h-48 overflow-y-auto">
+                          {lessonAsgs.map((asg: any) => {
+                            const now = new Date().toISOString();
+                            const opens = asg.opensAt || "";
+                            const closes = asg.closesAt || "";
+                            const courseName = (courses.find((c: any) => c.id === asg.courseId)?.name) || asg.courseId;
+                            const asgAttempts = (attempts || []).filter((a: any) => a.assignmentId === asg.id && !a.isPreviewAttempt);
+                            const hasStarted = asgAttempts.length > 0;
+
+                            let sBadge = null;
+                            if (now < opens) sBadge = <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Scheduled</span>;
+                            else if (now <= closes) sBadge = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Open</span>;
+                            else sBadge = <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Closed</span>;
+
+                            return (
+                              <div key={asg.id} className="p-3 flex justify-between items-center gap-4 text-xs">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-bold text-slate-800 text-[13px]">{courseName}</span>
+                                    {asg.section && <span className="text-slate-400">· Section {asg.section}</span>}
+                                    {sBadge}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    Due: {new Date(asg.dueAt).toLocaleString()} · Condition: <span className="capitalize font-semibold text-slate-600">{asg.integrityPolicy?.preset || "Open"}</span>
+                                  </div>
+                                  {hasStarted && (
+                                    <span className="text-[9px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-1 py-0.5 rounded block w-max">
+                                      {asgAttempts.length} student{asgAttempts.length === 1 ? "" : "s"} started
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => {
+                                      setEditingAssignmentId(asg.id);
+                                      setAsgCourseId(asg.courseId);
+                                      setAsgSection(asg.section || "");
+                                      setAsgOpensAt(asg.opensAt.slice(0, 16));
+                                      setAsgDueAt(asg.dueAt.slice(0, 16));
+                                      setAsgClosesAt(asg.closesAt.slice(0, 16));
+                                      setAsgIntegrityPolicy(asg.integrityPolicy || buildDefaultPolicy("open"));
+                                    }}
+                                    className="text-xs text-indigo-600 hover:text-indigo-800 font-bold hover:bg-indigo-50 px-2 py-1 rounded cursor-pointer"
+                                  >
+                                    Edit Settings
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const confirmText = hasStarted
+                                        ? "WARNING: Students have already started attempts for this assignment! Deleting it will permanently delete access and reports. Are you absolutely certain you want to proceed?"
+                                        : "Remove this assignment? Students will lose access.";
+                                      if (window.confirm(confirmText)) {
+                                        onDeleteAssignment && onDeleteAssignment(asg.id);
+                                        if (editingAssignmentId === asg.id) {
+                                          setEditingAssignmentId(null);
+                                          setAsgCourseId("");
+                                          setAsgSection("");
+                                        }
+                                      }
+                                    }}
+                                    className="text-xs text-red-600 hover:text-red-800 font-bold hover:bg-red-50 px-2 py-1 rounded cursor-pointer"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* FORM TO CREATE OR EDIT AN ASSIGNMENT */}
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      setAsgError("");
+                      if (!asgLessonId) { setAsgError("Invalid lesson ID."); return; }
+                      if (!asgCourseId) { setAsgError("Please select a course."); return; }
+                      if (new Date(asgOpensAt) >= new Date(asgDueAt)) { setAsgError("Open date must occur before the due date."); return; }
+                      if (new Date(asgDueAt) > new Date(asgClosesAt)) { setAsgError("Due date must be on or before close date."); return; }
+
+                      try {
+                        const selectedC = courses.find((c: any) => c.id === asgCourseId);
+                        const selectedLessonObj = lessons.find((l: any) => l.id === asgLessonId);
+
+                        const payload: any = {
+                          lessonId: asgLessonId,
+                          courseId: asgCourseId,
+                          section: asgSection.trim(),
+                          opensAt: new Date(asgOpensAt).toISOString(),
+                          dueAt: new Date(asgDueAt).toISOString(),
+                          closesAt: new Date(asgClosesAt).toISOString(),
+                          integrityPolicy: asgIntegrityPolicy,
+                        };
+
+                        if (editingAssignmentId) {
+                          payload.id = editingAssignmentId;
+                        }
+
+                        if (onSaveAssignment) {
+                          await onSaveAssignment(payload);
+
+                          setSavedAssignmentConfirm({
+                            lessonTitle: selectedLessonObj?.title || title || "Lesson",
+                            courseName: selectedC?.name || asgCourseId,
+                            section: asgSection.trim() || "All Sections",
+                            opensAt: asgOpensAt,
+                            dueAt: asgDueAt,
+                            closesAt: asgClosesAt,
+                            integrityPolicy: asgIntegrityPolicy,
+                          });
+
+                          setEditingAssignmentId(null);
+                          setAsgCourseId("");
+                          setAsgSection("");
+                          setAsgIntegrityPolicy(buildDefaultPolicy("open"));
+                        }
+                      } catch (err: any) {
+                        setAsgError(err.message || "Failed to save assignment.");
+                      }
+                    }}
+                    className="bg-[#0A192F]/5 border border-slate-200 rounded-xl p-6 space-y-4 text-xs"
+                  >
+                    <div className="border-b border-slate-105 pb-2">
+                      <h5 className="font-bold text-slate-800 text-[13px] flex items-center gap-1">
+                        {editingAssignmentId ? "Modify Course Assignment" : "Setup New Assignment for this Lesson"}
+                      </h5>
+                    </div>
+
+                    {/* Check started student attempts count */}
+                    {(() => {
+                      if (!editingAssignmentId) return null;
+                      const asgAttempts = (attempts || []).filter((a: any) => a.assignmentId === editingAssignmentId && !a.isPreviewAttempt);
+                      if (asgAttempts.length === 0) return null;
+                      return (
+                        <div className="bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-lg leading-relaxed text-[11px] font-medium flex items-start gap-2">
+                          <Lock className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
+                          <div>
+                            <strong>Student progress is underway:</strong> {asgAttempts.length} student{asgAttempts.length === 1 ? "" : "s"} started attempts. Only due and close dates can be modified to preserve attempt integrity and version consistency.
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {(() => {
+                      const lockAll = editingAssignmentId
+                        ? (attempts || []).filter((a: any) => a.assignmentId === editingAssignmentId && !a.isPreviewAttempt).length > 0
+                        : false;
+
+                      return (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            {/* Course Select */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Target Course *</label>
+                              <select
+                                value={asgCourseId}
+                                disabled={lockAll}
+                                onChange={(e) => {
+                                  setAsgCourseId(e.target.value);
+                                  const selected = courses.find((c: any) => c.id === e.target.value);
+                                  setAsgSection(selected?.sectionName || "");
+                                }}
+                                className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400 disabled:bg-slate-100 disabled:text-slate-500"
+                                required
+                              >
+                                <option value="">-- Choose a course --</option>
+                                {courses.filter((c: any) => c.status !== "archived").map((c: any) => (
+                                  <option key={c.id} value={c.id}>{c.name}{c.sectionName ? ` — ${c.sectionName}` : ""}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Section Input */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Section/Period</label>
+                              <input
+                                type="text"
+                                value={asgSection}
+                                disabled={lockAll}
+                                onChange={(e) => setAsgSection(e.target.value)}
+                                placeholder="e.g. Period 2 or All Sections"
+                                className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400 disabled:bg-slate-100 disabled:text-slate-500"
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            {/* Opens At */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Opens At *</label>
+                              <input
+                                type="datetime-local"
+                                value={asgOpensAt}
+                                disabled={lockAll}
+                                onChange={(e) => setAsgOpensAt(e.target.value)}
+                                className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400 disabled:bg-slate-100 disabled:text-slate-500"
+                                required
+                              />
+                            </div>
+
+                            {/* Due At */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Due At *</label>
+                              <input
+                                type="datetime-local"
+                                value={asgDueAt}
+                                onChange={(e) => setAsgDueAt(e.target.value)}
+                                className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
+                                required
+                              />
+                            </div>
+
+                            {/* Closes At */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Closes At *</label>
+                              <input
+                                type="datetime-local"
+                                value={asgClosesAt}
+                                onChange={(e) => setAsgClosesAt(e.target.value)}
+                                className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400"
+                                required
+                              />
+                            </div>
+                          </div>
+
+                          {/* Learning Conditions Editor block */}
+                          <div className="border-t border-slate-100 pt-4">
+                            {lockAll ? (
+                              <div className="space-y-2">
+                                <span className="text-xs font-bold text-slate-700 block">Learning Conditions</span>
+                                <div className="bg-slate-100 border border-slate-200 rounded-lg p-3 text-slate-600 leading-relaxed text-[11px]">
+                                  Preset: <strong className="capitalize text-slate-800">{asgIntegrityPolicy?.preset || "Open"}</strong>
+                                  <p className="mt-1">
+                                    Learning conditions like seeking restrictions, fullscreen focus checks, and choice shuffling cannot be adjusted once attempts are in progress.
+                                  </p>
+                                </div>
+                              </div>
+                            ) : (
+                              <LearningConditionsEditor value={asgIntegrityPolicy} onChange={setAsgIntegrityPolicy} />
+                            )}
+                          </div>
+                        </>
+                      );
+                    })()}
+
+                    {/* Submit actions block */}
+                    <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                      {editingAssignmentId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingAssignmentId(null);
+                            setAsgCourseId("");
+                            setAsgSection("");
+                            setAsgIntegrityPolicy(buildDefaultPolicy("open"));
+                          }}
+                          className="border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 font-bold px-4 py-2 rounded shadow-sm cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={!isPublished}
+                        className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold px-5 py-2 rounded shadow-sm tracking-wide uppercase transition cursor-pointer"
+                      >
+                        {editingAssignmentId ? "Save Assignment Changes" : "Assign to Course"}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
               ) : typeof activeWorkspace === "number" && currentBlocks[activeWorkspace] ? (
                 // ---- Block editor ----
                 <BlockEditor
@@ -2209,6 +2791,8 @@ export default function LessonsBuilder({
             {/* RIGHT READINESS PANEL */}
             {(() => {
               const r = computeReadiness();
+              const estTimeResult = calculateEstimatedLessonMinutes(currentBlocks);
+              const estTimeStr = formatEstimatedTime(estTimeResult);
               return (
                 <ReadinessPanel
                   blockers={r.issues}
@@ -2223,6 +2807,7 @@ export default function LessonsBuilder({
                   totalBlocks={currentBlocks.length}
                   isPublished={isPublished}
                   onNavigate={setActiveWorkspace}
+                  estTimeStr={estTimeStr}
                 />
               );
             })()}
@@ -2312,6 +2897,7 @@ interface ReadinessPanelProps {
   totalBlocks: number;
   isPublished: boolean;
   onNavigate: (target: "setup" | number) => void;
+  estTimeStr: string;
 }
 
 /**
@@ -2358,7 +2944,7 @@ function renderReadinessRows(
 
 function ReadinessPanel({
   blockers, attention, optional, gradedQCount, practiceQCount, videoCount, readingCount, aiGradedCount,
-  checkpointCount, totalBlocks, isPublished, onNavigate
+  checkpointCount, totalBlocks, isPublished, onNavigate, estTimeStr
 }: ReadinessPanelProps) {
   const canPublish = blockers.length === 0;
   const hasIssues = blockers.length > 0 || attention.length > 0;
@@ -2399,6 +2985,15 @@ function ReadinessPanel({
               <div className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">{s.label}</div>
             </div>
           ))}
+        </div>
+
+        {/* Estimated lesson duration banner */}
+        <div className="bg-slate-50 border border-slate-200 rounded p-2 text-center mb-2">
+          <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-500 font-bold uppercase tracking-wider mb-0.5">
+            <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <span>Estimated Time</span>
+          </div>
+          <div className="font-bold text-xs text-slate-800">{estTimeStr}</div>
         </div>
 
         {/* Publish readiness banner — animated on resolution */}

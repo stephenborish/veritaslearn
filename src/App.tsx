@@ -377,8 +377,11 @@ export default function App() {
     const token = await getFreshToken();
     if (!token) return;
     try {
-      const res = await fetch("/api/assignments", {
-        method: "POST",
+      const isUpdate = !!payload.id;
+      const url = isUpdate ? `/api/assignments/${payload.id}` : "/api/assignments";
+      const method = isUpdate ? "PUT" : "POST";
+      const res = await fetch(url, {
+        method,
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${token}`
@@ -387,9 +390,13 @@ export default function App() {
       });
       if (res.ok) {
         fetchLmsPayload(currentUser, token);
+      } else {
+        const errData = await res.json();
+        throw new Error(errData.error || "Failed to save assignment.");
       }
     } catch (e) {
       console.error("Failed to save assignment:", e);
+      throw e;
     }
   };
 
@@ -830,6 +837,7 @@ export default function App() {
                   <LessonsBuilder
                     lessons={lessons}
                     blocks={blocks}
+                    attempts={attempts}
                     onSaveLesson={handleSaveLessonCurriculum}
                     onArchived={handleArchiveLesson}
                     assignments={assignments}
