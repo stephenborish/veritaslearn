@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import {
   Play, CheckCircle, Calendar, Clock3, BookOpen, Lock, AlertCircle,
   ArrowRight, ChevronRight, FileText, GraduationCap, Plus, X, Loader2,
-  BookMarked, Users, TrendingUp
+  BookMarked, Users, TrendingUp, Sparkles
 } from "lucide-react";
 
 interface PracticeDashboardProps {
@@ -477,6 +477,158 @@ export default function PracticeDashboard({
   const hasEnrollments = enrollments.length > 0;
   const hasAssignments = assignments.length > 0;
 
+  const studentAttempts = attempts.filter((a) => a.studentId === user.id && !a.isPreviewAttempt);
+
+  // True first-time state: enrolled nowhere, no assignments, no attempts
+  const isFirstTime =
+    enrollmentsLoaded &&
+    enrollments.length === 0 &&
+    assignments.length === 0 &&
+    studentAttempts.length === 0;
+
+  // Performance summary is only meaningful after real data exists
+  const hasRealPerformanceData =
+    completedList.length > 0 ||
+    (perfData !== null && perfData.averageAccuracy !== null);
+
+  // ── First-time onboarding state ──────────────────────────────────────────
+  if (isFirstTime) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-800 font-sans">
+        {/* Header */}
+        <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-3">
+            <img src="/favicon.png" alt="VERITAS Learn" className="w-8 h-8 rounded object-contain" referrerPolicy="no-referrer" />
+            <div>
+              <span className="text-[17px] font-extrabold tracking-tight text-slate-900">VERITAS <span className="font-light">Learn</span></span>
+            </div>
+          </div>
+          <button onClick={onLogout} className="text-xs font-semibold text-slate-500 hover:text-slate-700 border border-slate-200 px-3 py-1.5 rounded-lg transition cursor-pointer">
+            Sign out
+          </button>
+        </div>
+
+        <div className="max-w-2xl mx-auto px-6 py-14 space-y-10">
+          {/* Welcome hero */}
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="text-center space-y-3"
+          >
+            <div className="w-16 h-16 bg-emerald-800 rounded-2xl flex items-center justify-center mx-auto shadow-md">
+              <Sparkles className="w-8 h-8 text-white" />
+            </div>
+            <h1 className="text-[28px] font-extrabold text-slate-900 tracking-tight">Welcome to VERITAS Learn</h1>
+            <p className="text-slate-500 text-base max-w-sm mx-auto leading-relaxed">
+              You are signed in. Enter a course code from your teacher to see your assignments.
+            </p>
+          </motion.div>
+
+          {/* Join code panel */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.1 }}
+            className="bg-white border border-slate-200 rounded-xl p-8 shadow-sm space-y-6"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center shrink-0">
+                <GraduationCap className="w-5 h-5 text-indigo-600" />
+              </div>
+              <div>
+                <h2 className="text-[17px] font-bold text-slate-900">Enter a course code</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Ask your teacher for the code — it looks like <strong className="font-mono text-slate-700">APBIO26</strong></p>
+              </div>
+            </div>
+
+            {/* Join success message */}
+            {joinSuccess && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 flex items-start gap-2.5">
+                <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <p className="text-sm text-emerald-800 font-medium">{joinSuccess}</p>
+                <button onClick={() => setJoinSuccess(null)} className="ml-auto text-emerald-500 hover:text-emerald-700">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {showJoinInput ? (
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={joinCode}
+                    onChange={(e) => {
+                      setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+                      setJoinError(null);
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && handleJoin()}
+                    placeholder="e.g. APBIO26"
+                    className="flex-1 px-4 py-2.5 border border-slate-200 rounded-lg font-mono font-bold text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 uppercase tracking-widest placeholder:normal-case placeholder:font-normal placeholder:tracking-normal"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleJoin}
+                    disabled={joining || !joinCode.trim()}
+                    className="px-4 py-2.5 bg-[#0A192F] hover:bg-[#15294b] disabled:opacity-50 text-white text-sm font-bold rounded-lg transition flex items-center gap-2 cursor-pointer"
+                  >
+                    {joining ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                    Join
+                  </button>
+                  <button
+                    onClick={() => { setShowJoinInput(false); setJoinCode(""); setJoinError(null); }}
+                    className="px-3 py-2.5 border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50 transition cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                {joinError && (
+                  <p className="text-xs text-rose-600 font-medium flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    {joinError}
+                  </p>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowJoinInput(true)}
+                className="w-full bg-emerald-700 hover:bg-emerald-800 text-white py-3 rounded-lg font-semibold text-sm transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+              >
+                <Plus className="w-4 h-4" />
+                Enter course code
+              </button>
+            )}
+          </motion.div>
+
+          {/* What happens next */}
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.2 }}
+            className="bg-white border border-slate-100 rounded-xl p-6 shadow-sm"
+          >
+            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-4">What happens next</h3>
+            <div className="space-y-4">
+              {[
+                { n: "1", text: "After joining, your teacher's assignments will appear here." },
+                { n: "2", text: "Your progress saves automatically — pick up where you left off anytime." },
+                { n: "3", text: "When your teacher releases feedback, it will appear on your completed work." },
+              ].map(({ n, text }) => (
+                <div key={n} className="flex items-start gap-3">
+                  <div className="w-6 h-6 rounded-full bg-indigo-50 text-indigo-700 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 border border-indigo-100">
+                    {n}
+                  </div>
+                  <p className="text-sm text-slate-600 leading-relaxed">{text}</p>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-6">
       <div className="max-w-4xl mx-auto space-y-8">
@@ -485,12 +637,25 @@ export default function PracticeDashboard({
         <div className="bg-white border border-slate-200 rounded-lg p-5 shadow-sm">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
-              <h2 className="font-bold text-slate-800 text-2xl leading-snug">
-                {user.name ? `Welcome back, ${user.name.split(" ")[0]}` : "Student Dashboard"}
-              </h2>
-              <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-xl">
-                Your progress is saved automatically. You can leave and return to any assignment — pick up right where you left off.
-              </p>
+              {inProgressList.length === 0 && completedList.length === 0 && hasAssignments ? (
+                <>
+                  <h2 className="font-bold text-slate-800 text-2xl leading-snug">
+                    {user.name ? `Hi, ${user.name.split(" ")[0]} — ready to begin` : "Ready to begin"}
+                  </h2>
+                  <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-xl">
+                    Your assignments are listed below. Pick one to get started.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h2 className="font-bold text-slate-800 text-2xl leading-snug">
+                    {user.name ? `Welcome back, ${user.name.split(" ")[0]}` : "Student Dashboard"}
+                  </h2>
+                  <p className="text-sm text-slate-500 mt-1 leading-relaxed max-w-xl">
+                    Your progress is saved automatically. Pick up right where you left off.
+                  </p>
+                </>
+              )}
             </div>
             {totalAssigned > 0 && (
               <div className="flex gap-5 shrink-0">
@@ -566,7 +731,7 @@ export default function PracticeDashboard({
                     setJoinError(null);
                   }}
                   onKeyDown={(e) => e.key === "Enter" && handleJoin()}
-                  placeholder="e.g. APBIO-4M8X"
+                  placeholder="e.g. APBIO26"
                   className="flex-1 px-4 py-2.5 border border-slate-200 rounded-lg font-mono font-bold text-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 uppercase tracking-widest placeholder:normal-case placeholder:font-normal placeholder:tracking-normal"
                   autoFocus
                 />
@@ -624,7 +789,8 @@ export default function PracticeDashboard({
           )}
         </div>
 
-        {/* Student Performance Widget */}
+        {/* Student Performance Widget — only when there is real data */}
+        {hasRealPerformanceData && (
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
           <div className="bg-slate-50 border-b border-slate-100 px-5 py-3.5 flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -769,6 +935,7 @@ export default function PracticeDashboard({
             </div>
           </div>
         </div>
+        )}
 
         {/* 1. CONTINUE WORKING */}
         {inProgressList.length > 0 && (

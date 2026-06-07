@@ -625,7 +625,9 @@ export default function TimelineGradebook({
                                    <div className="font-bold text-sm text-slate-800">{getSignalLabel(sig.type)}</div>
                                    <div className="text-xs text-slate-500 mt-1">{sig.details || "No additional context."}</div>
                                    <div className="text-[10px] font-mono text-slate-400 mt-2 uppercase tracking-wide">
-                                     Recorded {new Date(sig.timestamp).toLocaleDateString([], { month: "short", day: "numeric" })}, {new Date(sig.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                     {sig.timestamp && !isNaN(new Date(sig.timestamp).getTime())
+                                       ? `Recorded ${new Date(sig.timestamp).toLocaleDateString([], { month: "short", day: "numeric" })}, ${new Date(sig.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                                       : "Time unavailable"}
                                    </div>
                                  </div>
                               </div>

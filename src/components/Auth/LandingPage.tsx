@@ -1,6 +1,9 @@
 import { useState } from "react";
-import { ShieldCheck, AlertCircle, BookOpen, Users, ArrowRight, GraduationCap } from "lucide-react";
-import { motion } from "motion/react";
+import {
+  ShieldCheck, AlertCircle, Users, ArrowRight, GraduationCap,
+  ArrowLeft, UserCheck, X,
+} from "lucide-react";
+import { motion, AnimatePresence } from "motion/react";
 import { auth, googleProvider, signInWithPopup } from "../../lib/firebase";
 import LandingArtBackground from "./LandingArtBackground";
 
@@ -14,18 +17,17 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
   const [courseCode, setCourseCode] = useState("");
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(false);
-  const [loadingMode, setLoadingMode] = useState<"teacher" | "student" | null>(null);
+  const [loadingMode, setLoadingMode] = useState<"teacher" | "new_student" | "returning" | null>(null);
+  const [studentPath, setStudentPath] = useState<"choose" | "new_student">("choose");
 
   const signInWithGoogle = async (): Promise<any> => {
     const result = await signInWithPopup(auth, googleProvider);
     const idToken = await result.user.getIdToken();
-
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ idToken }),
     });
-
     const data = await response.json();
     if (!response.ok) {
       throw new Error(data.error || "Verification failed");
@@ -41,44 +43,63 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
       const user = await signInWithGoogle();
       onLoginSuccess(user);
     } catch (err: any) {
-      setErrorText(err.message || "Google sign-in was cancelled or failed. Please try again.");
+      setErrorText(err.message || "Sign-in was cancelled or failed. Please try again.");
     } finally {
       setLoading(false);
       setLoadingMode(null);
     }
   };
 
-  const handleStudentContinue = async () => {
+  const handleNewStudentSignIn = async () => {
     const trimmedCode = courseCode.trim().toUpperCase();
     if (!trimmedCode) {
-      setErrorText("Please enter a course code from your teacher.");
+      setErrorText("Please enter your course code to continue.");
       return;
     }
     setLoading(true);
-    setLoadingMode("student");
+    setLoadingMode("new_student");
     setErrorText("");
     try {
-      // Persist code before auth popup — survives focus change from popup
+      // Persist code before the auth popup — survives focus loss from the popup window.
       sessionStorage.setItem(PENDING_COURSE_CODE_KEY, trimmedCode);
       const user = await signInWithGoogle();
       onLoginSuccess(user);
     } catch (err: any) {
       sessionStorage.removeItem(PENDING_COURSE_CODE_KEY);
-      setErrorText(err.message || "Google sign-in was cancelled or failed. Please try again.");
+      setErrorText(err.message || "Sign-in was cancelled or failed. Please try again.");
     } finally {
       setLoading(false);
       setLoadingMode(null);
     }
   };
 
+  const handleReturningStudentSignIn = async () => {
+    setLoading(true);
+    setLoadingMode("returning");
+    setErrorText("");
+    try {
+      const user = await signInWithGoogle();
+      onLoginSuccess(user);
+    } catch (err: any) {
+      setErrorText(err.message || "Sign-in was cancelled or failed. Please try again.");
+    } finally {
+      setLoading(false);
+      setLoadingMode(null);
+    }
+  };
+
+  const handleBack = () => {
+    setStudentPath("choose");
+    setErrorText("");
+    setCourseCode("");
+  };
+
   return (
     <div className="relative min-h-screen text-[#1A1A1A] font-sans flex flex-col bg-[#FCFBFA] overflow-hidden">
-      {/* Decorative, premium abstract grainy base background */}
       <LandingArtBackground />
 
-      {/* Actual foreground layout - elevated above the background art */}
-      <div className="relative z-10 flex-1 flex flex-col justify-between min-h-screen">
-        
+      <div className="relative z-10 flex-1 flex flex-col min-h-screen">
+
         {/* Header */}
         <header className="px-6 py-5 flex items-center justify-between shrink-0 border-b border-slate-200/40 bg-white/35 backdrop-blur-sm">
           <div className="flex items-center gap-3">
@@ -97,11 +118,11 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
               </span>
             </div>
           </div>
-          
+
           <button
             onClick={handleTeacherSignIn}
             disabled={loading}
-            className="flex items-center gap-2 border border-slate-200/80 bg-white/80 hover:bg-slate-50 text-slate-700 text-[14px] leading-[16px] font-semibold px-4 py-2.5 rounded-[10px] transition-all duration-200 active:scale-95 shadow-sm hover:border-slate-300 pointer-events-auto cursor-pointer"
+            className="flex items-center gap-2 border border-slate-200/80 bg-white/80 hover:bg-slate-50 text-slate-700 text-[14px] leading-[16px] font-semibold px-4 py-2.5 rounded-[10px] transition-all duration-200 active:scale-95 shadow-sm hover:border-slate-300 cursor-pointer disabled:opacity-60"
           >
             {loading && loadingMode === "teacher" ? (
               <>
@@ -117,108 +138,230 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
           </button>
         </header>
 
-
-
         {/* Error banner */}
-        {errorText && (
-          <div className="max-w-4xl w-full mx-auto px-6 mb-2 shrink-0">
-            <motion.div 
-              initial={{ scale: 0.98, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="bg-rose-50 border border-rose-200 rounded-lg px-4 py-3.5 flex items-center gap-2.5 shadow-sm"
-            >
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-              <span className="text-xs sm:text-sm text-rose-800 flex-1 font-medium">{errorText}</span>
-              <button
-                onClick={() => setErrorText("")}
-                className="text-rose-500 hover:text-rose-700 text-xs font-bold uppercase tracking-wider shrink-0"
-              >
-                Dismiss
-              </button>
-            </motion.div>
-          </div>
-        )}
-
-        {/* Entry panels */}
-        <div className="flex-1 max-w-md w-full mx-auto px-6 py-12 flex items-center justify-center">
-          <div className="w-full">
-
-            {/* Student card - centered layout */}
+        <AnimatePresence>
+          {errorText && (
             <motion.div
-              initial={{ opacity: 0, y: 16 }}
+              key="error-banner"
+              initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4, delay: 0.15 }}
-              className="bg-white/85 border border-slate-200/50 rounded-[10px] p-8 shadow-sm hover:shadow-md backdrop-blur-md flex flex-col justify-between gap-6 transition-all duration-300"
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.2 }}
+              className="w-full max-w-xl mx-auto px-6 pt-5 shrink-0"
             >
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-11 h-11 bg-emerald-750 bg-emerald-800 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
-                    <Users className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <h2 className="text-[23px] font-bold text-slate-900">Students</h2>
-                    <p className="text-xs text-[#065F46] font-sans font-bold uppercase tracking-wider">Join a course &amp; begin learning</p>
-                  </div>
-                </div>
-
-                <p className="text-sm text-slate-600 leading-relaxed">
-                  To enroll in a course, enter the code shared by your teacher to begin.
-                </p>
-              </div>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 mb-2 uppercase tracking-widest font-sans">
-                    Course Join Code
-                  </label>
-                  <input
-                    type="text"
-                    value={courseCode}
-                    onChange={(e) => {
-                      setCourseCode(e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, ""));
-                      if (errorText) setErrorText("");
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && !loading && handleStudentContinue()}
-                    placeholder="e.g. MATH34"
-                    className="w-full bg-slate-100/65 border border-slate-200/60 rounded-lg px-3 py-3 text-slate-800 font-mono font-bold uppercase tracking-widest focus:outline-none focus:border-emerald-600 focus:bg-white text-sm placeholder:normal-case placeholder:tracking-normal placeholder:font-normal placeholder:text-slate-400 transition-colors"
-                    disabled={loading}
-                    autoComplete="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                  />
-                </div>
-
+              <div className="bg-rose-50 border border-rose-200 rounded-lg px-4 py-3.5 flex items-center gap-2.5 shadow-sm">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span className="text-sm text-rose-800 flex-1 font-medium">{errorText}</span>
                 <button
-                  onClick={handleStudentContinue}
-                  disabled={loading}
-                  className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-[16px] py-3.5 px-4 rounded-[10px] font-semibold tracking-wide transition flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                  onClick={() => setErrorText("")}
+                  className="text-rose-400 hover:text-rose-600 transition shrink-0 ml-1"
                 >
-                  {loading && loadingMode === "student" ? (
-                    <>
-                      <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin inline-block" />
-                      Signing in…
-                    </>
-                  ) : (
-                    <>
-                      Continue to Learning
-                      <ArrowRight className="w-4 h-4" />
-                    </>
-                  )}
+                  <X className="w-4 h-4" />
                 </button>
               </div>
             </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Main content */}
+        <div className="flex-1 flex flex-col items-center justify-center px-6 py-10">
+
+          {/* Hero */}
+          <motion.div
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+            className="text-center mb-10 space-y-2.5"
+          >
+            <h1 className="text-[30px] sm:text-[34px] font-extrabold tracking-tight text-slate-900 leading-tight">
+              Welcome to VERITAS Learn
+            </h1>
+            <p className="text-[15px] text-slate-500 max-w-sm mx-auto leading-relaxed">
+              Sign in with your Malvern Prep Google account to access your lessons and assignments.
+            </p>
+          </motion.div>
+
+          {/* Student entry cards */}
+          <div className="w-full max-w-xl">
+            <AnimatePresence mode="wait" initial={false}>
+
+              {studentPath === "choose" ? (
+                <motion.div
+                  key="choose"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.2 }}
+                  className="grid grid-cols-1 sm:grid-cols-2 gap-4"
+                >
+                  {/* New student — enter course code */}
+                  <button
+                    onClick={() => setStudentPath("new_student")}
+                    disabled={loading}
+                    className="group bg-white/85 border border-emerald-200/70 hover:border-emerald-300 rounded-[12px] p-7 shadow-sm hover:shadow-md backdrop-blur-md text-left transition-all duration-200 active:scale-[0.99] flex flex-col gap-4 cursor-pointer disabled:opacity-60"
+                  >
+                    <div className="w-11 h-11 bg-emerald-800 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                      <Users className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-[18px] font-bold text-slate-900 leading-snug">New student</h2>
+                      <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
+                        Enter the course code from your teacher to join.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-emerald-700 text-sm font-semibold mt-auto pt-1">
+                      Enter course code
+                      <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+                    </div>
+                  </button>
+
+                  {/* Returning student — sign in directly */}
+                  <button
+                    onClick={handleReturningStudentSignIn}
+                    disabled={loading}
+                    className="group bg-white/85 border border-slate-200/80 hover:border-indigo-200 rounded-[12px] p-7 shadow-sm hover:shadow-md backdrop-blur-md text-left transition-all duration-200 active:scale-[0.99] flex flex-col gap-4 cursor-pointer disabled:opacity-60"
+                  >
+                    <div className="w-11 h-11 bg-[#0A192F] rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                      <UserCheck className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-[18px] font-bold text-slate-900 leading-snug">Returning student</h2>
+                      <p className="text-sm text-slate-500 mt-1.5 leading-relaxed">
+                        Already enrolled? Sign in to your account directly.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-indigo-700 text-sm font-semibold mt-auto pt-1">
+                      {loading && loadingMode === "returning" ? (
+                        <>
+                          <span className="w-3.5 h-3.5 border-2 border-indigo-400/40 border-t-indigo-600 rounded-full animate-spin" />
+                          Signing in…
+                        </>
+                      ) : (
+                        <>
+                          Sign in
+                          <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+                        </>
+                      )}
+                    </div>
+                  </button>
+                </motion.div>
+
+              ) : (
+                <motion.div
+                  key="new_student_form"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.2 }}
+                  className="bg-white/88 border border-slate-200/50 rounded-[12px] p-8 shadow-sm backdrop-blur-md space-y-6"
+                >
+                  {/* Back + heading */}
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleBack}
+                      disabled={loading}
+                      className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer -ml-1 disabled:opacity-50"
+                      aria-label="Go back"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div className="w-11 h-11 bg-emerald-800 rounded-lg flex items-center justify-center shrink-0 shadow-sm">
+                      <Users className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-[20px] font-bold text-slate-900 leading-snug">Join a course</h2>
+                      <p className="text-[10px] text-emerald-700 font-bold uppercase tracking-widest mt-0.5">
+                        New student enrollment
+                      </p>
+                    </div>
+                  </div>
+
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    Enter the join code your teacher shared. After signing in, you will be enrolled automatically.
+                  </p>
+
+                  <div className="space-y-2">
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                      Course Join Code
+                    </label>
+                    <input
+                      type="text"
+                      value={courseCode}
+                      onChange={(e) => {
+                        setCourseCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""));
+                        if (errorText) setErrorText("");
+                      }}
+                      onKeyDown={(e) => e.key === "Enter" && !loading && handleNewStudentSignIn()}
+                      placeholder="e.g. APBIO26"
+                      className="w-full bg-slate-100/65 border border-slate-200/60 rounded-lg px-4 py-3.5 text-slate-800 font-mono font-bold uppercase tracking-widest focus:outline-none focus:border-emerald-600 focus:bg-white text-sm placeholder:normal-case placeholder:tracking-normal placeholder:font-normal placeholder:text-slate-400 transition-colors"
+                      disabled={loading}
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      autoFocus
+                    />
+                    <p className="text-[11px] text-slate-400 leading-snug">
+                      Course codes are uppercase letters and numbers only — no spaces.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={handleNewStudentSignIn}
+                    disabled={loading}
+                    className="w-full bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white text-[15px] py-3.5 px-4 rounded-[10px] font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-[0.99]"
+                  >
+                    {loading && loadingMode === "new_student" ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin inline-block" />
+                        Signing in…
+                      </>
+                    ) : (
+                      <>
+                        Continue to sign in
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
+
+                  <p className="text-center text-xs text-slate-400">
+                    Already enrolled?{" "}
+                    <button
+                      onClick={handleReturningStudentSignIn}
+                      disabled={loading}
+                      className="text-indigo-600 font-semibold hover:underline cursor-pointer disabled:opacity-50"
+                    >
+                      Sign in without a code
+                    </button>
+                  </p>
+                </motion.div>
+              )}
+
+            </AnimatePresence>
           </div>
+
+          {/* Teacher note */}
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.5 }}
+            className="mt-8 text-xs text-slate-400 text-center"
+          >
+            Teachers: use the{" "}
+            <span className="font-semibold text-slate-500">Teacher Portal</span>{" "}
+            button in the upper right.
+          </motion.p>
         </div>
 
         {/* Footer */}
-        <footer className="shrink-0 border-t border-slate-200/40 bg-white/20 backdrop-blur-sm py-5 text-center mt-6">
+        <footer className="shrink-0 border-t border-slate-200/40 bg-white/20 backdrop-blur-sm py-5 text-center">
           <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-500 px-4">
             <GraduationCap className="w-4 h-4 text-slate-400" />
             <span>
-              Secure single sign-on powered by Google. Student progress records and activity signals are saved securely.
+              Secure single sign-on powered by Google. Progress and activity records are saved securely.
             </span>
           </div>
         </footer>
+
       </div>
     </div>
   );
