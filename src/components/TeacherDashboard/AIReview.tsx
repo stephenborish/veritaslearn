@@ -94,7 +94,16 @@ interface AIReviewProps {
   signals: any[];
   assignments?: any[];
   onOverrideSave: (responseId: string, score: number, notes: string) => Promise<void>;
-  onOpenDossier: (studentId: string, lessonId: string) => void;
+  onOpenDossier: (
+    studentId: string,
+    lessonId: string,
+    nav?: {
+      entries: { studentId: string; lessonId: string; label?: string }[];
+      index: number;
+      label?: string;
+      initialSection?: string;
+    }
+  ) => void;
   idToken?: string | null;
   onRefresh?: () => void;
 }
@@ -909,7 +918,24 @@ export default function AIReview({
                   onClick={() => {
                     const finalLessonId = lesson?.id || attempt?.lessonId || lessons[0]?.id || "";
                     if (finalLessonId) {
-                      onOpenDossier(sid, finalLessonId);
+                      // Build a nav list across all integrity review entries so the
+                      // dossier prev/next moves through the Review Queue.
+                      const entries = studentSignalEntries.map(([eid, esigs]) => {
+                        const eAttempt = (esigs[0]?.attemptId ? attempts.find((a) => a.id === esigs[0].attemptId) : null) || attempts.find((a) => a.studentId === eid);
+                        const eStudent = students.find((s) => s.id === eid);
+                        return {
+                          studentId: eid,
+                          lessonId: eAttempt?.lessonId || finalLessonId,
+                          label: eStudent?.name || eStudent?.email || "Student",
+                        };
+                      });
+                      const index = entries.findIndex((e) => e.studentId === sid);
+                      onOpenDossier(sid, finalLessonId, {
+                        entries,
+                        index: index < 0 ? 0 : index,
+                        label: "Integrity review",
+                        initialSection: "integrity",
+                      });
                     }
                   }}
                 >

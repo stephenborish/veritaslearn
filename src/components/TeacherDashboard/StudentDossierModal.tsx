@@ -19,12 +19,39 @@ import {
   Info,
   Activity,
   Send,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
+import {
+  deriveIntegritySignalSummary,
+  reliabilityLabel,
+  attentionLabel,
+  attentionColorClasses,
+} from "../../lib/integritySignals";
+import { safeText } from "../../lib/dataIntegrity";
+
+/**
+ * Ordered review context that lets the teacher move student-to-student without
+ * leaving the dossier. The parent owns the list (e.g. "all students needing
+ * grading", "everyone in this assignment", "the filtered Gradebook column") and
+ * the dossier simply renders prev/next controls + a position label and calls
+ * `onSelect(index)` to switch.
+ */
+export interface DossierNavContext {
+  entries: { studentId: string; lessonId: string; label?: string }[];
+  index: number;
+  label?: string;
+  onSelect: (index: number) => void;
+}
 
 interface StudentDossierModalProps {
   studentId: string;
   lessonId: string;
   initialSection?: string;
+  /** Optional block/step to scroll to on open (Gradebook cell / Review item deep-link). */
+  initialStepId?: string;
+  /** Context-aware student-to-student navigation. */
+  navContext?: DossierNavContext;
   students: any[];
   attempts: any[];
   responses: any[];
@@ -519,6 +546,8 @@ export default function StudentDossierModal({
   studentId,
   lessonId,
   initialSection,
+  initialStepId,
+  navContext,
   students,
   attempts,
   responses,
@@ -682,7 +711,25 @@ export default function StudentDossierModal({
   const sResponses = responses.filter((r) => r.attemptId === attempt.id);
   const lessonBlocks = blocks.filter((b) => b.lessonId === lesson.id);
 
+  // Shared integrity engine summary — drives the summary-first reliability panel.
+  // Raw activity records remain available (rendered below) but are no longer the
+  // first thing the teacher sees.
+  const integritySummary = deriveIntegritySignalSummary(sSignals, {
+    responsesByStep: sResponses.reduce((acc: any, r: any) => {
+      const key = r.checkpointId ? `${r.blockId || ""}:${r.checkpointId}` : r.blockId || "";
+      acc[key] = { responseId: r.id, questionId: r.questionId, submittedAt: r.submittedAt };
+      return acc;
+    }, {}),
+    hasActivityTiming: !!(attempt?.activeTimeSpent),
+    assignmentId: attempt?.assignmentId || null,
+    lessonId: lesson.id,
+    lessonVersionId: attempt?.lessonVersionId || null,
+  });
+
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  // Pending guarded action (close OR navigate-to-another-student). When unsaved
+  // edits exist we surface the discard dialog and only run this on confirm.
+  const pendingActionRef = useRef<(() => void) | null>(null);
 
   const summaryRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -746,12 +793,53 @@ export default function StudentDossierModal({
     return false;
   };
 
-  const handleTryClose = () => {
+  /** Run `action` immediately, or prompt to discard unsaved edits first. */
+  const guardedAction = (action: () => void) => {
     if (hasUnsavedChanges()) {
+      pendingActionRef.current = action;
       setShowDiscardConfirm(true);
     } else {
-      onClose();
+      action();
     }
+  };
+
+  const handleTryClose = () => guardedAction(onClose);
+
+  // Student-to-student navigation within the current review context.
+  const navEntries = navContext?.entries || [];
+  const navIndex = navContext?.index ?? -1;
+  const canNavPrev = !!navContext && navIndex > 0;
+  const canNavNext = !!navContext && navIndex >= 0 && navIndex < navEntries.length - 1;
+  const goToNavIndex = (idx: number) => {
+    if (!navContext || idx < 0 || idx >= navEntries.length || idx === navIndex) return;
+    guardedAction(() => navContext.onSelect(idx));
+  };
+
+  // Question/step-to-question navigation within the current lesson. We track the
+  // focused step locally and scroll the responses list to its anchor.
+  const orderedSteps = lessonBlocks.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const [activeStepId, setActiveStepId] = useState<string | null>(initialStepId || null);
+  const activeStepIndex = activeStepId ? orderedSteps.findIndex((b) => b.id === activeStepId) : -1;
+
+  const scrollToStep = (stepId: string) => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const el = container.querySelector(`[data-step-anchor="${stepId}"]`) as HTMLElement | null;
+    if (!el) return;
+    let node: HTMLElement | null = el;
+    let top = 0;
+    while (node && node !== container) {
+      top += node.offsetTop;
+      node = node.offsetParent as HTMLElement | null;
+    }
+    container.scrollTo({ top: top - 12, behavior: "smooth" });
+  };
+
+  const goToStep = (idx: number) => {
+    if (idx < 0 || idx >= orderedSteps.length) return;
+    const stepId = orderedSteps[idx].id;
+    setActiveStepId(stepId);
+    scrollToStep(stepId);
   };
 
   useEffect(() => {
@@ -801,6 +889,14 @@ export default function StudentDossierModal({
       return () => clearTimeout(timer);
     }
   }, [initialSection]);
+
+  // Deep-link to a specific step/question (Gradebook cell / Review Queue item).
+  useEffect(() => {
+    if (!initialStepId) return;
+    setActiveStepId(initialStepId);
+    const timer = setTimeout(() => scrollToStep(initialStepId), 380);
+    return () => clearTimeout(timer);
+  }, [initialStepId, studentId]);
 
   // All recorded student activities for this student and this attempt
   const sActivities = studentActivities
@@ -1009,13 +1105,60 @@ export default function StudentDossierModal({
               {student.email ? ` — ${student.email}` : ""}
             </p>
           </div>
-          <button
-            onClick={handleTryClose}
-            className="text-slate-400 hover:text-slate-700 p-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition cursor-pointer"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Context-aware student-to-student navigation */}
+            {navContext && navEntries.length > 0 && (
+              <div className="flex items-center gap-1.5 mr-1">
+                {navContext.label && (
+                  <span className="hidden lg:inline text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-1 max-w-[160px] truncate" title={navContext.label}>
+                    {navContext.label}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => goToNavIndex(navIndex - 1)}
+                  disabled={!canNavPrev}
+                  className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-white hover:text-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                  aria-label="Previous student"
+                  title="Previous student"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <select
+                  value={navIndex}
+                  onChange={(e) => goToNavIndex(Number(e.target.value))}
+                  className="text-[11px] font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg px-2 py-1.5 max-w-[150px] cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                  title="Jump to student"
+                >
+                  {navEntries.map((entry, i) => (
+                    <option key={`${entry.studentId}-${i}`} value={i}>
+                      {entry.label || `Student ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => goToNavIndex(navIndex + 1)}
+                  disabled={!canNavNext}
+                  className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-white hover:text-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                  aria-label="Next student"
+                  title="Next student"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+                <span className="hidden md:inline text-[10px] font-bold text-slate-400 tabular-nums ml-0.5 whitespace-nowrap">
+                  {navIndex + 1} of {navEntries.length}
+                </span>
+              </div>
+            )}
+            <button
+              onClick={handleTryClose}
+              className="text-slate-400 hover:text-slate-700 p-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition cursor-pointer"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Sticky Mini Navigation */}
@@ -1062,6 +1205,47 @@ export default function StudentDossierModal({
           >
             Activity Records
           </button>
+
+          {/* Step / question navigation for the current student */}
+          {orderedSteps.length > 0 && (
+            <div className="flex items-center gap-1.5 ml-auto">
+              <button
+                type="button"
+                onClick={() => goToStep(activeStepIndex < 0 ? 0 : activeStepIndex - 1)}
+                disabled={activeStepIndex === 0}
+                className="p-1 rounded-md border border-slate-200 text-slate-500 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                aria-label="Previous step"
+                title="Previous step"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <select
+                value={activeStepIndex < 0 ? "" : activeStepIndex}
+                onChange={(e) => goToStep(Number(e.target.value))}
+                className="text-[11px] font-semibold text-slate-600 bg-white border border-slate-200 rounded-md px-2 py-1 max-w-[180px] cursor-pointer focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                title="Jump to step"
+              >
+                <option value="" disabled>
+                  Go to step…
+                </option>
+                {orderedSteps.map((b, i) => (
+                  <option key={b.id} value={i}>
+                    Step {i + 1} of {orderedSteps.length}: {safeText(b.title, "Step")}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => goToStep(activeStepIndex < 0 ? 0 : activeStepIndex + 1)}
+                disabled={activeStepIndex === orderedSteps.length - 1}
+                className="p-1 rounded-md border border-slate-200 text-slate-500 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                aria-label="Next step"
+                title="Next step"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Scrollable body */}
@@ -1423,6 +1607,39 @@ export default function StudentDossierModal({
               </div>
             </div>
 
+            {/* Summary-first reliability panel (shared integrity engine) */}
+            {(() => {
+              const colors = attentionColorClasses(integritySummary.attentionLevel);
+              return (
+                <div className={`rounded-lg border ${colors.border} ${colors.bg} px-4 py-3 space-y-2`}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide ${colors.text}`}>
+                      <span className={`w-2 h-2 rounded-full ${colors.dot}`} />
+                      {attentionLabel(integritySummary.attentionLevel)}
+                    </span>
+                    <span className="text-[11px] font-semibold text-slate-500">
+                      Response reliability: <span className="text-slate-700">{reliabilityLabel(integritySummary.responseReliability)}</span>
+                    </span>
+                    <span className="text-[10px] font-medium text-slate-400">
+                      Evidence: {integritySummary.evidenceStrength} &bull; Data completeness: {integritySummary.dataCompleteness}
+                    </span>
+                  </div>
+                  {integritySummary.topReasons.length > 0 ? (
+                    <ul className="text-[11px] text-slate-600 leading-relaxed list-disc pl-4 space-y-0.5">
+                      {integritySummary.topReasons.map((reason, i) => (
+                        <li key={i}>{reason}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">No review-worthy patterns. This summary supports your judgment and never changes a score.</p>
+                  )}
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    {integritySummary.groupedSignalCount} signal {integritySummary.groupedSignalCount === 1 ? "cluster" : "clusters"} from {integritySummary.totalSignals} activity {integritySummary.totalSignals === 1 ? "record" : "records"}. Summaries support teacher review and preserve uncertainty.
+                  </p>
+                </div>
+              );
+            })()}
+
             {aiGuardSignals > 0 && (
               <div className="text-xs bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 space-y-1">
                 <p className="font-semibold text-amber-900">Signals of AI agent use</p>
@@ -1441,7 +1658,12 @@ export default function StudentDossierModal({
                 No activity signals recorded.
               </div>
             ) : (
-              <div className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-52 overflow-y-auto">
+              <details className="group">
+                <summary className="text-[11px] font-bold text-slate-500 cursor-pointer select-none py-1.5 hover:text-slate-700 list-none flex items-center gap-1.5">
+                  <ChevronRight className="w-3.5 h-3.5 transition-transform group-open:rotate-90" />
+                  Raw activity records ({sSignals.length})
+                </summary>
+                <div className="mt-2 border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-52 overflow-y-auto">
                 {sSignals.map((signal) => {
                   const isReviewed = reviewedSignals.has(signal.id);
                   return (
@@ -1496,7 +1718,8 @@ export default function StudentDossierModal({
                     </div>
                   );
                 })}
-              </div>
+                </div>
+              </details>
             )}
           </div>
 
@@ -1530,7 +1753,7 @@ export default function StudentDossierModal({
                 const activeSeconds = attempt.blockTimeSpent?.[block.id] || 0;
 
                 return (
-                  <div key={block.id} className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-4">
+                  <div key={block.id} data-step-anchor={block.id} className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-4 scroll-mt-2 target:ring-2 target:ring-indigo-300">
                     {/* Block header */}
                     <div className="flex justify-between items-center border-b border-slate-100 pb-2">
                       <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5 flex-wrap">
@@ -2285,7 +2508,10 @@ export default function StudentDossierModal({
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowDiscardConfirm(false)}
+                  onClick={() => {
+                    pendingActionRef.current = null;
+                    setShowDiscardConfirm(false);
+                  }}
                   className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
                 >
                   Keep editing
@@ -2294,7 +2520,9 @@ export default function StudentDossierModal({
                   type="button"
                   onClick={() => {
                     setShowDiscardConfirm(false);
-                    onClose();
+                    const action = pendingActionRef.current || onClose;
+                    pendingActionRef.current = null;
+                    action();
                   }}
                   className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
                 >

@@ -5,6 +5,7 @@ import LessonsBuilder from "./components/TeacherDashboard/LessonsBuilder";
 import TimelineGradebook from "./components/TeacherDashboard/TimelineGradebook";
 import AIReview from "./components/TeacherDashboard/AIReview";
 import CourseManager from "./components/TeacherDashboard/CourseManager";
+import CourseProgress from "./components/TeacherDashboard/CourseProgress";
 import StudentDossierModal from "./components/TeacherDashboard/StudentDossierModal";
 import PracticeDashboard from "./components/StudentPortal/PracticeDashboard";
 import FocusedPlayer from "./components/StudentPortal/FocusedPlayer";
@@ -30,7 +31,8 @@ import {
   CheckSquare,
   Users,
   Shield,
-  Bell
+  Bell,
+  LayoutGrid
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -55,8 +57,16 @@ export default function App() {
   const [lessonVersions, setLessonVersions] = useState<any[]>([]);
 
   // Selection states
-  const [activeTab, setActiveTab] = useState<"live" | "builder" | "courses" | "gradebook" | "ai" | "admin">("live");
-  const [activeDossier, setActiveDossier] = useState<{ studentId: string; lessonId: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<"course" | "live" | "builder" | "courses" | "gradebook" | "ai" | "admin">("live");
+  const [activeDossier, setActiveDossier] = useState<{
+    studentId: string;
+    lessonId: string;
+    initialSection?: string;
+    initialStepId?: string;
+    navEntries?: { studentId: string; lessonId: string; label?: string }[];
+    navIndex?: number;
+    navLabel?: string;
+  } | null>(null);
   const [activeStudentAttempt, setActiveStudentAttempt] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [joinFeedback, setJoinFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -759,6 +769,17 @@ export default function App() {
             )}
             
             <button
+              onClick={() => setActiveTab("course")}
+              className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
+                activeTab === "course" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
+              }`}
+              title={isSidebarCollapsed ? "Course Progress" : undefined}
+            >
+              <LayoutGrid className={`w-4 h-4 shrink-0 transition-colors ${activeTab === 'course' ? 'text-[#0A192F]' : 'text-slate-450'}`} />
+              {!isSidebarCollapsed && <span className="truncate">Course Progress</span>}
+            </button>
+
+            <button
               onClick={() => setActiveTab("live")}
               className={`w-full flex items-center ${isSidebarCollapsed ? "justify-center p-2.5" : "gap-3 px-3 py-2"} rounded text-left font-semibold text-sm cursor-pointer transition ${
                 activeTab === "live" ? "bg-slate-100 text-[#0A192F]" : "text-slate-600 hover:bg-slate-50"
@@ -844,14 +865,16 @@ export default function App() {
         {/* Content Area */}
         <main className="flex-1 flex flex-col overflow-hidden bg-[#F4F5F7]">
           {/* Section Header */}
-          {activeTab !== "gradebook" && activeTab !== "builder" && activeTab !== "ai" && activeTab !== "courses" && activeTab !== "admin" && (
+          {(activeTab === "live" || activeTab === "course") && (
             <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
               <div>
                 <h1 className="text-xl font-bold text-slate-800">
                   {activeTab === "live" && <>Lesson Tracking</>}
+                  {activeTab === "course" && <>Course Progress</>}
                 </h1>
                 <p className="text-xs text-slate-500 mt-0.5 font-medium">
                   {activeTab === "live" && <>{students.length} students registered &bull; Asynchronous assignment progress</>}
+                  {activeTab === "course" && <>Multi-assignment progress across a course &bull; Drill into the Student Dossier</>}
                 </p>
               </div>
             </header>
@@ -863,6 +886,24 @@ export default function App() {
 
             {/* Dynamic tabs load */}
             <div className="w-full">
+              {activeTab === "course" && (
+                <CourseProgress
+                  students={students}
+                  courses={courses}
+                  assignments={assignments}
+                  lessons={lessons}
+                  blocks={blocks}
+                  attempts={attempts}
+                  responses={responses}
+                  signals={signals}
+                  studentActivities={studentActivities}
+                  lessonVersions={lessonVersions}
+                  idToken={idToken}
+                  onOpenDossier={(req) => setActiveDossier(req)}
+                  onOpenGradebook={() => setActiveTab("gradebook")}
+                />
+              )}
+
               {activeTab === "live" && (
                 <LiveMonitor
                   students={students}
@@ -874,8 +915,14 @@ export default function App() {
                   studentActivities={studentActivities}
                   lessonVersions={lessonVersions}
                   assignments={assignments}
-                  onOpenDossier={(studentId, lessonId) => {
-                    setActiveDossier({ studentId, lessonId });
+                  onOpenDossier={(studentId, lessonId, nav) => {
+                    setActiveDossier({
+                      studentId,
+                      lessonId,
+                      navEntries: nav?.entries,
+                      navIndex: nav?.index,
+                      navLabel: nav?.label,
+                    });
                   }}
                   onUnlockStudent={handleUnlockStudent}
                 />
@@ -943,7 +990,16 @@ export default function App() {
                     signals={signals}
                     assignments={assignments}
                     onOverrideSave={handleOverrideScore}
-                    onOpenDossier={(studentId, lessonId) => setActiveDossier({ studentId, lessonId })}
+                    onOpenDossier={(studentId, lessonId, nav) =>
+                      setActiveDossier({
+                        studentId,
+                        lessonId,
+                        initialSection: nav?.initialSection,
+                        navEntries: nav?.entries,
+                        navIndex: nav?.index,
+                        navLabel: nav?.label,
+                      })
+                    }
                     idToken={idToken}
                     onRefresh={() => fetchLmsPayload(currentUser)}
                   />
@@ -962,9 +1018,35 @@ export default function App() {
 
       {/* Student Dossier audit modal */}
       {activeDossier && (
-        <StudentDossierModal 
+        <StudentDossierModal
+          key={`${activeDossier.studentId}|${activeDossier.lessonId}`}
           studentId={activeDossier.studentId}
           lessonId={activeDossier.lessonId}
+          initialSection={activeDossier.initialSection}
+          initialStepId={activeDossier.initialStepId}
+          navContext={
+            activeDossier.navEntries && activeDossier.navEntries.length > 0
+              ? {
+                  entries: activeDossier.navEntries,
+                  index: activeDossier.navIndex ?? 0,
+                  label: activeDossier.navLabel,
+                  onSelect: (idx: number) => {
+                    setActiveDossier((prev) => {
+                      if (!prev || !prev.navEntries) return prev;
+                      const entry = prev.navEntries[idx];
+                      if (!entry) return prev;
+                      return {
+                        ...prev,
+                        studentId: entry.studentId,
+                        lessonId: entry.lessonId,
+                        navIndex: idx,
+                        initialStepId: undefined,
+                      };
+                    });
+                  },
+                }
+              : undefined
+          }
           students={students}
           attempts={attempts}
           responses={responses}

@@ -29,6 +29,7 @@
     "verify:video-sources-builder-ux": "tsx scripts/verify-video-sources-and-builder-ux.ts",
     "verify:rich-authoring-persistence": "tsx scripts/verify-rich-authoring-persistence.ts",
     "verify:student-reading-layout": "tsx scripts/verify-student-reading-layout.ts",
+    "verify:teacher-analytics": "vitest run tests/teacherAnalytics.test.ts",
     "verify:real-rich-editor-persistence": "vitest run tests/realRichEditorPersistence.test.tsx",
     "verify:rich-authoring-flows": "vitest run --config vitest.config.ts"
   },
