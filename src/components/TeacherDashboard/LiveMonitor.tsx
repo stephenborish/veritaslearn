@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from "react";
+import { useState, useMemo, type MouseEvent } from "react";
 import {
   Clock,
   CheckCircle2,
@@ -16,14 +16,11 @@ import {
 } from "lucide-react";
 import { motion } from "motion/react";
 
-// Named presence thresholds. "Active recently" means activity within the last 2 minutes.
-// "Idle" means no activity for 2–30 minutes. "Stale" means no activity for over 30 minutes.
-// These are heuristic labels — they reflect last-reported heartbeat, not live socket presence.
+// Presence and stagnation constants
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000;   // 2 minutes
-const IDLE_THRESHOLD_MS = ACTIVE_THRESHOLD_MS; // alias kept for backward compat
 const STALE_THRESHOLD_MS = 30 * 60 * 1000;    // 30 minutes
 
-function formatRelativeTime(timestamp: string | undefined): string {
+function formatRelativeTime(timestamp: string | Date | undefined | null): string {
   if (!timestamp) return "Never";
   const ms = Date.now() - new Date(timestamp).getTime();
   if (ms < 0) return "Just now";
@@ -34,124 +31,263 @@ function formatRelativeTime(timestamp: string | undefined): string {
   const hrs = Math.floor(min / 60);
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
-  if (days === 1) return "Active yesterday";
-  if (days < 3) return `Active ${days}d ago`;
-  return "No recent activity";
+  if (days === 1) return "yesterday";
+  if (days < 3) return `${days}d ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function get7DayActivityHeatmap(studentId: string, studentActivities: any[]) {
+// Format "Last signed in" with fallback
+function formatLastSignedIn(student: any, attempt: any): string {
+  const timestamp = student.lastSignedInAt || student.lastActiveAt || (attempt && attempt.startedAt);
+  if (!timestamp) return "Sign-in time unavailable";
+  return formatRelativeTime(timestamp);
+}
+
+// Format "Last lesson activity" with fallback
+function formatLastLessonActivity(attempt: any, lastActivityTimestamp: string | null): string {
+  if (!attempt) return "No lesson work yet";
+  if (!lastActivityTimestamp) return "No lesson work yet";
+  return formatRelativeTime(lastActivityTimestamp);
+}
+
+// Derive most recent activity timestamp prioritizing authentic academic work
+function getStudentLastLessonActivityTimestamp(attempt: any, studentResponses: any[], studentActivities: any[]): string | null {
+  if (!attempt) return null;
+  const timestamps: number[] = [];
+  
+  if (attempt.startedAt) timestamps.push(new Date(attempt.startedAt).getTime());
+  if (attempt.lastActiveAt) timestamps.push(new Date(attempt.lastActiveAt).getTime());
+  if (attempt.completedAt) timestamps.push(new Date(attempt.completedAt).getTime());
+  
+  studentResponses.forEach((r: any) => {
+    if (r.attemptId === attempt.id && r.createdAt) {
+      timestamps.push(new Date(r.createdAt).getTime());
+    }
+  });
+  
+  studentActivities.forEach((act: any) => {
+    if ((act.attemptId === attempt.id || act.studentId === attempt.studentId) && act.timestamp) {
+      timestamps.push(new Date(act.timestamp).getTime());
+    }
+  });
+  
+  if (timestamps.length === 0) return null;
+  return new Date(Math.max(...timestamps)).toISOString();
+}
+
+// Calculate 7-Day heatmap focused ONLY on academic action, separating focus/integrity issues
+function getStudentAcademicHeatmap(
+  studentId: string,
+  attempt: any,
+  studentResponses: any[],
+  studentActivities: any[]
+) {
   const result = [];
   const now = new Date();
   
-  // Last 7 days, ending with today as index 6
+  // Last 7 days ending with today as index 6
   for (let i = 6; i >= 0; i--) {
     const d = new Date();
     d.setDate(now.getDate() - i);
     d.setHours(0, 0, 0, 0);
-    const dayStr = d.toISOString().split('T')[0]; // YYYY-MM-DD
+    const dayStr = d.toISOString().split("T")[0]; // YYYY-MM-DD
     
-    // Day label: M, T, W, etc.
     const daysName = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const dayLabel = daysName[d.getDay()];
     
-    // Filter activities for this student on this day
-    const dayActivities = (studentActivities || []).filter((act: any) => {
-      if (act.studentId !== studentId) return false;
-      const actDate = act.timestamp.split('T')[0];
-      return actDate === dayStr;
-    });
-
-    // Segment into morning (4 AM - 12 PM), afternoon (12 PM - 6 PM), and evening (6 PM - 4 AM)
-    let morningCount = 0;
-    let afternoonCount = 0;
-    let eveningCount = 0;
-
-    dayActivities.forEach((act: any) => {
-      const actDateObj = new Date(act.timestamp);
-      const hrs = actDateObj.getHours();
-      if (hrs >= 4 && hrs < 12) {
-        morningCount++;
-      } else if (hrs >= 12 && hrs < 18) {
-        afternoonCount++;
-      } else {
-        eveningCount++;
+    let responsesCount = 0;
+    let draftsCount = 0;
+    let startsCount = 0;
+    let completionsCount = 0;
+    let checkpointCount = 0;
+    let otherAcademicCount = 0;
+    
+    // Academic Responses
+    studentResponses.forEach((r: any) => {
+      if (r.studentId === studentId && r.createdAt) {
+        if (r.createdAt.split("T")[0] === dayStr) {
+          responsesCount++;
+        }
       }
     });
-
-    const total = dayActivities.length;
-    let intensity: 'none' | 'low' | 'medium' | 'high' = 'none';
-    if (total > 0 && total <= 2) {
-      intensity = 'low';
-    } else if (total > 2 && total <= 5) {
-      intensity = 'medium';
-    } else if (total > 5) {
-      intensity = 'high';
+    
+    // Attempt started/completed
+    if (attempt && attempt.studentId === studentId) {
+      if (attempt.startedAt && attempt.startedAt.split("T")[0] === dayStr) {
+        startsCount++;
+      }
+      if (attempt.completedAt && attempt.completedAt.split("T")[0] === dayStr) {
+        completionsCount++;
+      }
     }
-
+    
+    // Student Activities - filter only academic work, strictly excluding proctoring exits/blur/focus events
+    (studentActivities || []).forEach((act: any) => {
+      if (act.studentId !== studentId || !act.timestamp) return;
+      if (act.timestamp.split("T")[0] !== dayStr) return;
+      
+      const type = act.activityType;
+      if (type === "draft_save") {
+        draftsCount++;
+      } else if (type === "checkpoint_complete") {
+        checkpointCount++;
+      } else if (type === "progress_save" || type === "video_watch") {
+        otherAcademicCount++;
+      }
+    });
+    
+    const total = responsesCount + draftsCount + startsCount + completionsCount + checkpointCount + otherAcademicCount;
+    
+    let intensity: "none" | "low" | "medium" | "high" = "none";
+    if (total > 0 && total <= 2) intensity = "low";
+    else if (total > 2 && total <= 5) intensity = "medium";
+    else if (total > 5) intensity = "high";
+    
+    const summaryParts = [];
+    if (startsCount > 0) summaryParts.push("started lesson");
+    if (responsesCount > 0) summaryParts.push(`${responsesCount} response${responsesCount !== 1 ? "s" : ""}`);
+    if (draftsCount > 0) summaryParts.push(`${draftsCount} draft save${draftsCount !== 1 ? "s" : ""}`);
+    if (checkpointCount > 0) summaryParts.push(`${checkpointCount} checkpoint${checkpointCount !== 1 ? "s" : ""}`);
+    if (completionsCount > 0) summaryParts.push("completed lesson");
+    if (otherAcademicCount > 0 && summaryParts.length === 0) summaryParts.push("reviewed lesson content");
+    
+    const tooltipText = total > 0 
+      ? summaryParts.join(", ") 
+      : "No lesson activity recorded";
+      
     result.push({
       dateStr: dayStr,
       dayLabel,
-      formattedDate: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', weekday: 'short' }),
+      formattedDate: d.toLocaleDateString(undefined, { month: "short", day: "numeric", weekday: "short" }),
       total,
       intensity,
-      periods: {
-        morning: morningCount,
-        afternoon: afternoonCount,
-        evening: eveningCount
-      },
-      list: dayActivities
+      tooltipText
     });
   }
-
+  
   return result;
 }
 
+// Tooltip wrapper for heatmap cells
 function TooltipWrapper({ children, day }: { children: React.ReactNode, day: any }) {
   const [show, setShow] = useState(false);
 
-  const formatActivitySummary = () => {
-    if (day.total === 0) return "No activity recorded";
-    const parts = [];
-    if (day.periods.morning > 0) parts.push(`Morning: ${day.periods.morning} action(s)`);
-    if (day.periods.afternoon > 0) parts.push(`Afternoon: ${day.periods.afternoon} action(s)`);
-    if (day.periods.evening > 0) parts.push(`Evening: ${day.periods.evening} action(s)`);
-    return parts.join(", ");
-  };
-
   return (
     <div 
-      className="relative" 
+      className="relative shrink-0" 
       onMouseEnter={() => setShow(true)}
       onMouseLeave={() => setShow(false)}
     >
       {children}
       {show && (
-        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 bg-slate-900 border border-slate-800 text-[10px] text-white p-2.5 rounded shadow-lg z-50 pointer-events-none font-sans whitespace-normal normal-case text-center">
-          <p className="font-bold border-b border-slate-800 pb-1 mb-1">
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-52 bg-slate-900 border border-slate-800 text-[10px] text-white p-2 rounded shadow-lg z-50 pointer-events-none font-sans whitespace-normal normal-case text-center">
+          <p className="font-bold border-b border-slate-800 pb-0.5 mb-1 text-slate-200">
             {day.formattedDate}
           </p>
-          <p className="text-slate-300 mb-1">
-            <strong>{day.total} activities</strong>: {formatActivitySummary()}
+          <p className="text-slate-300 font-mono text-[9px]">
+            {day.tooltipText}
           </p>
-          {day.total > 0 && (
-            <div className="text-[9px] text-slate-400 space-y-0.5 border-t border-slate-800/80 pt-1 mt-1 max-h-20 overflow-y-auto font-mono text-left">
-              {day.list.slice(0, 3).map((act: any) => (
-                <div key={act.id} className="truncate select-none">
-                  - {act.description}
-                </div>
-              ))}
-              {day.total > 3 && (
-                <div className="text-[8px] text-slate-500 italic text-center mt-1">
-                  + {day.total - 3} more activities
-                </div>
-              )}
-            </div>
-          )}
           <div className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 rotate-45" />
         </div>
       )}
     </div>
   );
+}
+
+// Safe derived max point calculator over snapshots or working drafts
+function getLessonMaxPoints(lessonBlocks: any[]): number {
+  if (!lessonBlocks || lessonBlocks.length === 0) return 0;
+  
+  let totalPoints = 0;
+  
+  lessonBlocks.forEach((b: any) => {
+    // 1. Question block
+    if (b.type === "question") {
+      if (b.isPractice) return; // skip practice-only points
+      
+      if (b.singleQuestion) {
+        let pts = b.singleQuestion.points;
+        if (pts === undefined || pts === null) {
+          pts = (b.questionType || b.singleQuestion.type) === "mc" ? 1 : 3;
+        }
+        totalPoints += pts;
+      } else if (b.questionPool) {
+        const firstQ = b.questionPool.questions?.[0];
+        let pts = firstQ?.points;
+        if (pts === undefined || pts === null) {
+          pts = (b.questionType || firstQ?.type) === "mc" ? 1 : 3;
+        }
+        totalPoints += pts * (b.questionPool.numToSelect || 1);
+      }
+    }
+    
+    // 2. Video block with checkpoints
+    if (b.type === "video" && b.videoCheckpoints) {
+      b.videoCheckpoints.forEach((cp: any) => {
+        if (cp.isPractice) return; // skip practice-only points
+        
+        let pts = 0;
+        if (cp.question && cp.question.points !== undefined && cp.question.points !== null) {
+          pts = cp.question.points;
+        } else if (Array.isArray(cp.questions) && cp.questions[0] && cp.questions[0].points !== undefined && cp.questions[0].points !== null) {
+          pts = cp.questions[0].points;
+        } else {
+          pts = cp.questionType === "mc" ? 1 : 3;
+        }
+        
+        totalPoints += pts * (cp.numToSelect || 1);
+      });
+    }
+  });
+  
+  return totalPoints;
+}
+
+// Dynamically compute earned score from actual responses
+function getAttemptEarnedPoints(attemptId: string, responses: any[]): number {
+  if (!attemptId) return 0;
+  const attemptResponses = responses.filter(r => r.attemptId === attemptId);
+  return attemptResponses.reduce((sum, r) => {
+    const isPractice = r.gradingMode === "practice" || r.gradebookCategory === "practice";
+    if (isPractice) return sum;
+    
+    const earned = r.teacherOverrideScore !== null && r.teacherOverrideScore !== undefined
+      ? r.teacherOverrideScore
+      : r.score;
+      
+    return sum + (Number(earned) || 0);
+  }, 0);
+}
+
+// Single student row definition
+interface LessonTrackingRow {
+  student: any;
+  attempt: any | null;
+  lesson: any | null;
+  lessonBlocks: any[];
+  responses: any[];
+  signalsSummary: {
+    total: number;
+    blurs: number;
+    fullscreenExits: number;
+    seekBlocks: number;
+    copyPastes: number;
+    mostRecent: any | null;
+  };
+  status: string;
+  lastSignedIn: string;
+  lastLessonActivityRaw: string | null;
+  lastLessonActivity: string;
+  maxPoints: number;
+  earnedPoints: number;
+  progressPct: number;
+  currentBlockName: string;
+  hasPendingGrading: boolean;
+  needsReview: boolean;
+  isStale: boolean;
+  isActive: boolean;
+  isLocked: boolean;
+  isUnlocked: boolean;
 }
 
 interface LiveMonitorProps {
@@ -162,6 +298,8 @@ interface LiveMonitorProps {
   lessons: any[];
   blocks: any[];
   studentActivities?: any[];
+  lessonVersions?: any[];
+  assignments?: any[];
   onOpenDossier: (studentId: string, lessonId: string) => void;
   onUnlockStudent: (attemptId: string) => void;
 }
@@ -174,6 +312,8 @@ export default function LiveMonitor({
   lessons,
   blocks,
   studentActivities = [],
+  lessonVersions = [],
+  assignments = [],
   onOpenDossier,
   onUnlockStudent,
 }: LiveMonitorProps) {
@@ -182,175 +322,276 @@ export default function LiveMonitor({
   const [showPreviewAttempts, setShowPreviewAttempts] = useState<boolean>(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [layoutMode, setLayoutMode] = useState<"grid" | "table">("grid");
-  const [searchTerm, setSearchTerm] = useState<string>("");
+  const [searchTerm, setSearchTerm] = useState<string>(" ");
 
-  const publishedLessons = lessons.filter((l) => l.isPublished);
+  // Trim on load or handle nicely
+  const trimmedSearch = useMemo(() => searchTerm.trim(), [searchTerm]);
 
-  const calcMaxPoints = (lessonId: string): number => {
-    const lessonBlocks = blocks.filter((b) => b.lessonId === lessonId);
-    return lessonBlocks.reduce((sum: number, b: any) => {
-      if (b.type !== "question" || b.isPractice) return sum;
-      if (b.singleQuestion) return sum + (b.singleQuestion.points || 0);
-      if (b.questionPool) {
-        const perQ = b.questionPool.questions?.[0]?.points || 0;
-        return sum + perQ * (b.questionPool.numToSelect || 1);
+  const publishedLessons = useMemo(() => lessons.filter((l) => l.isPublished), [lessons]);
+
+  // Derived single row mapper
+  const deriveSingleRow = (student: any, attempt: any | null): LessonTrackingRow => {
+    const lessonId = attempt ? attempt.lessonId : (selectedLessonId !== "all" ? selectedLessonId : null);
+    const sLesson = lessonId ? lessons.find(l => l.id === lessonId) : null;
+    
+    // Resolve snapshot blocks if version is specified and exists
+    let lessonBlocks = [];
+    if (lessonId) {
+      if (attempt && attempt.lessonVersionId && lessonVersions.length > 0) {
+        const version = lessonVersions.find(v => v.id === attempt.lessonVersionId);
+        if (version && version.blocksSnapshot) {
+          lessonBlocks = version.blocksSnapshot;
+        }
       }
-      return sum;
-    }, 0);
-  };
-
-  // Status helpers — based on last heartbeat timestamp, not live socket presence.
-  const isAttemptActive = (attempt: any): boolean => {
-    if (attempt.status === "completed") return false;
-    const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
-    if (!lastActiveRaw) return false;
-    return Date.now() - new Date(lastActiveRaw).getTime() <= ACTIVE_THRESHOLD_MS;
-  };
-
-  const isAttemptIdle = (attempt: any): boolean => {
-    if (attempt.status === "completed") return false;
-    const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
-    if (!lastActiveRaw) return false;
-    const elapsed = Date.now() - new Date(lastActiveRaw).getTime();
-    return elapsed > ACTIVE_THRESHOLD_MS && elapsed <= STALE_THRESHOLD_MS;
-  };
-
-  // Stale: started but no heartbeat for >30 minutes. Possibly disconnected.
-  const isAttemptStale = (attempt: any): boolean => {
-    if (attempt.status === "completed") return false;
-    const lastActiveRaw = attempt.lastActiveAt || attempt.startedAt;
-    if (!lastActiveRaw) return true; // no timestamp at all → assume stale
-    return Date.now() - new Date(lastActiveRaw).getTime() > STALE_THRESHOLD_MS;
-  };
-
-  const isAttemptLocked = (attempt: any): boolean =>
-    attempt.lockState === "locked_awaiting_teacher";
-
-  const getAttemptSignalSummary = (attemptId: string) => {
-    const sSignals = signals.filter((s) => s.attemptId === attemptId);
-    const blurs = sSignals.filter(
-      (s) => s.eventType === "blur_focus_lost" || s.eventType === "visibilitychange"
-    ).length;
-    const fullscreenExits = sSignals.filter(
-      (s) => s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited"
-    ).length;
-    const seekBlocks = sSignals.filter((s) => s.eventType === "seek_attempt_blocked").length;
-    const copyPastes = sSignals.filter(
-      (s) => s.eventType === "copy_blocked" || s.eventType === "paste_blocked"
-    ).length;
-    const total = blurs + fullscreenExits + seekBlocks + copyPastes;
-    const mostRecent = sSignals.sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    )[0];
-    return { total, blurs, fullscreenExits, seekBlocks, copyPastes, mostRecent };
-  };
-
-  const isAttemptNeedsReview = (attempt: any): boolean => {
-    if (isAttemptLocked(attempt)) return true;
-    // Respect the durable server-side review flag set by the proctoring system.
-    if (attempt.securityReviewRequired) return true;
-    const { total, fullscreenExits, seekBlocks } = getAttemptSignalSummary(attempt.id);
-    if (total >= 3 || fullscreenExits > 0 || seekBlocks > 0) return true;
-    const sResponses = responses.filter((r) => r.attemptId === attempt.id);
-    return sResponses.some(
-      (r) =>
-        r.type === "sa" &&
-        (!r.aiGrading ||
-          r.aiGrading.status === "pending" ||
-          r.aiGrading.status === "failed" ||
-          r.aiGrading.status === "needs_review")
-    );
-  };
-
-  // Filter by preview preference
-  const allFilteredByPreview = showPreviewAttempts
-    ? attempts
-    : attempts.filter((a) => !a.isPreviewAttempt);
-
-  // Filter by selected lesson
-  const lessonFilteredAttempts =
-    selectedLessonId === "all"
-      ? allFilteredByPreview
-      : allFilteredByPreview.filter((a) => a.lessonId === selectedLessonId);
-
-  // "Not Started" students
-  const studentsWithAttempt = new Set(
-    allFilteredByPreview
-      .filter((a) => selectedLessonId === "all" || a.lessonId === selectedLessonId)
-      .map((a) => a.studentId)
-  );
-  const rawNotStarted = students.filter((s) => !studentsWithAttempt.has(s.id));
-
-  // Counts
-  const activeCount = lessonFilteredAttempts.filter(isAttemptActive).length;
-  const idleCount = lessonFilteredAttempts.filter(isAttemptIdle).length;
-  const staleCount = lessonFilteredAttempts.filter((a) => a.status !== "completed" && isAttemptStale(a)).length;
-  const notStartedCount = rawNotStarted.length;
-  const completedCount = lessonFilteredAttempts.filter((a) => a.status === "completed").length;
-  const needsReviewCount = lessonFilteredAttempts.filter(isAttemptNeedsReview).length;
-  const lockedCount = lessonFilteredAttempts.filter(isAttemptLocked).length;
-  const grandTotal = lessonFilteredAttempts.length + notStartedCount;
-
-  // Search filter
-  const searchFilteredAttempts = lessonFilteredAttempts.filter((attempt) => {
-    let student = students.find((s) => s.id === attempt.studentId);
-    if (!student && attempt.isPreviewAttempt) {
-      student = { name: "Teacher Preview", email: "preview@veritas.local" };
+      if (lessonBlocks.length === 0) {
+        lessonBlocks = blocks
+          .filter(b => b.lessonId === lessonId)
+          .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+      }
     }
-    if (!student) return false;
-    const term = searchTerm.toLowerCase().trim();
-    if (!term) return true;
-    return student.name.toLowerCase().includes(term) || student.email.toLowerCase().includes(term);
-  });
 
-  const searchNotStarted = rawNotStarted.filter((student) => {
-    const term = searchTerm.toLowerCase().trim();
-    if (!term) return true;
-    return student.name.toLowerCase().includes(term) || student.email.toLowerCase().includes(term);
-  });
+    const sResponses = attempt ? responses.filter(r => r.attemptId === attempt.id) : [];
 
-  // Status filter
-  let visibleAttempts = searchFilteredAttempts;
-  let showNotStarted = statusFilter === "all" || statusFilter === "not_started";
+    // Signals
+    let signalsSummary = {
+      total: 0,
+      blurs: 0,
+      fullscreenExits: 0,
+      seekBlocks: 0,
+      copyPastes: 0,
+      mostRecent: null as any | null
+    };
 
-  if (statusFilter === "active") {
-    visibleAttempts = searchFilteredAttempts.filter(isAttemptActive);
-    showNotStarted = false;
-  } else if (statusFilter === "idle") {
-    visibleAttempts = searchFilteredAttempts.filter(isAttemptIdle);
-    showNotStarted = false;
-  } else if (statusFilter === "stale") {
-    visibleAttempts = searchFilteredAttempts.filter((a) => a.status !== "completed" && isAttemptStale(a));
-    showNotStarted = false;
-  } else if (statusFilter === "not_started") {
-    visibleAttempts = [];
-    showNotStarted = true;
-  } else if (statusFilter === "completed") {
-    visibleAttempts = searchFilteredAttempts.filter((a) => a.status === "completed");
-    showNotStarted = false;
-  } else if (statusFilter === "needs_review") {
-    visibleAttempts = searchFilteredAttempts.filter(isAttemptNeedsReview);
-    showNotStarted = false;
-  } else if (statusFilter === "locked") {
-    visibleAttempts = searchFilteredAttempts.filter(isAttemptLocked);
-    showNotStarted = false;
-  }
+    if (attempt) {
+      const sSignals = signals.filter(s => s.attemptId === attempt.id);
+      const blurs = sSignals.filter(s => s.eventType === "blur_focus_lost" || s.eventType === "visibilitychange").length;
+      const fullscreenExits = sSignals.filter(s => s.eventType === "fullscreen_exit" || s.eventType === "fullscreen_exited").length;
+      const seekBlocks = sSignals.filter(s => s.eventType === "seek_attempt_blocked").length;
+      const copyPastes = sSignals.filter(s => s.eventType === "copy_blocked" || s.eventType === "paste_blocked").length;
+      const total = blurs + fullscreenExits + seekBlocks + copyPastes;
+      const mostRecent = [...sSignals].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0] || null;
+      signalsSummary = { total, blurs, fullscreenExits, seekBlocks, copyPastes, mostRecent };
+    }
 
-  const sortAttempts = (list: any[]) =>
-    [...list].sort((a, b) => {
-      // Locked first
-      const lockA = isAttemptLocked(a) ? 2 : 0;
-      const lockB = isAttemptLocked(b) ? 2 : 0;
-      if (lockB !== lockA) return lockB - lockA;
-      // Needs review second
-      const revA = isAttemptNeedsReview(a) ? 1 : 0;
-      const revB = isAttemptNeedsReview(b) ? 1 : 0;
-      if (revB !== revA) return revB - revA;
-      // Active next
-      const actA = isAttemptActive(a) ? 1 : 0;
-      const actB = isAttemptActive(b) ? 1 : 0;
-      return actB - actA;
+    const maxPoints = getLessonMaxPoints(lessonBlocks);
+    const earnedPoints = attempt ? getAttemptEarnedPoints(attempt.id, responses) : 0;
+
+    const isCompleted = attempt ? attempt.status === "completed" : false;
+    const blockCount = Math.max(lessonBlocks.length, 1);
+    const progressPct = isCompleted 
+      ? 100 
+      : attempt 
+      ? Math.round((attempt.currentBlockIndex / blockCount) * 100) 
+      : 0;
+      
+    const currentBlock = attempt ? lessonBlocks[attempt.currentBlockIndex] : null;
+    const currentBlockName = isCompleted 
+      ? "Completed" 
+      : currentBlock 
+      ? currentBlock.title 
+      : attempt 
+      ? `Segment ${attempt.currentBlockIndex + 1}` 
+      : "Not started";
+
+    const lastActiveRaw = attempt ? (attempt.lastActiveAt || attempt.startedAt) : null;
+    const elapsedMs = lastActiveRaw ? (Date.now() - new Date(lastActiveRaw).getTime()) : Infinity;
+    const isActive = elapsedMs <= ACTIVE_THRESHOLD_MS;
+    const isStale = attempt && !isCompleted && !isActive && elapsedMs > STALE_THRESHOLD_MS;
+
+    const hasPendingGrading = sResponses.some(
+      (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
+    );
+
+    const isLocked = attempt && attempt.lockState === "locked_awaiting_teacher";
+
+    // Asynchronous-friendly status
+    let status = "Not started";
+    if (attempt) {
+      if (isLocked) {
+        status = "Locked";
+      } else if (isCompleted) {
+        status = "Completed";
+      } else if (elapsedMs <= 60 * 1000) {
+        status = "Active now";
+      } else if (elapsedMs <= 2 * 60 * 1000) {
+        status = "Active recently";
+      } else if (attempt.securityReviewRequired) {
+        status = "Needs review";
+      } else {
+        const hasDraft = attempt.draftResponses && Object.values(attempt.draftResponses).some((v: any) => v && v.trim() !== "");
+        if (hasDraft) {
+          status = "Draft saved";
+        } else if (isStale) {
+          const hasInterruption = attempt.securityReviewRequired || attempt.lockState || signalsSummary.fullscreenExits > 0;
+          if (hasInterruption) {
+            status = "Session may have ended unexpectedly";
+          } else {
+            status = "No recent work";
+          }
+        } else {
+          status = sResponses.length > 0 ? "In progress" : "Started, not submitted";
+        }
+      }
+    }
+
+    const needsReview = attempt ? (
+      isLocked || 
+      attempt.securityReviewRequired || 
+      signalsSummary.total >= 3 || 
+      signalsSummary.fullscreenExits > 0 || 
+      signalsSummary.seekBlocks > 0 || 
+      hasPendingGrading
+    ) : false;
+
+    const lastSignedIn = formatLastSignedIn(student, attempt);
+    const lastLessonActivityRaw = getStudentLastLessonActivityTimestamp(attempt, sResponses, studentActivities);
+    const lastLessonActivity = formatLastLessonActivity(attempt, lastLessonActivityRaw);
+
+    return {
+      student,
+      attempt,
+      lesson: sLesson,
+      lessonBlocks,
+      responses: sResponses,
+      signalsSummary,
+      status,
+      lastSignedIn,
+      lastLessonActivityRaw,
+      lastLessonActivity,
+      maxPoints,
+      earnedPoints,
+      progressPct,
+      currentBlockName,
+      hasPendingGrading,
+      needsReview,
+      isStale,
+      isActive,
+      isLocked,
+      isUnlocked: attempt && !isLocked
+    };
+  };
+
+  // Build full unfiltered custom row model
+  const fullRosterRows = useMemo(() => {
+    const rows: LessonTrackingRow[] = [];
+    
+    // Process actual students
+    students.forEach((student) => {
+      // Find candidate attempt matching selected context
+      let candidateAttempt: any = null;
+      if (selectedLessonId === "all") {
+        const studAttempts = attempts.filter((a) => a.studentId === student.id && !a.isPreviewAttempt);
+        if (studAttempts.length > 0) {
+          studAttempts.sort((a, b) => new Date(b.startedAt || b.createdAt || 0).getTime() - new Date(a.startedAt || a.createdAt || 0).getTime());
+          candidateAttempt = studAttempts[0];
+        }
+      } else {
+        const studAttempts = attempts.filter((a) => a.studentId === student.id && a.lessonId === selectedLessonId && !a.isPreviewAttempt);
+        if (studAttempts.length > 0) {
+          studAttempts.sort((a, b) => new Date(b.startedAt || b.createdAt || 0).getTime() - new Date(a.startedAt || a.createdAt || 0).getTime());
+          candidateAttempt = studAttempts[0];
+        }
+      }
+
+      rows.push(deriveSingleRow(student, candidateAttempt));
     });
+
+    // Append virtual rows for Teacher Previews if requested
+    if (showPreviewAttempts) {
+      const previewAttempts = attempts.filter((a) => {
+        if (!a.isPreviewAttempt) return false;
+        if (selectedLessonId !== "all" && a.lessonId !== selectedLessonId) return false;
+        return true;
+      });
+
+      previewAttempts.forEach((previewAttempt) => {
+        const virtualStudent = {
+          id: "preview_" + previewAttempt.id,
+          name: "Teacher Preview Student",
+          email: "preview@veritas.placeholder",
+          role: "student",
+          isPreview: true,
+          lastSignedInAt: previewAttempt.startedAt || previewAttempt.createdAt
+        };
+        rows.push(deriveSingleRow(virtualStudent, previewAttempt));
+      });
+    }
+
+    return rows;
+  }, [selectedLessonId, showPreviewAttempts, students, attempts, responses, signals, lessons, blocks, studentActivities, lessonVersions]);
+
+  // Apply search filtering and tab status filtering dynamically
+  const filteredAndSortedRows = useMemo(() => {
+    let result = fullRosterRows;
+
+    // Apply search query
+    if (trimmedSearch) {
+      const q = trimmedSearch.toLowerCase();
+      result = result.filter((row) => {
+        const name = row.student.name || "";
+        const email = row.student.email || "";
+        return name.toLowerCase().includes(q) || email.toLowerCase().includes(q);
+      });
+    }
+
+    // Apply tab status filter
+    if (statusFilter !== "all") {
+      result = result.filter((row) => {
+        if (statusFilter === "needs_review") return row.needsReview;
+        if (statusFilter === "locked") return row.isLocked;
+        if (statusFilter === "active") return row.status === "Active now" || row.status === "Active recently";
+        if (statusFilter === "idle") return row.status === "In progress" || row.status === "Draft saved" || row.status === "Started, not submitted";
+        if (statusFilter === "stale") return row.status === "No recent work" || row.status === "Session may have ended unexpectedly";
+        if (statusFilter === "not_started") return row.status === "Not started";
+        if (statusFilter === "completed") return row.status === "Completed";
+        return true;
+      });
+    }
+
+    // Sort: locked (highest priority), then review, then active, fallback alphabetically
+    return [...result].sort((a, b) => {
+      const lockA = a.isLocked ? 10 : 0;
+      const lockB = b.isLocked ? 10 : 0;
+      if (lockB !== lockA) return lockB - lockA;
+
+      const revA = a.needsReview ? 5 : 0;
+      const revB = b.needsReview ? 5 : 0;
+      if (revB !== revA) return revB - revA;
+
+      const actA = (a.status === "Active now" || a.status === "Active recently") ? 2 : 0;
+      const actB = (b.status === "Active now" || b.status === "Active recently") ? 2 : 0;
+      if (actB !== actA) return actB - actA;
+
+      const nameA = a.student.name || "";
+      const nameB = b.student.name || "";
+      return nameA.localeCompare(nameB);
+    });
+  }, [fullRosterRows, trimmedSearch, statusFilter]);
+
+  // Compute status metrics based on the search/lesson context
+  const counts = useMemo(() => {
+    // Determine rows matching current lesson & search filter to keep counts contextually accurate
+    let baseList = fullRosterRows;
+    if (trimmedSearch) {
+      const q = trimmedSearch.toLowerCase();
+      baseList = baseList.filter((row) => {
+        const name = row.student.name || "";
+        const email = row.student.email || "";
+        return name.toLowerCase().includes(q) || email.toLowerCase().includes(q);
+      });
+    }
+
+    return {
+      all: baseList.length,
+      needsReview: baseList.filter((r) => r.needsReview).length,
+      locked: baseList.filter((r) => r.isLocked).length,
+      active: baseList.filter((r) => r.status === "Active now" || r.status === "Active recently").length,
+      idle: baseList.filter((r) => r.status === "In progress" || r.status === "Draft saved" || r.status === "Started, not submitted").length,
+      stale: baseList.filter((r) => r.status === "No recent work" || r.status === "Session may have ended unexpectedly").length,
+      notStarted: baseList.filter((r) => r.status === "Not started").length,
+      completed: baseList.filter((r) => r.status === "Completed").length,
+    };
+  }, [fullRosterRows, trimmedSearch]);
 
   const handleUnlock = async (e: MouseEvent, attemptId: string) => {
     e.stopPropagation();
@@ -360,22 +601,6 @@ export default function LiveMonitor({
     } finally {
       setUnlockingId(null);
     }
-  };
-
-  const formatLastActive = (attempt: any): string => {
-    const raw = attempt.lastActiveAt || attempt.startedAt;
-    if (!raw) return "Unknown";
-    const date = new Date(raw);
-    const min = Math.floor((Date.now() - date.getTime()) / 60000);
-    if (min < 1) return "Active now";
-    if (min < 60) return `${min}m ago`;
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
-
-  const formatDuration = (seconds: number): string => {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}m ${s}s`;
   };
 
   const signalEventLabel = (eventType: string): string => {
@@ -390,18 +615,17 @@ export default function LiveMonitor({
       context_menu_blocked: "Right-click",
       rapid_navigation: "Navigation skip",
       checkpoint_triggered: "Checkpoint",
-      // Browser AI Guard signals
-      possible_ai_agent_use: "Possible AI agent use",
-      hidden_assessment_text_in_answer: "Hidden assessment text in answer",
-      ai_guard_marker_in_answer: "Browser AI Guard marker in answer",
-      ai_guard_refusal_phrase_in_answer: "AI refusal phrase in answer",
+      possible_ai_agent_use: "AI signature flag",
+      hidden_assessment_text_in_answer: "AI overlay flag",
+      ai_guard_marker_in_answer: "AI guard payload",
+      ai_guard_refusal_phrase_in_answer: "AI response prefix",
     };
     return labels[eventType] || eventType;
   };
 
   return (
     <div className="space-y-5 font-sans">
-      {/* Filter/search toolbar */}
+      {/* Search and control toolbar */}
       <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm space-y-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3">
@@ -426,13 +650,13 @@ export default function LiveMonitor({
               <input
                 type="text"
                 placeholder="Find student…"
-                value={searchTerm}
-                onChange={(e: any) => setSearchTerm(e.target.value)}
+                value={searchTerm === " " ? "" : searchTerm}
+                onChange={(e: any) => setSearchTerm(e.target.value || " ")}
                 className="text-xs pl-8 pr-3 py-1.5 border border-slate-200 rounded bg-white text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-slate-400 transition w-44 lg:w-52"
               />
-              {searchTerm && (
+              {searchTerm && searchTerm !== " " && (
                 <button
-                  onClick={() => setSearchTerm("")}
+                  onClick={() => setSearchTerm(" ")}
                   className="absolute inset-y-0 right-0 flex items-center pr-2.5 text-slate-400 hover:text-slate-600"
                 >
                   ✕
@@ -471,18 +695,18 @@ export default function LiveMonitor({
           </div>
         </div>
 
-        {/* Status filter tabs */}
+        {/* Tab filters with unified counts */}
         <div className="border-t border-slate-100 pt-3">
           <div className="flex items-center gap-1 overflow-x-auto pb-1">
             {[
-              { id: "all", label: "All", count: grandTotal, color: "slate" },
-              { id: "needs_review", label: "Needs Review", count: needsReviewCount, color: "amber" },
-              { id: "locked", label: "Locked", count: lockedCount, color: "red" },
-              { id: "active", label: "Active Recently", count: activeCount, color: "green" },
-              { id: "idle", label: "Idle", count: idleCount, color: "slate" },
-              { id: "stale", label: "Possibly Disconnected", count: staleCount, color: "slate" },
-              { id: "not_started", label: "Not Started", count: notStartedCount, color: "slate" },
-              { id: "completed", label: "Completed", count: completedCount, color: "blue" },
+              { id: "all", label: "All", count: counts.all, color: "slate" },
+              { id: "needs_review", label: "Needs Review", count: counts.needsReview, color: "amber" },
+              { id: "locked", label: "Locked", count: counts.locked, color: "red" },
+              { id: "active", label: "Active Recently", count: counts.active, color: "green" },
+              { id: "idle", label: "Idle", count: counts.idle, color: "slate" },
+              { id: "stale", label: "No Recent Work", count: counts.stale, color: "slate" },
+              { id: "not_started", label: "Not Started", count: counts.notStarted, color: "slate" },
+              { id: "completed", label: "Completed", count: counts.completed, color: "blue" },
             ].map((tab) => {
               const isActive = statusFilter === tab.id;
               const hasBadgeAlert = !isActive && (tab.color === "amber" || tab.color === "red") && tab.count > 0;
@@ -524,81 +748,45 @@ export default function LiveMonitor({
         </div>
       </div>
 
-      {/* Empty state */}
-      {visibleAttempts.length === 0 && (!showNotStarted || searchNotStarted.length === 0) ? (
+      {/* Empty Roster State */}
+      {filteredAndSortedRows.length === 0 ? (
         <div className="text-center py-14 bg-white border border-slate-200 rounded-lg text-slate-400 shadow-sm space-y-2">
           <UserX className="w-8 h-8 mx-auto text-slate-300" />
           <p className="text-xs font-semibold text-slate-500">No students match this filter</p>
-          <p className="text-[11px] text-slate-400">Try adjusting the lesson, status, or search.</p>
+          <p className="text-[11px] text-slate-400">Try adjusting the lesson scope, status filter, or search input.</p>
         </div>
       ) : (
         <div className="space-y-6">
-          {/* GRID CARD LAYOUT */}
-          {layoutMode === "grid" && visibleAttempts.length > 0 && (
+          {/* GRID CARD VIEW */}
+          {layoutMode === "grid" && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {sortAttempts(visibleAttempts).map((latestAttempt) => {
-                let student = students.find((s) => s.id === latestAttempt.studentId);
-                if (!student && latestAttempt.isPreviewAttempt) {
-                  student = { id: latestAttempt.studentId, name: "Teacher Preview", email: "preview@veritas.local", role: "student" };
-                }
-                if (!student) return null;
-
-                const sLesson = lessons.find((l) => l.id === latestAttempt.lessonId);
-                const lessonBlocks = blocks.filter((b) => b.lessonId === latestAttempt.lessonId).sort((a: any, b: any) => a.order - b.order);
-                const sResponses = responses.filter((r) => r.attemptId === latestAttempt.id);
-                const signals_ = getAttemptSignalSummary(latestAttempt.id);
-
-                const isLocked = isAttemptLocked(latestAttempt);
-                const isCompleted = latestAttempt.status === "completed";
-                const isActive = isAttemptActive(latestAttempt);
-                const needsReview = isAttemptNeedsReview(latestAttempt);
-                const blockCount = Math.max(lessonBlocks.length, 1);
-                const progressPct = isCompleted
-                  ? 100
-                  : Math.round((latestAttempt.currentBlockIndex / blockCount) * 100);
-                const currentBlock = lessonBlocks[latestAttempt.currentBlockIndex];
-                const currentBlockName = currentBlock
-                  ? currentBlock.title
-                  : `Segment ${latestAttempt.currentBlockIndex + 1}`;
-                const maxPoints = calcMaxPoints(latestAttempt.lessonId);
-                const earnedPoints = latestAttempt ? (latestAttempt.score || 0) : 0;
-                const hasPendingGrading = sResponses.some(
-                  (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
-                );
-
-                const isStale = !isCompleted && !isActive && isAttemptStale(latestAttempt);
-
-                const statusLabel = isLocked
-                  ? "Locked"
-                  : isCompleted
-                  ? "Completed"
-                  : isActive
-                  ? "Active Recently"
-                  : isStale
-                  ? "Possibly Disconnected"
-                  : "Idle";
-
-                const statusBadgeCls = isLocked
+              {filteredAndSortedRows.map((row) => {
+                const sStudent = row.student;
+                const latestAttempt = row.attempt;
+                const sLesson = row.lesson;
+                const progressPct = row.progressPct;
+                const currentBlockName = row.currentBlockName;
+                const statusBadgeCls = row.isLocked
                   ? "bg-red-50 text-red-700 border-red-200"
-                  : isCompleted
+                  : row.status === "Completed"
                   ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                  : isActive
+                  : (row.status === "Active now" || row.status === "Active recently")
                   ? "bg-green-50 text-green-700 border-green-200"
-                  : isStale
+                  : (row.status === "Session may have ended unexpectedly" || row.status === "No recent work")
                   ? "bg-orange-50 text-orange-700 border-orange-200"
                   : "bg-slate-100 text-slate-500 border-slate-200";
 
                 return (
                   <motion.div
-                    key={latestAttempt.id}
+                    key={row.student.id + "_" + (latestAttempt ? latestAttempt.id : "none")}
                     initial={{ opacity: 0.96 }}
                     animate={{ opacity: 1 }}
                     whileHover={{ y: -1 }}
-                    onClick={() => onOpenDossier(student.id, latestAttempt.lessonId)}
+                    onClick={() => onOpenDossier(sStudent.id, sLesson?.id || (selectedLessonId !== "all" ? selectedLessonId : ""))}
                     className={`bg-white border rounded-lg p-4 shadow-xs hover:shadow transition flex flex-col gap-3 cursor-pointer group relative ${
-                      isLocked
+                      row.isLocked
                         ? "border-amber-300 ring-1 ring-amber-100 bg-amber-50/30"
-                        : needsReview
+                        : row.needsReview
                         ? "border-amber-200 bg-[#FCFBF8] hover:border-amber-300"
                         : "border-slate-200 hover:border-slate-300"
                     }`}
@@ -607,38 +795,37 @@ export default function LiveMonitor({
                     <div className="flex justify-between items-start gap-2">
                       <div className="space-y-0.5 min-w-0">
                         <div className="flex items-center gap-1.5">
-                          {/* Presence indicator */}
-                          {isCompleted ? (
+                          {row.status === "Completed" ? (
                             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 block shrink-0" />
-                          ) : isActive ? (
+                          ) : (row.status === "Active now" || row.status === "Active recently") ? (
                             <span className="relative flex h-2.5 w-2.5 shrink-0">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#34D399] opacity-75" />
+                              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#10B981]" />
                             </span>
                           ) : (
                             <span className="w-2.5 h-2.5 rounded-full bg-slate-300 block shrink-0" />
                           )}
-                          <h4 className="text-sm font-bold text-slate-900 truncate">{student.name}</h4>
-                          {latestAttempt.isPreviewAttempt && (
+                          <h4 className="text-sm font-bold text-slate-900 truncate">{sStudent.name}</h4>
+                          {sStudent.isPreview && (
                             <span className="bg-amber-100 text-amber-800 text-[8px] font-mono font-bold px-1 py-0.5 rounded uppercase shrink-0">
                               Preview
                             </span>
                           )}
                         </div>
-                        <p className="text-[10px] text-slate-400 font-mono truncate">{student.email}</p>
+                        <p className="text-[10px] text-slate-400 font-mono truncate">{sStudent.email}</p>
                       </div>
 
                       <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-sm shrink-0 border ${statusBadgeCls}`}>
-                        {statusLabel}
+                        {row.status}
                       </span>
                     </div>
 
-                    {/* Progress */}
+                    {/* Progress Bar */}
                     <div>
                       <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
                         <div
                           className={`h-full rounded-full transition-all ${
-                            isLocked ? "bg-red-400" : isCompleted ? "bg-emerald-500" : "bg-[#0A192F]"
+                            row.isLocked ? "bg-red-400" : row.status === "Completed" ? "bg-[#10B981]" : "bg-indigo-600"
                           }`}
                           style={{ width: `${progressPct}%` }}
                         />
@@ -646,44 +833,44 @@ export default function LiveMonitor({
                       <div className="flex justify-between text-[10px] text-slate-500 mt-1.5">
                         <span className="font-bold">{progressPct}%</span>
                         <span className="truncate max-w-[140px] text-right text-slate-400">
-                          {isCompleted ? "Completed" : `${currentBlockName} (${latestAttempt.currentBlockIndex + 1}/${blockCount})`}
+                          {row.status === "Completed" ? "Completed" : `${currentBlockName} (${latestAttempt ? latestAttempt.currentBlockIndex + 1 : 0}/${Math.max(row.lessonBlocks.length, 1)})`}
                         </span>
                       </div>
                     </div>
 
-                    {/* Activity Presence */}
+                    {/* Separated Session Activity & Timestamps */}
                     <div className="flex justify-between items-center bg-slate-50/60 border border-slate-100 px-3 py-2 rounded-md text-[10px] text-slate-500 font-medium">
                       <div className="space-y-0.5">
                         <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider block">last signed in</span>
-                        <span className="text-slate-700 font-semibold">{formatRelativeTime(student.lastSignedInAt)}</span>
+                        <span className="text-slate-700 font-semibold">{row.lastSignedIn}</span>
                       </div>
                       <div className="text-right space-y-0.5">
-                        <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider block">last active</span>
-                        <span className="text-slate-700 font-semibold">{formatRelativeTime(latestAttempt.lastActiveAt || student.lastActiveAt)}</span>
+                        <span className="text-[8px] text-slate-400 font-bold uppercase tracking-wider block">lesson activity</span>
+                        <span className="text-slate-700 font-semibold">{row.lastLessonActivity}</span>
                       </div>
                     </div>
 
-                    {/* Compact 7-Day Activity Heatmap */}
+                    {/* 7-day academic heatmap */}
                     <div className="space-y-1">
                       <div className="flex justify-between items-center">
                         <span className="text-[8px] text-slate-400 font-bold uppercase tracking-widest block">Activity this week</span>
-                        <span className="text-[8px] text-slate-400 italic font-mono uppercase">7-Day Pacing</span>
+                        <span className="text-[8px] text-slate-400 italic font-mono uppercase">Academic Action</span>
                       </div>
                       <div className="grid grid-cols-7 gap-1 border border-slate-100 bg-white p-1.5 rounded-md">
-                        {get7DayActivityHeatmap(student.id, studentActivities).map((day) => (
+                        {getStudentAcademicHeatmap(sStudent.id, latestAttempt, row.responses, studentActivities).map((day) => (
                           <TooltipWrapper key={day.dateStr} day={day}>
                             <div className="flex flex-col items-center">
                               <span className="text-[7px] text-slate-400 font-bold scale-90 mb-0.5 select-none">{day.dayLabel}</span>
                               <div className={`w-full aspect-square min-h-[1.5rem] rounded-sm border flex items-center justify-center transition-all ${
-                                day.intensity === 'high'
-                                  ? 'bg-indigo-600 text-white border-indigo-700 font-bold'
-                                  : day.intensity === 'medium'
-                                  ? 'bg-indigo-300 text-indigo-900 border-indigo-400 font-semibold'
-                                  : day.intensity === 'low'
-                                  ? 'bg-indigo-100 text-indigo-800 border-indigo-200 font-medium'
-                                  : 'bg-slate-50 text-slate-300 border-slate-100'
+                                day.intensity === "high"
+                                  ? "bg-indigo-600 text-white border-indigo-700 font-bold"
+                                  : day.intensity === "medium"
+                                  ? "bg-indigo-300 text-indigo-900 border-indigo-400 font-semibold"
+                                  : day.intensity === "low"
+                                  ? "bg-indigo-100 text-indigo-800 border-indigo-200 font-medium"
+                                  : "bg-slate-50 text-slate-300 border-slate-100"
                               }`}>
-                                <span className="text-[9px] font-bold">{day.total}</span>
+                                <span className="text-[9px] font-bold">{day.total || ""}</span>
                               </div>
                             </div>
                           </TooltipWrapper>
@@ -691,53 +878,53 @@ export default function LiveMonitor({
                       </div>
                     </div>
 
-                    {/* Stats grid */}
+                    {/* Scoring and metrics */}
                     <div className="grid grid-cols-2 gap-2 bg-slate-50 border border-slate-100 p-2.5 rounded-md text-[11px]">
                       <div>
                         <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Time active</span>
                         <span className="font-mono text-slate-700 font-semibold flex items-center gap-1">
                           <Clock className="w-3 h-3 text-slate-400 shrink-0" />
-                          {formatDuration(latestAttempt.activeTimeSpent || 0)}
+                          {latestAttempt ? `${Math.floor((latestAttempt.activeTimeSpent || 0) / 60)}m ${(latestAttempt.activeTimeSpent || 0) % 60}s` : "0m 0s"}
                         </span>
                       </div>
                       <div>
                         <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Responses</span>
-                        <span className="text-slate-700 font-bold">{sResponses.length}</span>
+                        <span className="text-slate-700 font-bold">{row.responses.length}</span>
                       </div>
                       <div>
                         <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Score</span>
                         <span className="text-slate-700 font-mono font-semibold">
-                          {earnedPoints}/{maxPoints} pts
-                          {hasPendingGrading && (
+                          {latestAttempt ? `${row.earnedPoints}/${row.maxPoints} pts` : "—"}
+                          {row.hasPendingGrading && (
                             <span className="text-amber-600 text-[8px] block font-sans font-bold">SA pending</span>
                           )}
                         </span>
                       </div>
                       <div>
                         <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Integrity signals</span>
-                        <span className={`font-semibold ${signals_.total > 0 ? "text-amber-700" : "text-slate-500"}`}>
-                          {signals_.total === 0 ? "None" : `${signals_.total} events`}
-                          {signals_.fullscreenExits > 0 && (
-                            <span className="text-[8px] text-red-600 block font-bold">{signals_.fullscreenExits} fullscreen exit{signals_.fullscreenExits !== 1 ? "s" : ""}</span>
+                        <span className={`font-semibold ${row.signalsSummary.total > 0 ? "text-amber-700" : "text-slate-500"}`}>
+                          {row.signalsSummary.total === 0 ? "None" : `${row.signalsSummary.total} events`}
+                          {row.signalsSummary.fullscreenExits > 0 && (
+                            <span className="text-[8px] text-red-600 block font-bold">{row.signalsSummary.fullscreenExits} exit{row.signalsSummary.fullscreenExits !== 1 ? "s" : ""}</span>
                           )}
                         </span>
                       </div>
                     </div>
 
-                    {/* Lesson name (when "all lessons" view) */}
+                    {/* Lesson name for "all lessons" scope */}
                     {sLesson && selectedLessonId === "all" && (
                       <p className="text-[10px] text-slate-400 truncate border-t border-slate-100 pt-1.5">
                         <span className="text-slate-500">Lesson:</span> <strong className="text-slate-600">{sLesson.title}</strong>
                       </p>
                     )}
 
-                    {/* Footer */}
+                    {/* Footer Actions */}
                     <div className="pt-2 border-t border-slate-100 flex justify-between items-center">
-                      <span className="text-[10px] text-slate-400">
-                        Last active: <span className="font-mono font-semibold text-slate-500">{formatLastActive(latestAttempt)}</span>
+                      <span className="text-[10px] text-slate-400 shrink-0">
+                        Activity: <span className="font-mono font-semibold text-slate-500">{row.lastLessonActivity}</span>
                       </span>
-                      <div className="flex gap-1.5">
-                        {isLocked && (
+                      <div className="flex gap-1.5 shrink-0 ml-1">
+                        {row.isLocked && latestAttempt && (
                           <button
                             onClick={(e: MouseEvent) => handleUnlock(e, latestAttempt.id)}
                             disabled={unlockingId === latestAttempt.id}
@@ -747,7 +934,7 @@ export default function LiveMonitor({
                             {unlockingId === latestAttempt.id ? "Unlocking…" : "Unlock"}
                           </button>
                         )}
-                        {needsReview && !isLocked && (
+                        {row.needsReview && !row.isLocked && (
                           <span className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded flex items-center gap-1">
                             <Flag className="w-2.5 h-2.5" /> Review
                           </span>
@@ -767,7 +954,7 @@ export default function LiveMonitor({
           )}
 
           {/* TABLE LAYOUT */}
-          {layoutMode === "table" && visibleAttempts.length > 0 && (
+          {layoutMode === "table" && (
             <div className="bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm">
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse">
@@ -779,79 +966,60 @@ export default function LiveMonitor({
                       <th className="py-3 px-4">Progress</th>
                       <th className="py-3 px-4">Position</th>
                       <th className="py-3 px-4">Time / Responses</th>
-                      <th className="py-3 px-4">Last Active / Signed In</th>
+                      <th className="py-3 px-4">Last Lesson Activity</th>
                       <th className="py-3 px-4">Weekly Pacing</th>
                       <th className="py-3 px-4">Score</th>
                       <th className="py-3 px-4">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {sortAttempts(visibleAttempts).map((attempt) => {
-                      let student = students.find((s) => s.id === attempt.studentId);
-                      if (!student && attempt.isPreviewAttempt) {
-                        student = { id: attempt.studentId, name: "Teacher Preview", email: "preview@veritas.local" };
-                      }
-                      if (!student) return null;
-
-                      const sLesson = lessons.find((l) => l.id === attempt.lessonId);
-                      const lessonBlocks = blocks.filter((b) => b.lessonId === attempt.lessonId).sort((a: any, b: any) => a.order - b.order);
-                      const sResponses = responses.filter((r) => r.attemptId === attempt.id);
-                      const signals_ = getAttemptSignalSummary(attempt.id);
-
-                      const isLocked = isAttemptLocked(attempt);
-                      const isCompleted = attempt.status === "completed";
-                      const isActive = isAttemptActive(attempt);
-                      const needsReview = isAttemptNeedsReview(attempt);
-                      const blockCount = Math.max(lessonBlocks.length, 1);
-                      const progressPct = isCompleted ? 100 : Math.round((attempt.currentBlockIndex / blockCount) * 100);
-                      const currentBlock = lessonBlocks[attempt.currentBlockIndex];
-                      const currentBlockName = currentBlock ? currentBlock.title : `Segment ${attempt.currentBlockIndex + 1}`;
-                      const maxPoints = calcMaxPoints(attempt.lessonId);
-                      const earnedPoints = attempt ? (attempt.score || 0) : 0;
-                      const hasPendingGrading = sResponses.some(
-                        (r) => r.type === "sa" && (!r.aiGrading || ["pending", "failed", "needs_review"].includes(r.aiGrading.status))
-                      );
+                    {filteredAndSortedRows.map((row) => {
+                      const sStudent = row.student;
+                      const latestAttempt = row.attempt;
+                      const sLesson = row.lesson;
+                      const progressPct = row.progressPct;
+                      const currentBlockName = row.currentBlockName;
 
                       return (
                         <tr
-                          key={attempt.id}
-                          onClick={() => onOpenDossier(student.id, attempt.lessonId)}
-                          className={`hover:bg-slate-50 transition cursor-pointer ${isLocked ? "bg-red-50/20" : attempt.isPreviewAttempt ? "bg-amber-50/10" : ""}`}
+                          key={sStudent.id + "_" + (latestAttempt ? latestAttempt.id : "none")}
+                          onClick={() => onOpenDossier(sStudent.id, sLesson?.id || (selectedLessonId !== "all" ? selectedLessonId : ""))}
+                          className={`hover:bg-slate-50 transition cursor-pointer ${row.isLocked ? "bg-red-50/20" : sStudent.isPreview ? "bg-amber-50/10" : ""}`}
                         >
                           <td className="py-2.5 px-4 whitespace-nowrap">
                             <div className="flex items-center gap-1.5">
-                              {isCompleted ? (
-                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 block" />
-                              ) : isActive ? (
+                              {row.status === "Completed" ? (
+                                <span className="w-2.5 h-2.5 rounded-full bg-[#10B981] block-shrink-0" />
+                              ) : (row.status === "Active now" || row.status === "Active recently") ? (
                                 <span className="relative flex h-2.5 w-2.5 shrink-0">
                                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
                                   <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
                                 </span>
                               ) : (
-                                <span className="w-2.5 h-2.5 rounded-full bg-slate-300 block" />
+                                <span className="w-2.5 h-2.5 rounded-full bg-slate-300 block shrink-0" />
                               )}
                               <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-tight">
-                                {isCompleted ? "Done" : isActive ? "Active Recently" : isAttemptStale(attempt) ? `Possibly Disconnected (${formatLastActive(attempt)})` : `Idle (${formatLastActive(attempt)})`}
+                                {row.status}
                               </span>
                             </div>
                           </td>
                           <td className="py-2.5 px-4 whitespace-nowrap">
                             <div className="font-bold text-slate-900 flex items-center gap-1">
-                              {student.name}
-                              {attempt.isPreviewAttempt && (
+                              {sStudent.name}
+                              {sStudent.isPreview && (
                                 <span className="bg-amber-100 text-amber-800 text-[8px] px-1 py-0.5 rounded font-mono font-bold uppercase shrink-0">Preview</span>
                               )}
                             </div>
-                            <span className="text-[9px] font-mono text-slate-400 block">{student.email}</span>
+                            <span className="text-[9px] font-mono text-slate-400 block">{sStudent.email}</span>
                           </td>
                           <td className="py-2.5 px-4 text-slate-600 font-medium whitespace-nowrap">
-                            <span className="truncate max-w-[130px] block">{sLesson?.title || "—"}</span>
+                            <span className="truncate max-w-[130px] block">{sLesson?.title || selectedLessonId || "—"}</span>
                           </td>
                           <td className="py-2.5 px-4 whitespace-nowrap min-w-[100px]">
                             <div className="flex items-center gap-2">
                               <div className="h-2 w-12 bg-slate-100 rounded-full overflow-hidden shrink-0">
                                 <div
-                                  className={`h-full rounded-full ${isLocked ? "bg-red-400" : isCompleted ? "bg-emerald-500" : "bg-indigo-600"}`}
+                                  className={`h-full rounded-full ${row.isLocked ? "bg-red-400" : row.status === "Completed" ? "bg-[#10B981]" : "bg-indigo-600"}`}
                                   style={{ width: `${progressPct}%` }}
                                 />
                               </div>
@@ -860,62 +1028,64 @@ export default function LiveMonitor({
                           </td>
                           <td className="py-2.5 px-4 text-slate-500 whitespace-nowrap">
                             <span className="truncate max-w-[140px] block text-[11px]">
-                              {isCompleted ? "Completed" : `${currentBlockName} (${attempt.currentBlockIndex + 1}/${blockCount})`}
+                              {row.status === "Completed" ? "Completed" : `${currentBlockName} (${latestAttempt ? latestAttempt.currentBlockIndex + 1 : 0}/${Math.max(row.lessonBlocks.length, 1)})`}
                             </span>
                           </td>
                           <td className="py-2.5 px-4 whitespace-nowrap">
                             <div className="flex items-center gap-1.5 text-[10px] text-slate-600">
                               <Clock className="w-3 h-3 text-slate-400 shrink-0" />
-                              <span className="font-mono">{formatDuration(attempt.activeTimeSpent || 0)}</span>
+                              <span className="font-mono">
+                                {latestAttempt ? `${Math.floor((latestAttempt.activeTimeSpent || 0) / 60)}m ${(latestAttempt.activeTimeSpent || 0) % 60}s` : "0m 0s"}
+                              </span>
                             </div>
                             <div className="text-[10px] text-slate-400 mt-0.5">
-                              {sResponses.length} responses &bull; {signals_.total} signals
+                              {row.responses.length} responses &bull; {row.signalsSummary.total} signals
                             </div>
                           </td>
                           <td className="py-2.5 px-4 whitespace-nowrap text-[10px] text-slate-500 font-medium">
-                            <div className="font-semibold text-slate-700">Active: {formatRelativeTime(attempt.lastActiveAt || student.lastActiveAt)}</div>
-                            <div className="text-[9px] text-slate-400 mt-0.5">Signed in: {formatRelativeTime(student.lastSignedInAt)}</div>
+                            <div className="font-semibold text-slate-700">Recent: {row.lastLessonActivity}</div>
+                            <div className="text-[9px] text-slate-400 mt-0.5">Signed in: {row.lastSignedIn}</div>
                           </td>
                           <td className="py-2.5 px-4 whitespace-nowrap">
                             <div className="flex items-center gap-0.5">
-                              {get7DayActivityHeatmap(student.id, studentActivities).map((day) => (
+                              {getStudentAcademicHeatmap(sStudent.id, latestAttempt, row.responses, studentActivities).map((day) => (
                                 <TooltipWrapper key={day.dateStr} day={day}>
                                   <div className={`w-5 h-5 rounded-sm border flex items-center justify-center text-[7.5px] transition-all select-none ${
-                                    day.intensity === 'high'
-                                      ? 'bg-indigo-600 text-white border-indigo-700 font-bold'
-                                      : day.intensity === 'medium'
-                                      ? 'bg-indigo-300 text-indigo-900 border-indigo-400'
-                                      : day.intensity === 'low'
-                                      ? 'bg-[#E0E7FF] text-indigo-800 border-indigo-200'
-                                      : 'bg-slate-50 text-slate-300 border-slate-150'
+                                    day.intensity === "high"
+                                      ? "bg-indigo-600 text-white border-indigo-700 font-bold"
+                                      : day.intensity === "medium"
+                                      ? "bg-indigo-300 text-indigo-900 border-indigo-400"
+                                      : day.intensity === "low"
+                                      ? "bg-[#E0E7FF] text-indigo-800 border-indigo-200"
+                                      : "bg-slate-50 text-slate-300 border-slate-150"
                                   }`}>
-                                    {day.total > 0 ? day.total : ''}
+                                    {day.total || ""}
                                   </div>
                                 </TooltipWrapper>
                               ))}
                             </div>
                           </td>
                           <td className="py-2.5 px-4 whitespace-nowrap font-bold text-slate-800">
-                            <div className="font-mono text-[11px]">{earnedPoints}/{maxPoints} pts</div>
-                            {hasPendingGrading && (
+                            <div className="font-mono text-[11px]">{latestAttempt ? `${row.earnedPoints}/${row.maxPoints} pts` : "—"}</div>
+                            {row.hasPendingGrading && (
                               <span className="text-[9px] text-amber-600 font-bold block">SA pending</span>
                             )}
                           </td>
                           <td className="py-1.5 px-4 whitespace-nowrap">
-                            <div className="flex items-center gap-1.5">
-                              {isLocked ? (
+                            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                              {row.isLocked && latestAttempt ? (
                                 <button
-                                  onClick={(e: MouseEvent) => handleUnlock(e, attempt.id)}
-                                  disabled={unlockingId === attempt.id}
+                                  onClick={(e: MouseEvent) => handleUnlock(e, latestAttempt.id)}
+                                  disabled={unlockingId === latestAttempt.id}
                                   className="text-[9px] font-bold bg-[#E5B53B] hover:bg-amber-400 text-[#0A192F] px-2.5 py-1 rounded transition uppercase tracking-wider flex items-center gap-1 cursor-pointer border border-amber-400"
                                 >
                                   <Unlock className="w-3 h-3" />
-                                  {unlockingId === attempt.id ? "Unlocking…" : "Unlock"}
+                                  {unlockingId === latestAttempt.id ? "Unlocking…" : "Unlock"}
                                 </button>
-                              ) : needsReview ? (
+                              ) : row.needsReview ? (
                                 <div className="text-[9px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded flex items-center gap-1">
                                   <AlertTriangle className="w-3 h-3" />
-                                  {hasPendingGrading ? "Grade pending" : "Review signals"}
+                                  {row.hasPendingGrading ? "Grade pending" : "Review signals"}
                                 </div>
                               ) : (
                                 <div className="text-[9px] text-emerald-600 font-bold flex items-center gap-1">
@@ -930,34 +1100,6 @@ export default function LiveMonitor({
                     })}
                   </tbody>
                 </table>
-              </div>
-            </div>
-          )}
-          
-          {/* NOT STARTED */}
-          {showNotStarted && searchNotStarted.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 border-b border-dashed border-slate-200 pb-2">
-                <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-slate-400">
-                  Not started ({searchNotStarted.length})
-                </span>
-                <span className="text-[10px] text-slate-400 italic">No attempt recorded yet</span>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {searchNotStarted.map((student) => (
-                  <div
-                    key={student.id}
-                    className="bg-white border border-slate-200 hover:border-slate-300 rounded-lg p-3 flex items-center justify-between gap-2 transition select-none"
-                  >
-                    <div className="min-w-0">
-                      <div className="font-semibold text-slate-800 text-[12px] truncate">{student.name}</div>
-                      <div className="text-[10px] font-mono text-slate-400 truncate">{student.email}</div>
-                    </div>
-                    <span className="text-[8px] font-mono font-bold uppercase tracking-widest bg-slate-100 border border-slate-200 text-slate-500 px-1.5 py-0.5 rounded shrink-0">
-                      Not started
-                    </span>
-                  </div>
-                ))}
               </div>
             </div>
           )}

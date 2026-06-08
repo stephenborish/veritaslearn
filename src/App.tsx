@@ -455,7 +455,7 @@ export default function App() {
   };
 
   const handleReviewAction = async (
-    action: "approve" | "mark-reviewed" | "release-feedback",
+    action: "approve" | "mark-reviewed" | "release-feedback" | "grade",
     responseId: string,
     payload?: any
   ) => {
@@ -850,6 +850,8 @@ export default function App() {
                   lessons={lessons}
                   blocks={blocks}
                   studentActivities={studentActivities}
+                  lessonVersions={lessonVersions}
+                  assignments={assignments}
                   onOpenDossier={(studentId, lessonId) => {
                     setActiveDossier({ studentId, lessonId });
                   }}

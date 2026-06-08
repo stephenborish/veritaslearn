@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { RichContentRenderer, getPlainText } from "../RichContent/RichContentRenderer";
 import {
   AlertTriangle,
@@ -23,6 +23,7 @@ import {
 interface StudentDossierModalProps {
   studentId: string;
   lessonId: string;
+  initialSection?: string;
   students: any[];
   attempts: any[];
   responses: any[];
@@ -34,7 +35,7 @@ interface StudentDossierModalProps {
   lessonVersions?: any[];
   onClose: () => void;
   onOverrideSave: (responseId: string, score: number, notes: string) => Promise<void>;
-  onReviewAction?: (action: 'approve' | 'mark-reviewed' | 'release-feedback', responseId: string, payload?: any) => Promise<void>;
+  onReviewAction?: (action: 'approve' | 'mark-reviewed' | 'release-feedback' | 'grade', responseId: string, payload?: any) => Promise<void>;
   onUnlockStudent?: (attemptId: string) => void;
 }
 
@@ -213,6 +214,37 @@ function TooltipWrapper({ children, day }: { children: React.ReactNode, day: any
   );
 }
 
+function getGradingStateLabel(response: any, draftText: string | null): string {
+  if (!response) {
+    if (draftText && draftText.trim() !== "") {
+      return "Draft saved";
+    }
+    return "Not submitted";
+  }
+
+  const aiGradStatus = response.aiGrading?.status;
+  const isReleased = !!(response.feedbackReleasedAt || response.aiFeedbackReleasedAt || response.feedbackVisibleToStudent);
+  const isReviewed = !!(response.teacherReviewedAt || response.teacherOverrideScore !== null && response.teacherOverrideScore !== undefined || response.teacherOverride?.score !== undefined);
+
+  if (isReleased) {
+    return "Feedback released";
+  }
+  if (isReviewed) {
+    return "Reviewed, not released";
+  }
+  if (aiGradStatus === "needs_review" || aiGradStatus === "failed") {
+    return "Needs teacher review";
+  }
+  if (aiGradStatus === "success") {
+    return "AI scored, awaiting teacher review";
+  }
+  if (aiGradStatus === "pending") {
+    return "Submitted, awaiting AI grading";
+  }
+  
+  return "Submitted, awaiting AI grading"; // Default fallback
+}
+
 function renderChoicesWithGrades(question: any, studentValue: any) {
   if (!question || !Array.isArray(question.choices) || question.choices.length === 0) {
     return null;
@@ -221,38 +253,53 @@ function renderChoicesWithGrades(question: any, studentValue: any) {
   const selectedChoiceId = selectedMultipleChoiceToLetterOrId(question, studentValue);
   const correctChoiceId = String(question.correctChoiceId || "");
 
+  // Check if selected choice exists in the options
+  const hasSelectedValue = studentValue !== undefined && studentValue !== null && String(studentValue).trim() !== "";
+  const isSelectedChoiceResolved = hasSelectedValue && question.choices.some((c: any) => String(c.id) === selectedChoiceId);
+
   return (
     <div className="mt-3.5 space-y-2 max-w-xl">
       <span className="text-[9px] font-bold font-mono uppercase text-slate-400 block tracking-wider mb-2">
         Choices & Selected Answer
       </span>
-      {question.choices.map((choice: any) => {
+      {hasSelectedValue && !isSelectedChoiceResolved && (
+        <div className="p-2.5 bg-rose-50 border border-rose-150 text-rose-900 rounded-md text-[11px] font-medium mb-3.5 leading-relaxed">
+          <strong>Selected choice unavailable</strong>
+          <span className="text-[10px] text-rose-700 font-mono block mt-0.5">
+            Submitted Value / ID: {String(studentValue)}
+          </span>
+        </div>
+      )}
+      {question.choices.map((choice: any, index: number) => {
         const choiceId = String(choice.id);
-        const isSelected = choiceId === selectedChoiceId;
+        const isSelected = hasSelectedValue && choiceId === selectedChoiceId;
         const isCorrect = choiceId === correctChoiceId;
 
-        let borderClass = "border-slate-200 bg-white";
+        // Choice labels A, B, C, D...
+        const choiceLetter = String.fromCharCode(65 + index); // A, B, C, D etc.
+
+        let borderClass = "border-slate-200 bg-white hover:border-slate-300";
         let badge = null;
 
         if (isSelected && isCorrect) {
-          borderClass = "border-emerald-500 bg-emerald-50/50 shadow-sm";
+          borderClass = "border-emerald-500 bg-emerald-50/40 shadow-xs";
           badge = (
-            <span className="text-[9px] uppercase font-bold tracking-wider font-mono bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded flex items-center gap-1">
-              <Check className="w-3 h-3 text-emerald-600 shrink-0" /> Selected & Correct
+            <span className="text-[9px] uppercase font-bold tracking-wider font-mono bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded flex items-center gap-1 shrink-0 self-start sm:self-center">
+              <Check className="w-3 h-3 text-emerald-600 shrink-0" /> Student selected · Correct
             </span>
           );
         } else if (isSelected) {
           borderClass = "border-rose-300 bg-rose-50/20";
           badge = (
-            <span className="text-[9px] uppercase font-bold tracking-wider font-mono bg-rose-50 border border-rose-200 text-rose-800 px-2 py-0.5 rounded flex items-center gap-1">
-              <X className="w-3 h-3 text-rose-650 shrink-0" /> Student Answer (Incorrect)
+            <span className="text-[9px] uppercase font-bold tracking-wider font-mono bg-rose-100 text-rose-800 px-2 py-0.5 rounded flex items-center gap-1 shrink-0 self-start sm:self-center">
+              <X className="w-3 h-3 text-rose-600 shrink-0" /> Student selected
             </span>
           );
         } else if (isCorrect) {
-          borderClass = "border-emerald-300 bg-emerald-50/10";
+          borderClass = "border-emerald-305 bg-emerald-50/10";
           badge = (
-            <span className="text-[9px] uppercase font-bold tracking-wider font-mono bg-emerald-50 border border-emerald-200 text-emerald-700 px-2 py-0.5 rounded flex items-center gap-1">
-              <Check className="w-3 h-3 shrink-0" /> Correct Answer
+            <span className="text-[9px] uppercase font-bold tracking-wider font-mono bg-emerald-50 border border-emerald-200 text-emerald-700 px-2 py-0.5 rounded flex items-center gap-1 shrink-0 self-start sm:self-center">
+              <Check className="w-3 h-3 text-emerald-600 shrink-0" /> Correct answer
             </span>
           );
         }
@@ -260,17 +307,18 @@ function renderChoicesWithGrades(question: any, studentValue: any) {
         return (
           <div
             key={choice.id}
-            className={`border rounded-lg p-3 flex items-center justify-between gap-3 text-xs leading-relaxed transition ${borderClass}`}
+            className={`border rounded-lg p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs leading-relaxed transition ${borderClass}`}
           >
-            <div className="flex items-start gap-2 text-slate-800 font-medium">
+            <div className="flex items-start gap-2.5 text-slate-800 font-medium min-w-0 flex-1">
               <span className={`w-5 h-5 rounded-full flex items-center justify-center font-mono text-[10px] font-bold shrink-0 mt-0.5 ${isSelected ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-500"}`}>
-                {choice.id}
+                {choiceLetter}
               </span>
-              <div className="font-sans">
+              <div className="font-sans flex-1 min-w-0 break-words pr-2">
                 <RichContentRenderer content={choice.text} />
+                <span className="text-[8px] text-slate-400 font-mono block mt-1">ID: {choice.id}</span>
               </div>
             </div>
-            {badge && <div className="shrink-0">{badge}</div>}
+            {badge}
           </div>
         );
       })}
@@ -293,49 +341,68 @@ function selectedMultipleChoiceToLetterOrId(question: any, value: any): string {
 }
 
 function renderRubricDetails(question: any) {
-  if (!question || !Array.isArray(question.rubricCategories) || question.rubricCategories.length === 0) {
+  if (!question || question.type === "mc") {
+    return null;
+  }
+
+  const hasRubric = Array.isArray(question.rubricCategories) && question.rubricCategories.length > 0;
+  const hasModel = !!(question.modelAnswer || question.answerKey);
+  const hasGuidance = !!question.aiScoringGuidance;
+
+  if (!hasRubric && !hasModel && !hasGuidance) {
     return null;
   }
 
   return (
-    <div className="mt-4 space-y-2.5 max-w-xl bg-slate-50 border border-slate-200 p-4 rounded-lg">
-      <span className="text-[9px] font-bold font-mono uppercase text-slate-500 block tracking-wider">
-        Scoring Rubric (Teacher Only)
-      </span>
-      <div className="grid grid-cols-1 gap-3">
-        {question.rubricCategories.map((rubric: any) => (
-          <div key={rubric.id} className="text-xs space-y-1">
-            <div className="flex justify-between items-center bg-slate-100 px-2 py-1 rounded">
-              <span className="font-bold text-slate-700">{rubric.name}</span>
-              <span className="font-mono text-[10px] text-slate-500 font-semibold">{rubric.maxPoints} pts max</span>
-            </div>
-            <div className="text-[11px] text-slate-650 pl-1 leading-relaxed font-sans">
-              <RichContentRenderer content={rubric.description} />
-            </div>
-            {rubric.fullCreditExample && (
-              <div className="pl-1.5 text-[10.5px] text-emerald-800 leading-normal font-sans">
-                <strong>Full Credit Example:</strong> <span className="text-slate-600"><RichContentRenderer content={rubric.fullCreditExample} /></span>
-              </div>
-            )}
-          </div>
-        ))}
-        {question.modelAnswer && (
-          <div className="border-t border-slate-200 pt-3 mt-1.5 space-y-1">
-            <span className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest font-mono">Model Answer</span>
-            <div className="text-[11px] text-slate-700 leading-relaxed italic bg-white p-2.5 border border-slate-100 rounded">
-              <RichContentRenderer content={question.modelAnswer} />
-            </div>
-          </div>
-        )}
-        {question.aiScoringGuidance && (
-          <div className="border-t border-slate-200 pt-3 mt-1.5 space-y-1">
-            <span className="block text-[9px] font-bold text-slate-450 uppercase tracking-widest font-mono">AI Scopes & Guidance</span>
-            <div className="text-[11px] text-indigo-800 leading-relaxed bg-indigo-50/30 p-2.5 border border-indigo-150 rounded">
-              <RichContentRenderer content={question.aiScoringGuidance} />
-            </div>
-          </div>
-        )}
+    <div className="mt-4 space-y-3.5 max-w-xl bg-slate-50 border border-slate-200 p-4 rounded-lg">
+      <div className="flex items-center gap-1.5 border-b border-slate-200 pb-1.5 mb-2.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 block shrink-0" />
+        <span className="text-[10px] font-bold font-mono uppercase text-slate-500 tracking-wider">
+          Scoring & Rubric Configuration (Teacher Only)
+        </span>
       </div>
+
+      {hasRubric && (
+        <div className="space-y-3">
+          <span className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest font-mono">Rubric Categories</span>
+          <div className="grid grid-cols-1 gap-2.5">
+            {question.rubricCategories.map((rubric: any) => (
+              <div key={rubric.id} className="text-xs space-y-1 bg-white p-2.5 border border-slate-150 rounded-md shadow-xs">
+                <div className="flex justify-between items-center bg-slate-50 px-2 py-1 rounded">
+                  <span className="font-bold text-slate-700">{getPlainText(rubric.name)}</span>
+                  <span className="font-mono text-[10px] text-slate-500 font-semibold">{rubric.maxPoints} pts max</span>
+                </div>
+                <div className="text-[11px] text-slate-600 pl-1 leading-relaxed font-sans">
+                  <RichContentRenderer content={rubric.description} />
+                </div>
+                {rubric.fullCreditExample && (
+                  <div className="pl-1 text-[10.5px] text-emerald-800 leading-normal font-sans pt-1 border-t border-slate-100 mt-1">
+                    <strong>Full Credit Example:</strong> <span className="text-slate-650"><RichContentRenderer content={rubric.fullCreditExample} /></span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {hasModel && (
+        <div className="border-t border-slate-205 pt-3.5 space-y-1">
+          <span className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest font-mono">Model Answer / Ideal Response</span>
+          <div className="text-[11px] text-slate-700 leading-relaxed italic bg-white p-2.5 border border-slate-150 rounded-md">
+            <RichContentRenderer content={question.modelAnswer || question.answerKey} />
+          </div>
+        </div>
+      )}
+
+      {hasGuidance && (
+        <div className="border-t border-slate-205 pt-3.5 space-y-1">
+          <span className="block text-[9px] font-bold text-slate-400 uppercase tracking-widest font-mono">AI Scoring Guidance</span>
+          <div className="text-[11px] text-indigo-900 leading-relaxed bg-indigo-50/40 p-2.5 border border-indigo-150 rounded-md">
+            <RichContentRenderer content={question.aiScoringGuidance} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -343,6 +410,7 @@ function renderRubricDetails(question: any) {
 export default function StudentDossierModal({
   studentId,
   lessonId,
+  initialSection,
   students,
   attempts,
   responses,
@@ -370,7 +438,7 @@ export default function StudentDossierModal({
 
   const attempt = attempts.find((a) => a.studentId === studentId && a.lessonId === lessonId);
 
-  const executeReviewAction = async (action: 'approve' | 'mark-reviewed' | 'release-feedback', responseId: string) => {
+  const executeReviewAction = async (action: 'approve' | 'mark-reviewed' | 'release-feedback' | 'grade', responseId: string) => {
     if (!onReviewAction) return;
     setActionStates((prev) => ({
       ...prev,
@@ -488,6 +556,126 @@ export default function StudentDossierModal({
   const sSignals = signals.filter((s) => s.attemptId === attempt.id);
   const sResponses = responses.filter((r) => r.attemptId === attempt.id);
   const lessonBlocks = blocks.filter((b) => b.lessonId === lesson.id);
+
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+
+  const summaryRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const responsesRef = useRef<HTMLDivElement>(null);
+  const reviewRef = useRef<HTMLDivElement>(null);
+  const signalsRef = useRef<HTMLDivElement>(null);
+  const activityRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const previousActiveElement = useRef<HTMLElement | null>(null);
+
+  // Focus preservation on mount-unmount
+  useEffect(() => {
+    previousActiveElement.current = document.activeElement as HTMLElement;
+    return () => {
+      if (previousActiveElement.current && typeof previousActiveElement.current.focus === "function") {
+        previousActiveElement.current.focus();
+      }
+    };
+  }, []);
+
+  // Lock raw webpage scrolling
+  useEffect(() => {
+    const originalStyle = window.getComputedStyle(document.body).overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = originalStyle;
+    };
+  }, []);
+
+  const hasUnsavedChanges = () => {
+    for (const [resId, val] of Object.entries(overrideScores)) {
+      if (val === undefined) continue;
+      const resp = sResponses.find((r) => r.id === resId);
+      if (!resp) continue;
+      const currentVal = resp.teacherOverride?.score ?? resp.score ?? 0;
+      if (Number(val) !== Number(currentVal)) {
+        return true;
+      }
+    }
+
+    for (const [resId, val] of Object.entries(overrideNotes)) {
+      if (val === undefined) continue;
+      const resp = sResponses.find((r) => r.id === resId);
+      if (!resp) continue;
+      const currentVal = resp.teacherOverride?.notes ?? resp.notes ?? "";
+      if (val !== currentVal) {
+        return true;
+      }
+    }
+
+    for (const [resId, val] of Object.entries(editedFeedbacks)) {
+      if (val === undefined) continue;
+      const resp = sResponses.find((r) => r.id === resId);
+      if (!resp) continue;
+      const currentVal = resp.studentFacingFeedback || resp.aiFeedback || resp.aiGrading?.rationale || "";
+      if (val !== currentVal) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const handleTryClose = () => {
+    if (hasUnsavedChanges()) {
+      setShowDiscardConfirm(true);
+    } else {
+      onClose();
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        handleTryClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [overrideScores, overrideNotes, editedFeedbacks, sResponses]);
+
+  const scrollToSection = (ref: React.RefObject<HTMLDivElement | null>) => {
+    if (ref.current && scrollContainerRef.current) {
+      const container = scrollContainerRef.current;
+      const element = ref.current;
+      // offsetTop represents the top of the element relative to its offsetParent
+      let currentElement: HTMLElement | null = element;
+      let calculatedOffsetTop = 0;
+      while (currentElement && currentElement !== container) {
+        calculatedOffsetTop += currentElement.offsetTop;
+        currentElement = currentElement.offsetParent as HTMLElement | null;
+      }
+      container.scrollTo({
+        top: calculatedOffsetTop - 12,
+        behavior: 'smooth'
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (initialSection) {
+      let targetRef = null;
+      if (initialSection === "timeline") targetRef = timelineRef;
+      else if (initialSection === "responses") targetRef = responsesRef;
+      else if (initialSection === "review") targetRef = reviewRef;
+      else if (initialSection === "signals" || initialSection === "integrity") targetRef = signalsRef;
+      else if (initialSection === "activity") targetRef = activityRef;
+      else if (initialSection === "summary") targetRef = summaryRef;
+
+      const timer = setTimeout(() => {
+        if (targetRef) {
+          scrollToSection(targetRef);
+        }
+      }, 350);
+      return () => clearTimeout(timer);
+    }
+  }, [initialSection]);
 
   // All recorded student activities for this student and this attempt
   const sActivities = studentActivities
@@ -648,9 +836,20 @@ export default function StudentDossierModal({
 
   const initials = student.name ? student.name.substring(0, 2).toUpperCase() : "ST";
 
+  const handleOverlayClick = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) {
+      handleTryClose();
+    }
+  };
+
   return (
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 font-sans">
-      <div className="bg-white border border-slate-200 text-slate-800 shadow-2xl rounded-xl w-full max-w-4xl h-[92vh] flex flex-col overflow-hidden">
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={handleOverlayClick}
+      className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 font-sans"
+    >
+      <div className="bg-white border border-slate-200 text-slate-800 shadow-2xl rounded-xl w-full max-w-6xl h-[92vh] flex flex-col overflow-hidden">
 
         {/* Header */}
         <div className="bg-slate-50 border-b border-slate-200 px-6 py-4 flex justify-between items-center shrink-0">
@@ -674,7 +873,7 @@ export default function StudentDossierModal({
             </p>
           </div>
           <button
-            onClick={onClose}
+            onClick={handleTryClose}
             className="text-slate-400 hover:text-slate-700 p-2 rounded-lg border border-slate-200 hover:bg-slate-100 transition cursor-pointer"
             aria-label="Close"
           >
@@ -682,8 +881,57 @@ export default function StudentDossierModal({
           </button>
         </div>
 
+        {/* Sticky Mini Navigation */}
+        <div className="bg-slate-50 border-b border-slate-200 py-3 px-6 flex flex-wrap gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => scrollToSection(summaryRef)}
+            className="text-xs font-semibold text-slate-600 hover:text-indigo-650 px-3 py-1.5 rounded-md hover:bg-white hover:shadow-xs transition cursor-pointer"
+          >
+            Summary
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollToSection(timelineRef)}
+            className="text-xs font-semibold text-slate-600 hover:text-indigo-650 px-3 py-1.5 rounded-md hover:bg-white hover:shadow-xs transition cursor-pointer"
+          >
+            Timeline
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollToSection(responsesRef)}
+            className="text-xs font-semibold text-slate-600 hover:text-indigo-650 px-3 py-1.5 rounded-md hover:bg-white hover:shadow-xs transition cursor-pointer"
+          >
+            Responses
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollToSection(reviewRef)}
+            className="text-xs font-semibold text-slate-600 hover:text-indigo-650 px-3 py-1.5 rounded-md hover:bg-white hover:shadow-xs transition cursor-pointer"
+          >
+            Review
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollToSection(signalsRef)}
+            className="text-xs font-semibold text-slate-600 hover:text-indigo-650 px-3 py-1.5 rounded-md hover:bg-white hover:shadow-xs transition cursor-pointer"
+          >
+            Integrity Signals
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollToSection(activityRef)}
+            className="text-xs font-semibold text-slate-600 hover:text-indigo-650 px-3 py-1.5 rounded-md hover:bg-white hover:shadow-xs transition cursor-pointer"
+          >
+            Activity Records
+          </button>
+        </div>
+
         {/* Scrollable body */}
-        <div className="p-6 overflow-y-auto flex-1 space-y-6 bg-slate-50/40">
+        <div ref={scrollContainerRef} className="p-6 overflow-y-auto flex-1 space-y-6 bg-slate-50/40">
+
+          {/* Summary Section */}
+          <div ref={summaryRef} id="section-summary" className="space-y-6 scroll-mt-6">
 
           {/* Locked attempt banner */}
           {attempt.lockState === "locked_awaiting_teacher" && (
@@ -812,8 +1060,13 @@ export default function StudentDossierModal({
             </div>
           </div>
 
-          {/* Academic Engagement & Pacing Hub */}
-          <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-5">
+          </div>
+
+          {/* Activity records Section */}
+          <div ref={activityRef} id="section-activity" className="space-y-6 scroll-mt-6">
+
+            {/* Academic Engagement & Pacing Hub */}
+            <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-5">
             <h4 className="text-xs font-bold text-slate-700 border-b border-slate-100 pb-2 uppercase tracking-wide flex items-center gap-2">
               <Activity className="w-4 h-4 text-indigo-600" />
               Academic Engagement & Pacing Hub
@@ -908,8 +1161,13 @@ export default function StudentDossierModal({
             </div>
           </div>
 
-          {/* Lesson progress timeline */}
-          <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-3">
+          </div>
+
+          {/* Timeline Section */}
+          <div ref={timelineRef} id="section-timeline" className="space-y-6 scroll-mt-6">
+
+            {/* Lesson progress timeline */}
+            <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-3">
             <h4 className="text-xs font-bold text-slate-700 border-b border-slate-100 pb-2 uppercase tracking-wide flex items-center gap-2">
               <BookOpen className="w-4 h-4 text-indigo-600" />
               Lesson Steps
@@ -977,12 +1235,17 @@ export default function StudentDossierModal({
             </div>
           </div>
 
-          {/* Activity records */}
-          <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-3">
-            <div className="flex flex-wrap justify-between items-center border-b border-slate-100 pb-2 gap-2">
-              <h4 className="text-xs font-bold text-slate-700 flex items-center gap-2 uppercase tracking-wide">
-                <ShieldAlert className="w-4 h-4 text-amber-500" /> Activity Records
-              </h4>
+          </div>
+
+          {/* Integrity signals Section */}
+          <div ref={signalsRef} id="section-signals" className="space-y-6 scroll-mt-6">
+
+            {/* Integrity signals */}
+            <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-3">
+              <div className="flex flex-wrap justify-between items-center border-b border-slate-100 pb-2 gap-2">
+                <h4 className="text-xs font-bold text-slate-700 flex items-center gap-2 uppercase tracking-wide">
+                  <ShieldAlert className="w-4 h-4 text-amber-500" /> Integrity Signals
+                </h4>
               <div className="flex flex-wrap gap-2">
                 {totalSignals > 0 && (
                   <span className="text-[10px] font-mono font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
@@ -1074,8 +1337,14 @@ export default function StudentDossierModal({
             )}
           </div>
 
-          {/* Responses */}
-          <div className="space-y-4">
+          </div>
+
+          {/* Responses & Review Section */}
+          <div ref={responsesRef} id="section-responses" className="space-y-6 scroll-mt-6">
+            <div ref={reviewRef} id="section-review" className="space-y-6 scroll-mt-0">
+
+              {/* Responses */}
+              <div className="space-y-4">
             <h4 className="text-xs font-bold text-slate-700 flex items-center gap-2 uppercase tracking-wide border-b border-slate-100 pb-2">
               <MessageSquare className="w-4 h-4 text-indigo-600" /> Responses
             </h4>
@@ -1153,290 +1422,433 @@ export default function StudentDossierModal({
                           </div>
                         )}
 
-                        {bResponse ? (
-                          <div className="space-y-3">
-                            <div className="p-3 bg-white border border-slate-200 rounded-lg">
-                              <span className="text-[9px] font-bold font-mono uppercase text-slate-400 block mb-1.5 tracking-wider">Response</span>
-                              <div className="font-medium text-slate-800 text-[12px] bg-slate-50 border border-slate-150 p-2.5 rounded">
-                                {bResponse.type === "mc" ? (
-                                  <div className="flex flex-col gap-1">
+                        {(() => {
+                          const possibleQuestionIds: string[] = [];
+                          if (questionDef?.id) possibleQuestionIds.push(questionDef.id);
+                          if (block.singleQuestion?.id) possibleQuestionIds.push(block.singleQuestion.id);
+                          if (block.questionPool?.questions) {
+                            block.questionPool.questions.forEach((q: any) => {
+                              if (q.id) possibleQuestionIds.push(q.id);
+                            });
+                          }
+
+                          let draftText = "";
+                          for (const id of possibleQuestionIds) {
+                            if (attempt?.draftResponses?.[id]) {
+                              draftText = attempt.draftResponses[id];
+                              break;
+                            }
+                          }
+
+                          const gradingStateLabel = getGradingStateLabel(bResponse, draftText);
+
+                          if (bResponse) {
+                            return (
+                              <div className="space-y-3">
+                                <div className="p-3.5 bg-white border border-slate-200 rounded-lg">
+                                  <div className="flex justify-between items-center mb-2.5 pb-2 border-b border-slate-100 flex-wrap gap-2 text-xs">
+                                    <span className="text-[9px] font-bold font-mono uppercase text-slate-400 tracking-wider">Response</span>
                                     <div className="flex items-center gap-1.5 flex-wrap">
-                                      <span className="text-slate-500 font-medium font-sans">Selected Choice:</span>
-                                      <span className="text-slate-900 font-bold bg-white border border-slate-250 px-2 py-0.5 rounded font-mono">
-                                        {resolveMultipleChoiceText(qBlock, bResponse.responseValue) ||
-                                          selectedMultipleChoiceToLetterOrId(questionDef, bResponse.responseValue) ||
-                                          bResponse.responseText ||
-                                          "Selected choice unavailable"}
-                                      </span>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="font-sans leading-relaxed text-slate-800 whitespace-pre-wrap">
-                                    {bResponse.responseValue || (
-                                      <span className="text-slate-400 italic">No response submitted</span>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
+                                      {bResponse.type === "mc" ? (
+                                        <span
+                                          className={`font-mono text-[9px] font-bold px-2 py-0.5 rounded border ${
+                                            bResponse.isCorrect
+                                              ? "bg-emerald-50 text-emerald-800 border-emerald-250"
+                                              : "bg-rose-50 text-rose-800 border-rose-250"
+                                          }`}
+                                        >
+                                          {bResponse.isCorrect ? "Correct" : "Incorrect"}
+                                        </span>
+                                      ) : (
+                                        <span
+                                          className={`font-mono text-[9px] font-bold px-2 py-0.5 rounded border ${
+                                            gradingStateLabel === "Feedback released"
+                                              ? "bg-emerald-600 text-white border-transparent"
+                                              : gradingStateLabel === "Reviewed, not released"
+                                              ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                                              : gradingStateLabel === "Needs teacher review"
+                                              ? "bg-amber-50 text-amber-800 border-amber-250"
+                                              : gradingStateLabel === "AI scored, awaiting teacher review"
+                                              ? "bg-indigo-50 text-indigo-700 border-indigo-200"
+                                              : gradingStateLabel === "Submitted, awaiting AI grading"
+                                              ? "bg-blue-50 text-blue-700 border-blue-200"
+                                              : "bg-slate-100 text-slate-500 border-slate-200"
+                                          }`}
+                                        >
+                                          {gradingStateLabel}
+                                        </span>
+                                      )}
 
-                              {/* Score row */}
-                              <div className="mt-3 flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-slate-100">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  {bResponse.type === "mc" ? (
-                                    <span
-                                      className={`font-mono text-[9px] font-bold px-2 py-0.5 rounded border ${
-                                        bResponse.isCorrect
-                                          ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                                          : "bg-red-50 text-red-800 border-red-200"
-                                      }`}
-                                    >
-                                      {bResponse.isCorrect ? "Correct" : "Incorrect"}
-                                    </span>
-                                  ) : (
-                                    <span
-                                      className={`font-mono text-[9px] font-bold px-2 py-0.5 rounded border ${
-                                        bResponse.aiGrading?.status === "pending"
-                                          ? "bg-slate-100 text-slate-500 border-slate-200"
-                                          : bResponse.aiGrading?.status === "needs_review"
-                                          ? "bg-amber-50 text-amber-800 border-amber-200"
-                                          : bResponse.aiGrading?.status === "failed"
-                                          ? "bg-red-50 text-red-700 border-red-200"
-                                          : "bg-emerald-50 text-emerald-800 border-emerald-200"
-                                      }`}
-                                    >
-                                      {bResponse.aiGrading?.status === "pending"
-                                        ? "AI grading in progress"
-                                        : bResponse.aiGrading?.status === "needs_review"
-                                        ? "Needs review"
-                                        : bResponse.aiGrading?.status === "failed"
-                                        ? "AI grading failed"
-                                        : bResponse.aiGrading?.status === "success"
-                                        ? "AI scored"
-                                        : "Awaiting AI grading"}
-                                    </span>
-                                  )}
+                                      {bResponse.isLowEffort && (
+                                        <span className="bg-rose-50 border border-rose-200 text-rose-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
+                                          Short response flagged
+                                        </span>
+                                      )}
 
-                                  {bResponse.isLowEffort && (
-                                    <span className="bg-rose-50 border border-rose-200 text-rose-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
-                                      Short response flagged
-                                    </span>
-                                  )}
-
-                                  {bResponse.teacherOverride && (
-                                    <span className="bg-indigo-50 border border-indigo-200 text-indigo-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
-                                      Override applied
-                                    </span>
-                                  )}
-
-                                  {(bResponse.feedbackVisibleToStudent || bResponse.aiFeedbackReleasedAt) && (
-                                    <span className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
-                                      Feedback Released
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-[11px] font-mono font-bold text-slate-600">
-                                  {bResponse.score} / {maxPoints} pts
-                                </div>
-                              </div>
-
-                              {/* Low effort detail */}
-                              {bResponse.isLowEffort && (
-                                <div className="mt-3 bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-900 flex items-start gap-2">
-                                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                                  <div>
-                                    <strong className="block text-rose-900 font-bold">Short response flagged</strong>
-                                    <p className="text-xs text-rose-800 leading-relaxed mt-0.5">
-                                      {bResponse.lowEffortReason || "Response was extremely short or lacked meaningful content."}
-                                    </p>
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* AI grading detail */}
-                              {bResponse.type === "sa" && bResponse.aiGrading && (
-                                <div className="mt-3 bg-indigo-50/40 border border-indigo-100 rounded-lg p-3.5 space-y-1.5 text-xs text-indigo-900">
-                                  <div className="flex justify-between items-center text-[10px] uppercase font-mono font-bold text-indigo-600 tracking-wider">
-                                    <span className="flex items-center gap-1.5">
-                                      <Bot className="w-3.5 h-3.5" />
-                                      AI Assessment
-                                    </span>
-                                    {bResponse.aiGrading.confidence !== undefined && (
-                                      <span>Confidence: {Math.round((bResponse.aiGrading.confidence || 0) * 100)}%</span>
-                                    )}
-                                  </div>
-                                  <p className="font-sans leading-relaxed text-indigo-900 font-medium whitespace-pre-wrap text-[11.5px]">
-                                    {bResponse.aiGrading.rationale || "No rationale available."}
-                                  </p>
-                                  {bResponse.aiGrading.rubricBreakdown && (
-                                    <div className="text-[10px] pt-1 text-indigo-800 space-y-1">
-                                      <span className="block text-[9px] text-indigo-600 tracking-wide uppercase font-bold">Rubric breakdown</span>
-                                      {Object.entries(bResponse.aiGrading.rubricBreakdown).map(
-                                        ([criterion, item]: any) => (
-                                          <div
-                                            key={criterion}
-                                            className="flex justify-between bg-white/50 px-2 py-1 rounded"
-                                          >
-                                            <span>{criterion}:</span>
-                                            <span className="font-mono font-bold">
-                                              {item.score} — {item.feedback || "Reviewed"}
-                                            </span>
-                                          </div>
-                                        )
+                                      {bResponse.teacherOverride && (
+                                        <span className="bg-indigo-50 border border-indigo-205 text-indigo-850 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
+                                          Override applied
+                                        </span>
                                       )}
                                     </div>
+                                  </div>
+
+                                  <div className="font-medium text-slate-805 text-[12px] bg-slate-50 border border-slate-150 p-2.5 rounded">
+                                    {bResponse.type === "mc" ? (
+                                      <div className="flex flex-col gap-1">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                          <span className="text-slate-500 font-medium font-sans">Selected Choice:</span>
+                                          <span className="text-slate-900 font-bold bg-white border border-slate-200 px-2 py-0.5 rounded font-mono">
+                                            {resolveMultipleChoiceText(qBlock, bResponse.responseValue) ||
+                                              selectedMultipleChoiceToLetterOrId(questionDef, bResponse.responseValue) ||
+                                              bResponse.responseText ||
+                                              "Selected choice unavailable"}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="font-sans leading-relaxed text-slate-800 whitespace-pre-wrap">
+                                        {bResponse.responseValue || (
+                                          <span className="text-slate-400 italic">No response submitted</span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Score row */}
+                                  <div className="mt-3 flex items-center justify-between flex-wrap gap-2 pt-2 border-t border-slate-100">
+                                    <span className="text-[10px] uppercase font-mono font-bold text-slate-500">
+                                      {bResponse.type === "mc" ? "Auto-graded Score" : "Current Score"}
+                                    </span>
+                                    <div className="text-[11px] font-mono font-bold text-slate-705">
+                                      {bResponse.score} / {maxPoints} pts
+                                    </div>
+                                  </div>
+
+                                  {/* Low effort detail */}
+                                  {bResponse.isLowEffort && (
+                                    <div className="mt-3 bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-900 flex items-start gap-2">
+                                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                                      <div>
+                                        <strong className="block text-rose-900 font-bold">Short response flagged</strong>
+                                        <p className="text-xs text-rose-800 leading-relaxed mt-0.5">
+                                          {bResponse.lowEffortReason || "Response was extremely short or lacked meaningful content."}
+                                        </p>
+                                      </div>
+                                    </div>
                                   )}
-                                </div>
-                              )}
-                            </div>
 
-                            {/* Teacher review panel with direct execution actions */}
-                            <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg space-y-3.5 text-xs">
-                              <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
-                                <span className="font-bold text-slate-700 text-[11px] uppercase tracking-wide">Teacher Review Tooling</span>
-                                {bResponse.type === "sa" && (
-                                  <span className={`text-[10px] font-bold font-mono px-1.5 py-0.5 rounded border ${
-                                    bResponse.feedbackVisibleToStudent || bResponse.aiFeedbackReleasedAt
-                                      ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-                                      : "bg-slate-100 text-slate-650 border-slate-200"
-                                  }`}>
-                                    {bResponse.feedbackVisibleToStudent || bResponse.aiFeedbackReleasedAt ? "Released to Student" : "Draft Feedback"}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                                <div className="sm:col-span-1 space-y-1">
-                                  <label className="text-[9px] font-mono font-bold uppercase text-slate-500 block">Score</label>
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max={maxPoints}
-                                    value={
-                                      overrideScores[bResponse.id] !== undefined
-                                        ? overrideScores[bResponse.id]
-                                        : bResponse.teacherOverride?.score ?? bResponse.score ?? 0
-                                    }
-                                    onChange={(e) =>
-                                      setOverrideScores({
-                                        ...overrideScores,
-                                        [bResponse.id]: Number(e.target.value),
-                                      })
-                                    }
-                                    className="w-full text-xs font-mono font-bold text-center bg-white border border-slate-200 rounded-md p-2 focus:ring-0 focus:outline-none focus:border-slate-400"
-                                  />
-                                </div>
-                                <div className="sm:col-span-3 space-y-1">
-                                  <label className="text-[9px] font-mono font-bold uppercase text-slate-500 block">Teacher notes (private)</label>
-                                  <textarea
-                                    value={
-                                      overrideNotes[bResponse.id] !== undefined
-                                        ? overrideNotes[bResponse.id]
-                                        : bResponse.teacherOverride?.notes ?? bResponse.notes ?? ""
-                                    }
-                                    onChange={(e) =>
-                                      setOverrideNotes({
-                                        ...overrideNotes,
-                                        [bResponse.id]: e.target.value,
-                                      })
-                                    }
-                                    placeholder="Add notes or feedback…"
-                                    rows={2}
-                                    className="w-full text-xs bg-white border border-slate-250 rounded-md p-2 focus:ring-0 focus:outline-none focus:border-slate-400 font-medium placeholder:text-slate-400 leading-normal"
-                                  />
-                                </div>
-                              </div>
-
-                              {/* Student-facing feedback field (for Short Answer) */}
-                              {bResponse.type === "sa" && (
-                                <div className="space-y-1.5 pt-1">
-                                  <label className="text-[9px] font-mono font-bold uppercase text-slate-500 block">
-                                    Student-facing commentary (sent on release)
-                                  </label>
-                                  <textarea
-                                    value={
-                                      editedFeedbacks[bResponse.id] !== undefined
-                                        ? editedFeedbacks[bResponse.id]
-                                        : bResponse.studentFacingFeedback || bResponse.aiFeedback || bResponse.aiGrading?.rationale || ""
-                                    }
-                                    onChange={(e) =>
-                                      setEditedFeedbacks({
-                                        ...editedFeedbacks,
-                                        [bResponse.id]: e.target.value,
-                                      })
-                                    }
-                                    placeholder="Provide encouraging notes, commentary, or grading feedback description for the student..."
-                                    rows={3}
-                                    className="w-full text-xs bg-white border border-slate-200 rounded-md p-2 focus:ring-0 focus:outline-none focus:border-slate-400 font-medium placeholder:text-slate-400 leading-normal"
-                                  />
-                                </div>
-                              )}
-
-                              <div className="flex flex-wrap items-center justify-between pt-2 border-t border-slate-100 gap-2">
-                                <div className="flex gap-2 flex-wrap text-xs">
-                                  {bResponse.type === "sa" && onReviewAction && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        onClick={() => executeReviewAction('approve', bResponse.id)}
-                                        disabled={actionStates[bResponse.id]?.loading || bResponse.aiGrading?.status !== "needs_review"}
-                                        className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:bg-slate-200 text-white text-[10px] font-semibold py-1.5 px-3 rounded flex items-center gap-1 transition"
-                                      >
-                                        Approve AI Score
-                                      </button>
+                                  {/* AI grading detail */}
+                                  {bResponse.type === "sa" && (
+                                    (() => {
+                                      const isPending = actionStates[bResponse.id]?.loading || bResponse.aiGrading?.status === "pending";
+                                      const isFailed = bResponse.aiGrading?.status === "failed";
                                       
-                                      <button
-                                        type="button"
-                                        onClick={() => executeReviewAction('mark-reviewed', bResponse.id)}
-                                        disabled={actionStates[bResponse.id]?.loading}
-                                        className="bg-slate-600 hover:bg-slate-700 disabled:opacity-50 text-white text-[10px] font-semibold py-1.5 px-3 rounded flex items-center gap-1 transition"
-                                      >
-                                        Mark Reviewed
-                                      </button>
+                                      if (isPending) {
+                                        return (
+                                          <div className="mt-3.5 bg-indigo-50/45 border border-indigo-155 rounded-lg p-5 space-y-3 text-xs text-indigo-950 flex flex-col items-center justify-center min-h-[120px]">
+                                            <div className="w-5 h-5 border-2 border-indigo-600 border-t-indigo-200 rounded-full animate-spin"></div>
+                                            <span className="text-[10px] font-mono font-bold tracking-wider text-indigo-650 uppercase">Running AI grading...</span>
+                                          </div>
+                                        );
+                                      }
 
-                                      <button
-                                        type="button"
-                                        onClick={() => executeReviewAction('release-feedback', bResponse.id)}
-                                        disabled={actionStates[bResponse.id]?.loading}
-                                        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-[10px] font-semibold py-1.5 px-3 rounded flex items-center gap-1 transition pointer-events-auto cursor-pointer"
-                                      >
-                                        Release Feedback
-                                      </button>
-                                    </>
+                                      if (isFailed) {
+                                        return (
+                                          <div className="mt-3.5 bg-rose-50 border border-rose-201 rounded-lg p-3.5 space-y-2 text-xs text-rose-955">
+                                            <div className="flex items-start gap-2">
+                                              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                                              <div>
+                                                <strong className="block text-rose-900 font-bold">AI Grading Failed</strong>
+                                                <p className="text-[11px] leading-relaxed text-rose-800 mt-1 whitespace-pre-wrap">
+                                                  {bResponse.aiGrading?.errorMessage || "An unexpected error occurred during automated AI review. You can manually grade the response or retry using the button below."}
+                                                </p>
+                                              </div>
+                                            </div>
+                                            <div className="pt-2 flex justify-end">
+                                              <button
+                                                type="button"
+                                                onClick={() => executeReviewAction('grade', bResponse.id)}
+                                                disabled={actionStates[bResponse.id]?.loading}
+                                                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-[10.5px] font-bold py-1.5 px-3 rounded flex items-center gap-1 transition cursor-pointer"
+                                              >
+                                                Run AI grading
+                                              </button>
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+
+                                      if (bResponse.aiGrading && bResponse.aiGrading.status !== "pending") {
+                                        return (
+                                          <div className="mt-3.5 bg-indigo-50/40 border border-indigo-155 rounded-lg p-3.5 space-y-2 text-xs text-indigo-950">
+                                            <div className="flex justify-between items-center text-[10px] uppercase font-mono font-bold text-indigo-650 tracking-wider border-b border-indigo-100/60 pb-1.5">
+                                              <span className="flex items-center gap-1.5 font-bold">
+                                                <Bot className="w-3.5 h-3.5 text-indigo-505" />
+                                                AI Assessment
+                                              </span>
+                                              {bResponse.aiGrading.confidence !== undefined && (
+                                                <span>Confidence: {Math.round((bResponse.aiGrading.confidence || 0) * 100)}%</span>
+                                              )}
+                                            </div>
+                                            {bResponse.aiGrading.feedback && (
+                                              <div className="mb-2 bg-white/60 p-2.5 border border-indigo-100 rounded text-slate-755">
+                                                <strong className="block text-[9.5px] uppercase font-mono text-indigo-550 mb-0.5">Student-facing Explanation:</strong>
+                                                <p className="font-sans leading-relaxed text-indigo-950 font-medium">{bResponse.aiGrading.feedback}</p>
+                                              </div>
+                                            )}
+                                            <div>
+                                              <strong className="block text-[9.5px] uppercase font-mono text-indigo-550 mb-0.5">Teacher-only Justification / Rationale:</strong>
+                                              <p className="font-sans leading-relaxed text-indigo-950 font-medium whitespace-pre-wrap leading-relaxed text-[11.5px]">
+                                                {bResponse.aiGrading.rationale || "No rationale available."}
+                                              </p>
+                                            </div>
+                                            {bResponse.aiGrading.rubricBreakdown && (
+                                              <div className="text-[10px] pt-1.5 text-indigo-850 space-y-1">
+                                                <span className="block text-[9px] text-indigo-600 tracking-wide uppercase font-bold mb-1.5 border-t border-indigo-100/30 pt-1.5">Rubric breakdown</span>
+                                                {Object.entries(bResponse.aiGrading.rubricBreakdown).map(
+                                                  ([criterion, item]: any) => (
+                                                    <div
+                                                      key={criterion}
+                                                      className="bg-white/50 p-2 border border-indigo-100/20 rounded text-slate-700"
+                                                    >
+                                                      <div className="flex justify-between font-bold text-indigo-950 text-[10.5px]">
+                                                        <span>{criterion}:</span>
+                                                        <span>{item.score} pts</span>
+                                                      </div>
+                                                      {item.feedback && <p className="text-[10px] text-slate-605 leading-relaxed mt-0.5">{item.feedback}</p>}
+                                                    </div>
+                                                  )
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      }
+
+                                      // No AI grading has been run yet
+                                      return (
+                                        <div className="mt-3.5 bg-slate-50 border border-slate-200 rounded-lg p-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs">
+                                          <div className="space-y-0.5">
+                                            <strong className="font-semibold text-slate-800 block text-[11.5px]">AI Grading Available</strong>
+                                            <p className="text-slate-500 text-[10.5px] leading-normal">
+                                              Automate scoring and generate rich student-facing commentary using the rubric for this question.
+                                            </p>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => executeReviewAction('grade', bResponse.id)}
+                                            disabled={actionStates[bResponse.id]?.loading}
+                                            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-[10.5px] font-semibold py-1.5 px-3 rounded shrink-0 transition cursor-pointer"
+                                          >
+                                            Run AI grading
+                                          </button>
+                                        </div>
+                                      );
+                                    })()
                                   )}
                                 </div>
 
-                                <div className="flex items-center gap-2">
-                                  {(saveSuccess[bResponse.id] || actionStates[bResponse.id]?.success) && (
-                                    <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1 bg-emerald-50 border border-emerald-200 px-3 py-1 rounded">
-                                      <Check className="w-3 h-3" /> Saved
-                                    </span>
+                                {/* Teacher review panel with direct execution actions */}
+                                <div className="p-4 bg-slate-50 border border-slate-205 rounded-lg space-y-3.5 text-xs">
+                                  <div className="flex items-center justify-between border-b border-slate-100 pb-1.5">
+                                    <span className="font-bold text-slate-705 text-[11px] uppercase tracking-wide">Teacher Review Tooling</span>
+                                    {bResponse.type === "sa" && (
+                                      (() => {
+                                        const isReleased = !!(bResponse.feedbackReleasedAt || bResponse.aiFeedbackReleasedAt || bResponse.feedbackVisibleToStudent);
+                                        return (
+                                          <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded border ${
+                                            isReleased
+                                              ? "bg-emerald-50 text-emerald-800 border-emerald-250"
+                                              : "bg-slate-100 text-slate-600 border-slate-200"
+                                          }`}>
+                                            {isReleased ? (
+                                              <span>
+                                                Feedback released
+                                                {bResponse.feedbackReleasedAt && (
+                                                  <> on {new Date(bResponse.feedbackReleasedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</>
+                                                )}
+                                              </span>
+                                            ) : (
+                                              "Draft Feedback"
+                                            )}
+                                          </span>
+                                        );
+                                      })()
+                                    )}
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                                    <div className="sm:col-span-1 space-y-1">
+                                      <label className="text-[9px] font-mono font-bold uppercase text-slate-500 block">Score</label>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={maxPoints}
+                                        value={
+                                          overrideScores[bResponse.id] !== undefined
+                                            ? overrideScores[bResponse.id]
+                                            : bResponse.teacherOverride?.score ?? bResponse.score ?? 0
+                                        }
+                                        onChange={(e) =>
+                                          setOverrideScores({
+                                            ...overrideScores,
+                                            [bResponse.id]: Number(e.target.value),
+                                          })
+                                        }
+                                        className="w-full text-xs font-mono font-bold text-center bg-white border border-slate-200 rounded-md p-2 focus:ring-0 focus:outline-none focus:border-slate-400"
+                                      />
+                                    </div>
+                                    <div className="sm:col-span-3 space-y-1">
+                                      <label className="text-[9px] font-mono font-bold uppercase text-slate-505 block">Teacher notes (private)</label>
+                                      <textarea
+                                        value={
+                                          overrideNotes[bResponse.id] !== undefined
+                                            ? overrideNotes[bResponse.id]
+                                            : bResponse.teacherOverride?.notes ?? bResponse.notes ?? ""
+                                        }
+                                        onChange={(e) =>
+                                          setOverrideNotes({
+                                            ...overrideNotes,
+                                            [bResponse.id]: e.target.value,
+                                          })
+                                        }
+                                        placeholder="Add notes or feedback…"
+                                        rows={2}
+                                        className="w-full text-xs bg-white border border-slate-250 rounded-md p-2 focus:ring-0 focus:outline-none focus:border-slate-400 font-medium placeholder:text-slate-400 leading-normal"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {/* Student-facing feedback field (for Short Answer) */}
+                                  {bResponse.type === "sa" && (
+                                    <div className="space-y-1.5 pt-1">
+                                      <label className="text-[9px] font-mono font-bold uppercase text-slate-505 block">
+                                        Student-facing commentary (sent on release)
+                                      </label>
+                                      <textarea
+                                        value={
+                                          editedFeedbacks[bResponse.id] !== undefined
+                                            ? editedFeedbacks[bResponse.id]
+                                            : bResponse.studentFacingFeedback || bResponse.aiFeedback || bResponse.aiGrading?.rationale || ""
+                                        }
+                                        onChange={(e) =>
+                                          setEditedFeedbacks({
+                                            ...editedFeedbacks,
+                                            [bResponse.id]: e.target.value,
+                                          })
+                                        }
+                                        placeholder="Provide encouraging notes, commentary, or grading feedback description for the student..."
+                                        rows={3}
+                                        className="w-full text-xs bg-white border border-slate-200 rounded-md p-2 focus:ring-0 focus:outline-none focus:border-slate-400 font-medium placeholder:text-slate-400 leading-normal"
+                                      />
+                                    </div>
                                   )}
-                                  {actionStates[bResponse.id]?.error && (
-                                    <span className="text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2.5 py-1 rounded">
-                                      {actionStates[bResponse.id]?.error}
-                                    </span>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleSaveOverrideAndNotes(
-                                        bResponse.id,
-                                        maxPoints
-                                      )
-                                    }
-                                    disabled={savingState[bResponse.id] || actionStates[bResponse.id]?.loading}
-                                    className="bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-300 text-white text-[10px] font-bold uppercase py-2 px-4 rounded transition flex items-center gap-1.5 cursor-pointer shadow-sm tracking-wider"
-                                  >
-                                    {savingState[bResponse.id] ? "Saving…" : "Save Grade Override"}
-                                  </button>
+
+                                  <div className="flex flex-wrap items-center justify-between pt-2 border-t border-slate-100 gap-2">
+                                    <div className="flex gap-2 flex-wrap text-xs">
+                                      {bResponse.type === "sa" && onReviewAction && (
+                                        (() => {
+                                          const isReleased = !!(bResponse.feedbackReleasedAt || bResponse.aiFeedbackReleasedAt || bResponse.feedbackVisibleToStudent);
+                                          const isReviewed = !!(bResponse.teacherReviewedAt || (bResponse.teacherOverride?.score !== null && bResponse.teacherOverride?.score !== undefined));
+                                          return (
+                                            <>
+                                              {/* Run AI grading button */}
+                                              {!isReleased && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => executeReviewAction('grade', bResponse.id)}
+                                                  disabled={actionStates[bResponse.id]?.loading}
+                                                  className="bg-slate-101 hover:bg-slate-200 text-slate-800 disabled:opacity-50 text-[10px] font-semibold py-1.5 px-3 rounded flex items-center gap-1 transition cursor-pointer"
+                                                >
+                                                  Run AI grading
+                                                </button>
+                                              )}
+
+                                              {/* Approve AI score button */}
+                                              {bResponse.aiGrading?.status === "success" && !isReviewed && !isReleased && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => executeReviewAction('approve', bResponse.id)}
+                                                  disabled={actionStates[bResponse.id]?.loading}
+                                                  className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[10px] font-semibold py-1.5 px-3 rounded flex items-center gap-1 transition cursor-pointer"
+                                                >
+                                                  Approve AI score
+                                                </button>
+                                              )}
+
+                                              {/* Release feedback button */}
+                                              {isReviewed && !isReleased && (
+                                                <button
+                                                  type="button"
+                                                  onClick={() => executeReviewAction('release-feedback', bResponse.id)}
+                                                  disabled={actionStates[bResponse.id]?.loading}
+                                                  className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-[10px] font-semibold py-1.5 px-3 rounded flex items-center gap-1 transition pointer-events-auto cursor-pointer"
+                                                >
+                                                  Release feedback
+                                                </button>
+                                              )}
+                                            </>
+                                          );
+                                        })()
+                                      )}
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      {(saveSuccess[bResponse.id] || actionStates[bResponse.id]?.success) && (
+                                        <span className="text-[10px] font-bold text-emerald-700 flex items-center gap-1 bg-emerald-50 border border-emerald-250 px-3 py-1 rounded">
+                                          <Check className="w-3 h-3" /> Saved
+                                        </span>
+                                      )}
+                                      {actionStates[bResponse.id]?.error && (
+                                        <span className="text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-205 px-2.5 py-1 rounded">
+                                          {actionStates[bResponse.id]?.error}
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleSaveOverrideAndNotes(
+                                            bResponse.id,
+                                            maxPoints
+                                          )
+                                        }
+                                        disabled={savingState[bResponse.id] || actionStates[bResponse.id]?.loading}
+                                        className="bg-[#0A192F] hover:bg-[#15294b] disabled:bg-slate-300 text-white text-[10px] font-bold uppercase py-2 px-4 rounded transition flex items-center gap-1.5 cursor-pointer shadow-sm tracking-wider"
+                                      >
+                                        {savingState[bResponse.id] ? "Saving…" : "Save teacher review"}
+                                      </button>
+                                    </div>
+                                  </div>
                                 </div>
                               </div>
+                            );
+                          }
+
+                          if (draftText && draftText.trim() !== "") {
+                            return (
+                              <div className="p-3.5 bg-white border border-dashed border-amber-300 rounded-lg shadow-2xs">
+                                <div className="flex justify-between items-center mb-2.5 pb-2 border-b border-slate-100 flex-wrap gap-2">
+                                  <span className="text-[9px] font-bold font-mono uppercase text-amber-600 tracking-wider">Draft Response (Autosaved)</span>
+                                  <span className="text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded font-mono">
+                                    {gradingStateLabel}
+                                  </span>
+                                </div>
+                                <div className="font-sans leading-relaxed text-slate-800 text-xs whitespace-pre-wrap bg-slate-50 border border-slate-150 p-2.5 rounded leading-relaxed">
+                                  {draftText}
+                                </div>
+                                <div className="mt-2.5 text-[10.5px] text-slate-400 font-medium">
+                                  The student has not submitted this answer for grading yet.
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="text-slate-400 text-xs italic bg-slate-50 p-3.5 rounded-lg border border-dashed border-slate-205 flex items-center gap-1.5 font-medium">
+                              No response submitted or drafted yet.
                             </div>
-                          </div>
-                        ) : (
-                          <div className="text-slate-400 text-xs italic bg-slate-50 p-3 rounded-lg border border-dashed border-slate-200 flex items-center gap-1.5 font-medium">
-                            No response submitted yet.
-                          </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     )}
 
@@ -1635,7 +2047,42 @@ export default function StudentDossierModal({
             </div>
           </div>
 
+          </div>
+          </div>
+
         </div>
+
+        {/* Unsaved Changes Discard Confirmation Dialog */}
+        {showDiscardConfirm && (
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-60 animate-fade-in">
+            <div className="bg-white border border-slate-200 text-slate-800 shadow-2xl rounded-xl p-6 w-full max-w-md space-y-4">
+              <h4 className="text-base font-bold text-slate-900">Discard unsaved changes?</h4>
+              <p className="text-sm text-slate-600 leading-relaxed font-semibold">
+                You have unsaved changes to student scores, notes, or feedback. Moving away will discard these changes.
+              </p>
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDiscardConfirm(false)}
+                  className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                >
+                  Keep editing
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDiscardConfirm(false);
+                    onClose();
+                  }}
+                  className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs px-4 py-2 rounded-lg transition-colors cursor-pointer"
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );
