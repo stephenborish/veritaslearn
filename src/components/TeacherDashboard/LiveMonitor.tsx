@@ -13,8 +13,14 @@ import {
   Flag,
   Circle,
   Activity,
+  Bot,
 } from "lucide-react";
 import { motion } from "motion/react";
+import {
+  deriveIntegritySignalSummary,
+  reliabilityLabel,
+  attentionColorClasses,
+} from "../../lib/integritySignals";
 
 // Presence and stagnation constants
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000;   // 2 minutes
@@ -300,7 +306,11 @@ interface LiveMonitorProps {
   studentActivities?: any[];
   lessonVersions?: any[];
   assignments?: any[];
-  onOpenDossier: (studentId: string, lessonId: string) => void;
+  onOpenDossier: (
+    studentId: string,
+    lessonId: string,
+    nav?: { entries: { studentId: string; lessonId: string; label?: string }[]; index: number; label?: string }
+  ) => void;
   onUnlockStudent: (attemptId: string) => void;
 }
 
@@ -568,6 +578,18 @@ export default function LiveMonitor({
     });
   }, [fullRosterRows, trimmedSearch, statusFilter]);
 
+  // Build a student-to-student navigation context from the currently displayed
+  // Lesson Tracking list so the dossier prev/next moves through the same rows.
+  const buildTrackingNav = (currentStudentId: string, fallbackLessonId: string) => {
+    const entries = filteredAndSortedRows.map((row) => ({
+      studentId: row.student.id,
+      lessonId: row.lesson?.id || fallbackLessonId,
+      label: row.student.name || row.student.email || "Student",
+    }));
+    const index = entries.findIndex((e) => e.studentId === currentStudentId);
+    return { entries, index: index < 0 ? 0 : index, label: "Lesson Tracking" };
+  };
+
   // Compute status metrics based on the search/lesson context
   const counts = useMemo(() => {
     // Determine rows matching current lesson & search filter to keep counts contextually accurate
@@ -766,6 +788,12 @@ export default function LiveMonitor({
                 const sLesson = row.lesson;
                 const progressPct = row.progressPct;
                 const currentBlockName = row.currentBlockName;
+                // Shared integrity-engine read for this student's current attempt.
+                const relSummary = deriveIntegritySignalSummary(
+                  latestAttempt ? signals.filter((s) => s.attemptId === latestAttempt.id) : [],
+                  { hasActivityTiming: !!latestAttempt?.activeTimeSpent }
+                );
+                const relColors = attentionColorClasses(relSummary.attentionLevel);
                 const statusBadgeCls = row.isLocked
                   ? "bg-red-50 text-red-700 border-red-200"
                   : row.status === "Completed"
@@ -782,7 +810,10 @@ export default function LiveMonitor({
                     initial={{ opacity: 0.96 }}
                     animate={{ opacity: 1 }}
                     whileHover={{ y: -1 }}
-                    onClick={() => onOpenDossier(sStudent.id, sLesson?.id || (selectedLessonId !== "all" ? selectedLessonId : ""))}
+                    onClick={() => {
+                      const fallbackLessonId = sLesson?.id || (selectedLessonId !== "all" ? selectedLessonId : "");
+                      onOpenDossier(sStudent.id, fallbackLessonId, buildTrackingNav(sStudent.id, fallbackLessonId));
+                    }}
                     className={`bg-white border rounded-lg p-4 shadow-xs hover:shadow transition flex flex-col gap-3 cursor-pointer group relative ${
                       row.isLocked
                         ? "border-amber-300 ring-1 ring-amber-100 bg-amber-50/30"
@@ -901,13 +932,17 @@ export default function LiveMonitor({
                         </span>
                       </div>
                       <div>
-                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Integrity signals</span>
-                        <span className={`font-semibold ${row.signalsSummary.total > 0 ? "text-amber-700" : "text-slate-500"}`}>
-                          {row.signalsSummary.total === 0 ? "None" : `${row.signalsSummary.total} events`}
-                          {row.signalsSummary.fullscreenExits > 0 && (
-                            <span className="text-[8px] text-red-600 block font-bold">{row.signalsSummary.fullscreenExits} exit{row.signalsSummary.fullscreenExits !== 1 ? "s" : ""}</span>
+                        <span className="text-[8px] text-slate-400 uppercase tracking-wider font-bold block">Response reliability</span>
+                        <span className={`font-semibold inline-flex items-center gap-1 ${relColors.text}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${relColors.dot}`} />
+                          {reliabilityLabel(relSummary.responseReliability)}
+                          {relSummary.aiAgentSignalCount > 0 && (
+                            <Bot className="w-3 h-3 text-rose-600" aria-label="Signals of AI Agent Use" />
                           )}
                         </span>
+                        {relSummary.totalSignals > 0 && (
+                          <span className="text-[8px] text-slate-400 block font-bold">{relSummary.totalSignals} activity record{relSummary.totalSignals !== 1 ? "s" : ""}</span>
+                        )}
                       </div>
                     </div>
 
@@ -983,7 +1018,10 @@ export default function LiveMonitor({
                       return (
                         <tr
                           key={sStudent.id + "_" + (latestAttempt ? latestAttempt.id : "none")}
-                          onClick={() => onOpenDossier(sStudent.id, sLesson?.id || (selectedLessonId !== "all" ? selectedLessonId : ""))}
+                          onClick={() => {
+                      const fallbackLessonId = sLesson?.id || (selectedLessonId !== "all" ? selectedLessonId : "");
+                      onOpenDossier(sStudent.id, fallbackLessonId, buildTrackingNav(sStudent.id, fallbackLessonId));
+                    }}
                           className={`hover:bg-slate-50 transition cursor-pointer ${row.isLocked ? "bg-red-50/20" : sStudent.isPreview ? "bg-amber-50/10" : ""}`}
                         >
                           <td className="py-2.5 px-4 whitespace-nowrap">
