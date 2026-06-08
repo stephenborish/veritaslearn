@@ -117,7 +117,7 @@ export function validateCheckpointCompletion(
   const missing: CompletionRequirementMissing[] = [];
   const cpQAsgs = qAsgs.filter((qa: any) => qa.blockId === block.id && qa.checkpointId === checkpoint.id);
   for (const qa of cpQAsgs) {
-    const answered = attemptResponses.some((r: any) => r.questionId === qa.questionId);
+    const answered = attemptResponses.some((r: any) => r.questionId === qa.questionId && (r.type !== 'mc' || r.isComplete !== false));
     if (!answered) {
       missing.push({
         code: 'checkpoint_unanswered',
@@ -141,7 +141,7 @@ export function validateQuestionBlockCompletion(
   const missing: CompletionRequirementMissing[] = [];
   const blockQAsgs = qAsgs.filter((qa: any) => qa.blockId === block.id && !qa.checkpointId);
   for (const qa of blockQAsgs) {
-    const answered = attemptResponses.some((r: any) => r.questionId === qa.questionId);
+    const answered = attemptResponses.some((r: any) => r.questionId === qa.questionId && (r.type !== 'mc' || r.isComplete !== false));
     if (!answered) {
       missing.push({
         code: 'question_unsubmitted',

@@ -56,7 +56,7 @@ function useLiveState<T>(initial: T): [T, (next: T | ((prev: T) => T)) => T, Rea
   return [state, setLive, ref];
 }
 
-function newQuestionTemplate(type: "mc" | "sa"): any {
+function newQuestionTemplate(type: "mc" | "sa", isPractice = false, isCheckpoint = false): any {
   const base = { id: uid("q"), type, stem: "", points: type === "mc" ? 1 : 3 };
   if (type === "mc") {
     const choices = [
@@ -65,7 +65,8 @@ function newQuestionTemplate(type: "mc" | "sa"): any {
       { id: uid("choice"), text: "" },
       { id: uid("choice"), text: "" },
     ];
-    return { ...base, choices, correctChoiceId: choices[0].id, explanation: "" };
+    const defaultAttempts = isCheckpoint ? 2 : (isPractice ? 2 : 1);
+    return { ...base, choices, correctChoiceId: choices[0].id, explanation: "", maxAttempts: defaultAttempts };
   }
   return { ...base, modelAnswer: "", answerKey: "", aiScoringGuidance: "", teacherNotes: "", rubricCategories: [] };
 }
@@ -195,6 +196,9 @@ export default function LessonsBuilder({
   // Briefly highlights a freshly added block so the add feels satisfying.
   const [justAddedBlockId, setJustAddedBlockId] = useState<string | null>(null);
 
+  // Tracks block being deleted for inline confirmation (safely avoiding window.confirm inside iframes)
+  const [deletingBlockId, setDeletingBlockId] = useState<string | null>(null);
+
   const [asgOpensAt, setAsgOpensAt] = useState(getDefaultOpenDate());
   const [asgDueAt, setAsgDueAt] = useState(getDefaultDueDate());
   const [asgClosesAt, setAsgClosesAt] = useState(getDefaultCloseDate());
@@ -226,7 +230,7 @@ export default function LessonsBuilder({
     return {
       ...block,
       questionType: block.questionType || "mc",
-      singleQuestion: newQuestionTemplate(block.questionType || "mc")
+      singleQuestion: newQuestionTemplate(block.questionType || "mc", !!block.isPractice)
     };
   };
 
@@ -253,7 +257,7 @@ export default function LessonsBuilder({
     return {
       ...cp,
       questionType: cp.questionType || "mc",
-      questions: [newQuestionTemplate(cp.questionType || "mc")]
+      questions: [newQuestionTemplate(cp.questionType || "mc", !!cp.isPractice, true)]
     };
   };
 
@@ -448,7 +452,7 @@ export default function LessonsBuilder({
       content: type === "reading" ? "" : undefined,
       questionType: type === "question" ? "mc" : undefined,
       isPractice: type === "question" ? false : undefined,
-      singleQuestion: type === "question" ? newQuestionTemplate("mc") : undefined,
+      singleQuestion: type === "question" ? newQuestionTemplate("mc", false) : undefined,
     };
     // Use functional updater so the new block is appended to the latest state even if a
     // Lexical onChange queued an update that React has not yet flushed.
@@ -498,7 +502,7 @@ export default function LessonsBuilder({
     setCurrentBlocksLive((prev: any[]) =>
       prev.map((block, idx) => {
         if (idx !== index) return block;
-        const currentQuestion = block.singleQuestion || newQuestionTemplate(block.questionType || "mc");
+        const currentQuestion = block.singleQuestion || newQuestionTemplate(block.questionType || "mc", !!block.isPractice);
         const nextQuestion = typeof nextQuestionOrUpdater === "function"
           ? nextQuestionOrUpdater(currentQuestion)
           : nextQuestionOrUpdater;
@@ -617,7 +621,7 @@ export default function LessonsBuilder({
           isPractice: false,
           questionType: "mc",
           numToSelect: 1,
-          questions: [newQuestionTemplate("mc")]
+          questions: [newQuestionTemplate("mc", false, true)]
         };
         return { ...block, videoCheckpoints: [...cps, cp] };
       })
@@ -643,7 +647,7 @@ export default function LessonsBuilder({
         const cps = (block.videoCheckpoints || []).map((cp: any) => {
           if (cp.id !== cpId) return cp;
           const questions = Array.isArray(cp.questions) ? cp.questions : [];
-          const currentQuestion = questions[0] || newQuestionTemplate(cp.questionType || "mc");
+          const currentQuestion = questions[0] || newQuestionTemplate(cp.questionType || "mc", !!cp.isPractice, true);
           const nextQuestion = typeof nextQuestionOrUpdater === "function"
             ? nextQuestionOrUpdater(currentQuestion)
             : nextQuestionOrUpdater;
@@ -2118,6 +2122,7 @@ export default function LessonsBuilder({
                         initial={justAddedBlockId === b.id ? { opacity: 0, y: -4 } : false}
                         animate={justAddedBlockId === b.id ? { opacity: 1, y: 0 } : {}}
                         transition={{ duration: 0.25 }}
+                        onMouseLeave={() => { if (deletingBlockId === b.id) setDeletingBlockId(null); }}
                         className={`group relative rounded border transition cursor-pointer ${isActive ? "bg-[#0A192F] border-[#0A192F] text-white" : justAddedBlockId === b.id ? "bg-emerald-50 border-emerald-300 text-slate-700" : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700"}`}
                       >
                         <button
@@ -2136,16 +2141,55 @@ export default function LessonsBuilder({
                         </button>
 
                         {/* Inline controls on hover */}
-                        <div className={`absolute right-1 top-1 hidden group-hover:flex items-center gap-0.5 ${isActive ? "flex" : ""}`}>
-                          <button type="button" title="Move up" disabled={idx === 0} onClick={(e) => { e.stopPropagation(); moveBlock(idx, "up"); }} className={`p-0.5 rounded disabled:opacity-30 ${isActive ? "text-white/70 hover:text-white" : "text-slate-400 hover:text-slate-700"}`}>
-                            <ArrowUp className="w-3 h-3" />
-                          </button>
-                          <button type="button" title="Move down" disabled={idx === currentBlocks.length - 1} onClick={(e) => { e.stopPropagation(); moveBlock(idx, "down"); }} className={`p-0.5 rounded disabled:opacity-30 ${isActive ? "text-white/70 hover:text-white" : "text-slate-400 hover:text-slate-700"}`}>
-                            <ArrowDown className="w-3 h-3" />
-                          </button>
-                          <button type="button" title="Delete block" onClick={(e) => { e.stopPropagation(); if (window.confirm("Delete this block?")) handleDeleteBlock(idx); }} className="p-0.5 rounded text-red-400 hover:text-red-600">
-                            <Trash className="w-3 h-3" />
-                          </button>
+                        <div className={`absolute right-1 top-1 ${deletingBlockId === b.id ? "flex z-10" : "hidden group-hover:flex"} items-center gap-0.5 ${isActive ? "flex" : ""}`}>
+                          {deletingBlockId === b.id ? (
+                            <div className="flex items-center gap-1 bg-white border border-red-200 rounded shadow-lg px-1.5 py-0.5 text-[10px] select-none text-slate-700 animate-pulse">
+                              <span className="text-red-600 font-bold font-sans tracking-tight">Delete?</span>
+                              <button
+                                type="button"
+                                title="Yes, delete"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteBlock(idx);
+                                  setDeletingBlockId(null);
+                                }}
+                                className="p-0.5 text-emerald-600 hover:bg-emerald-50 rounded transition"
+                              >
+                                <CheckCircle className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Cancel"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeletingBlockId(null);
+                                }}
+                                className="p-0.5 text-slate-400 hover:bg-slate-100 rounded transition"
+                              >
+                                <AlertCircle className="w-3 h-3" />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button type="button" title="Move up" disabled={idx === 0} onClick={(e) => { e.stopPropagation(); moveBlock(idx, "up"); }} className={`p-0.5 rounded disabled:opacity-30 ${isActive ? "text-white/70 hover:text-white" : "text-slate-400 hover:text-slate-700"}`}>
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button type="button" title="Move down" disabled={idx === currentBlocks.length - 1} onClick={(e) => { e.stopPropagation(); moveBlock(idx, "down"); }} className={`p-0.5 rounded disabled:opacity-30 ${isActive ? "text-white/70 hover:text-white" : "text-slate-400 hover:text-slate-700"}`}>
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                title="Delete block"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setDeletingBlockId(b.id);
+                                }}
+                                className="p-0.5 rounded text-red-400 hover:text-red-600 hover:bg-slate-100"
+                              >
+                                <Trash className="w-3 h-3" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </motion.div>
                     );

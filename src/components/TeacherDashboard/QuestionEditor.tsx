@@ -60,6 +60,18 @@ export function validateQuestionClient(q: AnyQuestion, type: "mc" | "sa", graded
       if (!hasCorrect) errors.push("Select exactly one correct answer.");
       if (!(Number(q.points) > 0)) errors.push("Graded questions need a positive point value.");
     }
+    if (q.maxAttempts !== undefined && q.maxAttempts !== null) {
+      if (q.maxAttempts === "") {
+        errors.push("Attempts allowed cannot be blank.");
+      } else {
+        const attemptsVal = Number(q.maxAttempts);
+        if (isNaN(attemptsVal) || attemptsVal <= 0 || !Number.isInteger(attemptsVal)) {
+          errors.push("Attempts allowed must be a positive integer.");
+        } else if (attemptsVal > 5) {
+          errors.push("Attempts allowed cannot exceed 5.");
+        }
+      }
+    }
   } else {
     if (graded) {
       if (!(Number(q.points) > 0)) errors.push("Graded questions need a positive point value.");
@@ -828,6 +840,32 @@ export default function QuestionEditor({
             className={inputCls}
           />
         </div>
+
+        {type === "mc" && (
+          <div className="w-48">
+            <label htmlFor="mc-attempts-allowed-input" className={labelCls}>Attempts allowed</label>
+            <input
+              id="mc-attempts-allowed-input"
+              type="number"
+              min={1}
+              max={5}
+              value={q.maxAttempts !== undefined && q.maxAttempts !== null ? q.maxAttempts : (checkpointId ? 2 : (graded ? 1 : 2))}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === "") {
+                  patch({ maxAttempts: "" });
+                } else {
+                  const num = Number(val);
+                  patch({ maxAttempts: isNaN(num) ? "" : num });
+                }
+              }}
+              className={inputCls}
+            />
+            <p className="text-[10px] text-slate-500 mt-1 leading-normal">
+              Students can try this many times before the question is marked wrong. Max: 5.
+            </p>
+          </div>
+        )}
 
         <div className="flex-1 min-w-0 space-y-1.5">
           {errors.length > 0 ? (

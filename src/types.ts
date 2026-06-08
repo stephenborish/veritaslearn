@@ -126,6 +126,7 @@ export interface QuestionDefinition {
   teacherNotes?: string | RichContent; // SECRET (teacher-only grading notes)
   // --- Common ---
   points: number;
+  maxAttempts?: number; // Teacher-controlled limit for MC attempts
 }
 
 export interface VideoCheckpoint {
@@ -271,6 +272,17 @@ export interface StudentResponse {
   isLowEffort?: boolean;
   /** Human-readable reason for the low-effort flag. Teacher-only. */
   lowEffortReason?: string;
+  attemptsCount?: number;
+  maxAttempts?: number;
+  attemptsRemaining?: number;
+  isComplete?: boolean;
+  attemptsHistory?: {
+    responseValue: string | number;
+    responseText?: string;
+    isCorrect?: boolean;
+    score: number;
+    submittedAt: string;
+  }[];
 }
 
 /** Durable, structured record of an AI grading pass (stored separately from the response). */

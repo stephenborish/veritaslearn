@@ -4196,7 +4196,32 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       declaredType === "mc" ? true : declaredType === "sa" ? false : originalQuestion.type === "mc";
     const isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
 
-    if (!isPracticeQuestion) {
+    const resolvedMaxAttempts = originalQuestion.maxAttempts !== undefined && originalQuestion.maxAttempts !== null && originalQuestion.maxAttempts !== "" ? Number(originalQuestion.maxAttempts) : (checkpoint ? 2 : (isPracticeQuestion ? 2 : 1));
+
+    // Look up any prior response
+    const priorResponse = (db.responses || []).find(
+      (r: any) =>
+        r.attemptId === id &&
+        r.blockId === blockId &&
+        r.questionId === questionId &&
+        (checkpointId ? r.checkpointId === checkpointId : !r.checkpointId)
+    );
+
+    if (priorResponse) {
+      if (!isMC) {
+        // SA questions are single-submission
+        fail(res, "FORBIDDEN", "This question has already been submitted.");
+        return;
+      } else {
+        const priorAttemptsCount = priorResponse.attemptsCount ? Number(priorResponse.attemptsCount) : 1;
+        const isCompleted = priorResponse.isComplete === true;
+        if (isCompleted || priorAttemptsCount >= resolvedMaxAttempts) {
+          fail(res, "FORBIDDEN", "This multiple-choice question is already completed or you have exhausted your attempts.");
+          return;
+        }
+      }
+    } else if (!isPracticeQuestion && !isMC) {
+      // Legacy behavior for SA assessment
       const existsAlready = (db.responses || []).some(
         (r: any) =>
           r.attemptId === id &&
@@ -4210,10 +4235,10 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       }
     }
 
-        // Idempotent: replace any prior response for this exact question (never double-count score).
+    // Idempotent: replace any prior response for this exact question (never double-count score).
     db.responses = db.responses.filter(
       (r: any) =>
-        !(r.attemptId === id && r.blockId === blockId && r.questionId === questionId && (checkpointId ? r.checkpointId === checkpointId : true))
+        !(r.attemptId === id && r.blockId === blockId && r.questionId === questionId && (checkpointId ? r.checkpointId === checkpointId : !r.checkpointId))
     );
 
     const gradingMode = isPracticeQuestion ? "practice" : "assessment";
@@ -4242,11 +4267,39 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
     if (isMC) {
       // MC AUTO-GRADING by stable choice id (scramble-proof; client score is never trusted).
       const { isCorrect } = gradeMc(originalQuestion, responseValue);
+      
+      const priorAttemptsCount = priorResponse?.attemptsCount ? Number(priorResponse.attemptsCount) : 0;
+      const priorHistory = Array.isArray(priorResponse?.attemptsHistory) ? priorResponse.attemptsHistory : [];
+      const attemptsCount = priorAttemptsCount + 1;
+      
+      const historyEntry = {
+        responseValue,
+        responseText: choiceTextById(originalQuestion, responseValue) || responseValue,
+        isCorrect,
+        score: isCorrect ? maxPointsValue : 0,
+        submittedAt: new Date().toISOString()
+      };
+      const attemptsHistory = [...priorHistory, historyEntry];
+      const isComplete = isCorrect || attemptsCount >= resolvedMaxAttempts;
+
       newResponse.isCorrect = isCorrect;
       const calculatedScore = isCorrect ? maxPointsValue : 0;
       newResponse.score = calculatedScore;
       newResponse.pointsEarned = calculatedScore;
       newResponse.responseText = choiceTextById(originalQuestion, responseValue);
+
+      // Custom MC attempts limit recording
+      newResponse.attemptsCount = attemptsCount;
+      newResponse.maxAttempts = resolvedMaxAttempts;
+      newResponse.attemptsRemaining = Math.max(0, resolvedMaxAttempts - attemptsCount);
+      newResponse.isComplete = isComplete;
+      newResponse.attemptsHistory = attemptsHistory;
+
+      // Reveal correctChoiceId and explanation ONLY for practice questions AND once complete/correct.
+      if (isPracticeQuestion && isComplete) {
+        newResponse.correctChoiceId = originalQuestion.correctChoiceId;
+        newResponse.explanation = originalQuestion.explanation;
+      }
 
       db.responses.push(newResponse);
       
@@ -4254,7 +4307,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         const blockObj = db.blocks.find((b: any) => b.id === blockId);
         const titleLabel = blockObj ? blockObj.title : "Lesson Question";
         const checkLabel = checkpointId ? " (Checkpoint)" : "";
-        recordStudentActivity(db, attempt.studentId, "answer_submit", `Submitted Multiple Choice answer for "${titleLabel}"${checkLabel}`, attempt.id, attempt.assignmentId);
+        recordStudentActivity(db, attempt.studentId, "answer_submit", `Submitted Multiple Choice answer for "${titleLabel}"${checkLabel} (Attempt ${attemptsCount}/${resolvedMaxAttempts})`, attempt.id, attempt.assignmentId);
       }
       
       // Write the response-level GradebookEntry
@@ -4268,7 +4321,12 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         gradedImmediate: true,
         isCorrect: feedbackVisibility === "student_visible" ? isCorrect : undefined,
         score: feedbackVisibility === "student_visible" ? newResponse.score : undefined,
-        explanation: feedbackVisibility === "student_visible" ? originalQuestion.explanation : undefined
+        explanation: (feedbackVisibility === "student_visible" && isComplete) ? originalQuestion.explanation : undefined,
+        correctChoiceId: (feedbackVisibility === "student_visible" && isComplete) ? originalQuestion.correctChoiceId : undefined,
+        attemptsCount,
+        maxAttempts: resolvedMaxAttempts,
+        attemptsRemaining: Math.max(0, resolvedMaxAttempts - attemptsCount),
+        isComplete
       });
       return;
     }
@@ -4964,6 +5022,298 @@ app.post("/api/attempts/:id/unlock", requireTeacher, async (req, res) => {
   }
 
   res.json({ success: true, attempt: { id, lockState: null } });
+});
+
+// Teacher: Force submit and grade student attempt marked as draft
+app.post("/api/attempts/:id/force-submit", requireTeacher, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const db = readDb();
+    const now = new Date();
+
+    const attemptIdx = db.attempts.findIndex((a: any) => a.id === id);
+    if (attemptIdx === -1) {
+      fail(res, "NOT_FOUND", "Attempt not found.");
+      return;
+    }
+
+    const attempt = db.attempts[attemptIdx];
+    if (attempt.status === "completed" || attempt.completedAt) {
+      fail(res, "FORBIDDEN", "This attempt is already completed.");
+      return;
+    }
+
+    const lesson = db.lessons.find((l: any) => l.id === attempt.lessonId);
+    if (!lesson) {
+      fail(res, "NOT_FOUND", "Associated lesson configuration missing.");
+      return;
+    }
+
+    // Promote all unsubmitted draft responses to active submitted responses
+    const assignedQuestions = db.questionAssignments.filter((asg: any) => asg.attemptId === id);
+    for (const assignment of assignedQuestions) {
+      const { blockId, checkpointId, questionId } = assignment;
+      
+      const alreadySubmitted = (db.responses || []).some(
+        (r: any) =>
+          r.attemptId === id &&
+          r.blockId === blockId &&
+          r.questionId === questionId &&
+          (checkpointId ? r.checkpointId === checkpointId : !r.checkpointId)
+      );
+
+      if (!alreadySubmitted) {
+        const draftText = attempt.draftResponses?.[questionId] || "";
+        let block: any = null;
+        let checkpoint: any = null;
+        let rawOriginal: any = null;
+
+        if (attempt.lessonVersionId) {
+          const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
+          const resolved = resolveQuestionFromVersion(version, blockId, checkpointId, questionId);
+          if (resolved) {
+            block = resolved.block;
+            rawOriginal = resolved.rawOriginal;
+            if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+              checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+            }
+          }
+        }
+
+        if (!block) {
+          block = db.blocks.find((b: any) => b.id === blockId);
+          if (block) {
+            if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+              checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+              if (checkpoint) rawOriginal = (checkpoint.questions || []).find((q: any) => q.id === questionId);
+            } else {
+              rawOriginal =
+                block.singleQuestion ||
+                (block.questionPool && block.questionPool.questions.find((q: any) => q.id === questionId));
+            }
+          }
+        }
+
+        if (block && rawOriginal) {
+          const originalQuestion = migrateQuestionDefinition(rawOriginal);
+          const declaredType = checkpoint ? checkpoint.questionType : block.questionType;
+          const isMC = declaredType === "mc" ? true : declaredType === "sa" ? false : originalQuestion.type === "mc";
+          const isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
+
+          const gradingMode = isPracticeQuestion ? "practice" : "assessment";
+          const feedbackVisibility = isPracticeQuestion ? "student_visible" : "teacher_only";
+          const gradebookCategory = isPracticeQuestion ? "practice" : "assessment";
+          const maxPointsValue = Number(originalQuestion.points) || 0;
+
+          const newResponse: any = {
+            id: "resp_" + Math.random().toString(36).substring(2, 9),
+            attemptId: id,
+            studentId: attempt.studentId,
+            blockId,
+            checkpointId,
+            questionId,
+            type: isMC ? "mc" : "sa",
+            responseValue: draftText,
+            score: 0,
+            activeTimeSpent: 0,
+            gradingMode,
+            gradebookCategory,
+            maxPoints: maxPointsValue,
+            pointsEarned: 0,
+            feedbackVisibility
+          };
+
+          if (isMC) {
+            const hasDraftValue = draftText !== undefined && draftText !== "";
+            const { isCorrect } = hasDraftValue ? gradeMc(originalQuestion, draftText) : { isCorrect: false };
+            newResponse.isCorrect = isCorrect;
+            const calculatedScore = isCorrect ? maxPointsValue : 0;
+            newResponse.score = calculatedScore;
+            newResponse.pointsEarned = calculatedScore;
+            newResponse.responseText = hasDraftValue ? choiceTextById(originalQuestion, draftText) : "";
+
+            db.responses.push(newResponse);
+            upsertResponseGradebookEntry(newResponse, attempt, "auto_scored", "multiple_choice", undefined, db);
+          } else {
+            const maxPoints = maxPointsValue;
+            const guidanceSnapshot = {
+              modelAnswer: originalQuestion.modelAnswer,
+              answerKey: originalQuestion.answerKey,
+              aiScoringGuidance: originalQuestion.aiScoringGuidance
+            };
+
+            const promptContent = buildShortAnswerPrompt(lesson, originalQuestion, draftText, maxPoints);
+            const newGradingRecord: any = {
+              id: "aigr_" + Math.random().toString(36).substring(2, 9),
+              responseId: newResponse.id,
+              provider: "google",
+              model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+              promptVersion: "2.0",
+              rubricSnapshot: originalQuestion.rubricCategories || [],
+              guidanceSnapshot,
+              inputHash: simpleHash(promptContent),
+              parsedScore: 0,
+              confidence: 0,
+              rationale: "Contacting Veritas AI assessor layer...",
+              rubricBreakdown: {},
+              status: "pending",
+              gradedAt: new Date().toISOString()
+            };
+
+            db.aiGradingRecords.push(newGradingRecord);
+            db.responses.push(newResponse);
+            upsertResponseGradebookEntry(newResponse, attempt, "pending_ai", "ai_short_answer", undefined, db);
+
+            (async () => {
+              try {
+                const ai = getAI();
+                const response = await ai.models.generateContent({
+                  model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+                  contents: promptContent,
+                  config: {
+                    systemInstruction:
+                      "You are Veritas AI, an academic grading assistant. Output strictly valid JSON matching the provided schema. Never include model answers, answer keys, or teacher-only scoring guidance in the student-facing feedback field.",
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                      type: Type.OBJECT,
+                      properties: {
+                        score: { type: Type.NUMBER, description: "Total points earned, clamped to 0..maxScore." },
+                        maxScore: { type: Type.NUMBER, description: "Maximum possible points (equals question max points)." },
+                        feedback: { type: Type.STRING, description: "Student-visible explanation: what was correct, what was missing. Must NOT reproduce the model answer, answer key, or teacher-only guidance." },
+                        rationale: { type: Type.STRING, description: "Teacher-facing justification grounded in the rubric. May reference internal guidance." },
+                        rubricBreakdown: {
+                          type: Type.ARRAY,
+                          description: "Per-rubric-category scores and feedback.",
+                          items: {
+                            type: Type.OBJECT,
+                            properties: {
+                              category: { type: Type.STRING },
+                              score: { type: Type.NUMBER },
+                              maxScore: { type: Type.NUMBER },
+                              feedback: { type: Type.STRING }
+                            },
+                            required: ["category", "score", "feedback"]
+                          }
+                        },
+                        misconceptions: {
+                          type: Type.ARRAY,
+                          description: "Specific misconceptions identified in the response. Empty array if none.",
+                          items: { type: Type.STRING }
+                        },
+                        confidence: { type: Type.NUMBER, description: "0.0..1.0 grading confidence." },
+                        needsTeacherReview: { type: Type.BOOLEAN, description: "True if confidence < 0.75, the answer is ambiguous, or human judgment is needed." },
+                        teacherNotes: { type: Type.STRING, description: "Internal teacher-only notes about grading edge cases or concerns." },
+                        lowEffort: { type: Type.BOOLEAN, description: "True if the response is gibberish, a keyboard smash, extremely short, or makes no genuine academic attempt." }
+                      },
+                      required: ["score", "maxScore", "feedback", "rubricBreakdown", "misconceptions", "confidence", "needsTeacherReview", "teacherNotes", "lowEffort"]
+                    }
+                  }
+                });
+
+                const rawJsonText = (response.text || "").trim();
+                const geminiResult = parseAiGradingJson(rawJsonText);
+
+                const rubricObject: any = {};
+                if (Array.isArray(geminiResult.rubricBreakdown)) {
+                  geminiResult.rubricBreakdown.forEach((item: any) => {
+                    if (item && typeof item.category === "string") {
+                      rubricObject[item.category] = {
+                        score: Number(item.score) || 0,
+                        maxScore: item.maxScore !== undefined ? Number(item.maxScore) : undefined,
+                        feedback: item.feedback || ""
+                      };
+                    }
+                  });
+                }
+
+                const rulesCheck = checkLowEffortRules(draftText);
+                const isLowEffort = rulesCheck.lowEffort || !!geminiResult.lowEffort;
+
+                const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
+                const confidence = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.confidence) || 0, 1));
+                const aiNeedsReview = !!geminiResult.needsTeacherReview;
+                const finalStatus = isLowEffort || confidence < 0.75 || aiNeedsReview ? "needs_review" : "success";
+
+                const studentFeedback = isLowEffort
+                  ? "Your response did not meet the minimum length or structure requirements for grading. Please resubmit with a complete written answer."
+                  : (geminiResult.feedback || "");
+
+                const backDb = readDb();
+                const respIdx = backDb.responses.findIndex((r: any) => r.id === newResponse.id);
+                if (respIdx !== -1) {
+                  backDb.responses[respIdx].aiGrading = {
+                    score: clampedScore,
+                    confidence,
+                    status: finalStatus,
+                    feedback: studentFeedback,
+                    rationale: geminiResult.rationale || "",
+                    rubricBreakdown: rubricObject,
+                    misconceptions: geminiResult.misconceptions || [],
+                    teacherNotes: geminiResult.teacherNotes || "",
+                    lowEffort: isLowEffort,
+                    lowEffortReason: isLowEffort ? "AI and rule checks flagged response as extremely low-effort." : null,
+                    gradedAt: new Date().toISOString()
+                  };
+
+                  if (finalStatus === "success" && !isLowEffort) {
+                    backDb.responses[respIdx].score = clampedScore;
+                    backDb.responses[respIdx].pointsEarned = clampedScore;
+                  } else {
+                    backDb.responses[respIdx].score = 0;
+                    backDb.responses[respIdx].pointsEarned = 0;
+                  }
+
+                  const curAttempt = backDb.attempts.find((a: any) => a.id === id);
+                  if (curAttempt) {
+                    upsertResponseGradebookEntry(backDb.responses[respIdx], curAttempt, finalStatus === "success" && !isLowEffort ? "ai_scored" : "needs_teacher_review", "ai_short_answer", undefined, backDb);
+                    recalculateAttemptScore(id, backDb);
+                  }
+                  await commitDb(backDb);
+                }
+              } catch (aiErr) {
+                console.error("VERITAS Learn - Async force AI grading failed:", aiErr);
+              }
+            })();
+          }
+        }
+      }
+    }
+
+    const completedAt = now.toISOString();
+    db.attempts[attemptIdx].completedAt = completedAt;
+    db.attempts[attemptIdx].status = "completed";
+    db.attempts[attemptIdx].lockState = null;
+    db.attempts[attemptIdx].lockedAt = null;
+    recalculateAttemptScore(id, db);
+
+    recordStudentActivity(db, attempt.studentId, "lesson_complete", `Attempt was forced complete by a teacher.`, attempt.id, attempt.assignmentId);
+
+    const assignmentId = attempt.assignmentId ||
+      (db.lessonAssignments || []).find((la: any) => la.lessonId === attempt.lessonId)?.id;
+    if (assignmentId) {
+      const gbIdx = (db.gradebookEntries || []).findIndex(
+        (e: any) => e.assignmentId === assignmentId && e.studentId === attempt.studentId
+      );
+      if (gbIdx !== -1) {
+        const hasPendingAi = (db.gradebookEntries[gbIdx].aiPendingCount || 0) > 0;
+        const needsReview = db.gradebookEntries[gbIdx].teacherReviewRequired;
+        if (!hasPendingAi && !needsReview) {
+          db.gradebookEntries[gbIdx].status = 'completed';
+        } else if (hasPendingAi) {
+          db.gradebookEntries[gbIdx].status = 'pending_ai';
+        } else {
+          db.gradebookEntries[gbIdx].status = 'needs_teacher_review';
+        }
+        db.gradebookEntries[gbIdx].completedAt = completedAt;
+        db.gradebookEntries[gbIdx].updatedAt = completedAt;
+      }
+    }
+
+    await commitDb(db);
+    res.json({ success: true, message: "Attempt successfully force submitted." });
+  } catch (err) {
+    sendAppError(res, err);
+  }
 });
 
 // ==========================================

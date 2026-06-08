@@ -18,6 +18,7 @@ import {
   Bot,
   Info,
   Activity,
+  Send,
 } from "lucide-react";
 
 interface StudentDossierModalProps {
@@ -37,6 +38,7 @@ interface StudentDossierModalProps {
   onOverrideSave: (responseId: string, score: number, notes: string) => Promise<void>;
   onReviewAction?: (action: 'approve' | 'mark-reviewed' | 'release-feedback' | 'grade', responseId: string, payload?: any) => Promise<void>;
   onUnlockStudent?: (attemptId: string) => void;
+  onForceSubmitStudent?: (attemptId: string) => Promise<void>;
 }
 
 function formatVideoTime(seconds: number): string {
@@ -330,6 +332,94 @@ function renderChoicesWithGrades(question: any, studentValue: any) {
   );
 }
 
+function renderMCAttemptsHistory(response: any, question: any) {
+  if (!response || response.type !== "mc") return null;
+
+  const attemptsCount = response.attemptsCount ?? 1;
+  const maxAttempts = response.maxAttempts ?? (question?.maxAttempts ?? 1);
+  const history = Array.isArray(response.attemptsHistory) ? response.attemptsHistory : [];
+
+  return (
+    <div className="mt-4 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3 max-w-xl">
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2 flex-wrap justify-between">
+        <div className="flex items-center gap-1.5">
+          <Activity className="w-4 h-4 text-slate-500" />
+          <span className="text-[10px] font-bold font-mono uppercase text-slate-500 tracking-wider">
+            MC Attempts & Selection Breakdown
+          </span>
+        </div>
+        <div className="text-[10px] font-mono font-bold text-slate-500">
+          Attempts: <span className="text-slate-800 font-bold">{attemptsCount}</span> / {maxAttempts}
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        {history.length > 0 ? (
+          history.map((attempt: any, idx: number) => {
+            const letter = String.fromCharCode(65 + (question?.choices?.findIndex((c: any) => String(c.id) === String(attempt.responseValue)) ?? 0));
+            const resolvedLetter = question?.choices?.some((c: any) => String(c.id) === String(attempt.responseValue)) ? letter : "?";
+            const choiceText = attempt.responseText || "Unknown Selection";
+
+            return (
+              <div
+                key={idx}
+                className="flex items-center justify-between text-xs p-2.5 rounded-lg bg-white border border-slate-100 gap-3 shadow-2xs"
+              >
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <span className="font-mono text-[10px] font-bold bg-slate-100 text-slate-600 w-5 h-5 rounded-full flex items-center justify-center shrink-0">
+                    {idx + 1}
+                  </span>
+                  <div className="flex items-center gap-1.5 truncate">
+                    <span className="font-mono font-bold text-slate-900 border border-slate-200 px-1.5 py-0.5 rounded bg-slate-55 text-[10px]">
+                      Choice {resolvedLetter}
+                    </span>
+                    <span className="text-slate-600 truncate">{choiceText}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span
+                    className={`font-mono text-[8.5px] font-bold px-1.5 py-0.5 rounded border ${
+                      attempt.isCorrect
+                        ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                        : "bg-rose-50 text-rose-800 border-rose-250"
+                    }`}
+                  >
+                    {attempt.isCorrect ? "Correct" : "Incorrect"}
+                  </span>
+                  <span className="font-mono text-slate-500 text-[10px] font-bold">
+                    {attempt.score ?? 0} pts
+                  </span>
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div className="text-[11px] text-slate-500 italic pl-1">
+            No detailed attempts history recorded. Single attempt submitted: Choice {selectedMultipleChoiceToLetterOrId(question, response.responseValue)} ({response.isCorrect ? "Correct" : "Incorrect"}).
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-between items-center bg-white border border-slate-150 rounded-lg p-2.5 mt-2 text-xs shadow-2xs">
+        <span className="font-mono text-[10px] font-bold uppercase text-slate-400">Final Question Outcome</span>
+        <div className="flex items-center gap-2">
+          <span
+            className={`font-mono text-[9px] font-bold px-2 py-0.5 rounded border ${
+              response.isCorrect
+                ? "bg-emerald-50 text-emerald-800 border-emerald-250"
+                : "bg-rose-50 text-rose-800 border-rose-250"
+            }`}
+          >
+            {response.isCorrect ? "Correct" : "Incorrect"}
+          </span>
+          <span className="font-mono font-bold text-slate-700">{response.score ?? 0} pts (Final Score)</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function selectedMultipleChoiceToLetterOrId(question: any, value: any): string {
   if (value === undefined || value === null) return "";
   const v = String(value);
@@ -428,6 +518,7 @@ export default function StudentDossierModal({
   onOverrideSave,
   onReviewAction,
   onUnlockStudent,
+  onForceSubmitStudent,
 }: StudentDossierModalProps) {
   const [overrideScores, setOverrideScores] = useState<{ [id: string]: number }>({});
   const [overrideNotes, setOverrideNotes] = useState<{ [id: string]: string }>({});
@@ -435,6 +526,22 @@ export default function StudentDossierModal({
   const [saveSuccess, setSaveSuccess] = useState<{ [id: string]: boolean }>({});
   const [reviewedSignals, setReviewedSignals] = useState<Set<string>>(new Set());
   const [unlocking, setUnlocking] = useState<boolean>(false);
+  const [isForceSubmitting, setIsForceSubmitting] = useState<boolean>(false);
+
+  const handleForceSubmit = async () => {
+    if (!attempt || !onForceSubmitStudent) return;
+    const confirmMsg = "Are you sure you want to force submit this student's draft attempt? This will submit and grade all current draft answers and mark the lesson as completed.";
+    if (!window.confirm(confirmMsg)) return;
+
+    setIsForceSubmitting(true);
+    try {
+      await onForceSubmitStudent(attempt.id);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsForceSubmitting(false);
+    }
+  };
 
   // AI-Review-integrated states in dossier side panel
   const [editedFeedbacks, setEditedFeedbacks] = useState<{ [id: string]: string }>({});
@@ -865,6 +972,18 @@ export default function StudentDossierModal({
               <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded border ${statusBadge}`}>
                 {statusLabel}
               </span>
+              {!isCompleted && onForceSubmitStudent && (
+                <button
+                  type="button"
+                  onClick={handleForceSubmit}
+                  disabled={isForceSubmitting}
+                  className="bg-indigo-600 font-sans text-[10px] uppercase tracking-wider text-white font-bold hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed hover:shadow-xs px-2.5 py-1.5 rounded transition duration-150 flex items-center gap-1 cursor-pointer"
+                  title="Grades any unsaved student drafts and completes the attempt."
+                >
+                  <Send className="w-2.5 h-2.5" />
+                  {isForceSubmitting ? "Submitting..." : "Force Submit & Grade Draft"}
+                </button>
+              )}
               {attempt.isPreviewAttempt && (
                 <span className="bg-amber-100 text-amber-800 text-[9px] font-mono font-bold border border-amber-200 px-1.5 py-0.5 rounded tracking-wide uppercase">
                   Teacher Preview
@@ -936,6 +1055,32 @@ export default function StudentDossierModal({
 
           {/* Summary Section */}
           <div ref={summaryRef} id="section-summary" className="space-y-6 scroll-mt-6">
+
+          {/* Draft banner */}
+          {attempt && !isCompleted && (
+            <div className="bg-indigo-50 border border-indigo-200 p-4 rounded-lg flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-start gap-2.5">
+                <Clock className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+                <div>
+                  <h5 className="text-sm font-bold text-indigo-900">Attempt in progress (Draft status)</h5>
+                  <p className="text-xs text-indigo-800 font-medium mt-0.5 leading-relaxed">
+                    This student's work is currently marked as a draft. You can force submit and grade their current progress, promoting any unsaved, autosaved, or draft answers to final submissions.
+                  </p>
+                </div>
+              </div>
+              {onForceSubmitStudent && (
+                <button
+                  type="button"
+                  onClick={handleForceSubmit}
+                  disabled={isForceSubmitting}
+                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white font-bold text-xs uppercase tracking-wide px-4 py-2 rounded-lg transition shadow-sm cursor-pointer flex items-center gap-1.5 shrink-0 border border-indigo-500 font-sans"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  {isForceSubmitting ? "Submitting..." : "Force Submit & Grade Draft"}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Locked attempt banner */}
           {attempt.lockState === "locked_awaiting_teacher" && (
@@ -1414,8 +1559,9 @@ export default function StudentDossierModal({
 
                         {/* MCQ choices with grades in side panel */}
                         {questionDef?.type === "mc" && (
-                          <div className="p-1">
+                          <div className="p-1 space-y-4">
                             {renderChoicesWithGrades(questionDef, bResponse?.responseValue)}
+                            {bResponse && renderMCAttemptsHistory(bResponse, questionDef)}
                           </div>
                         )}
 
@@ -1492,6 +1638,23 @@ export default function StudentDossierModal({
                                       {bResponse.teacherOverride && (
                                         <span className="bg-indigo-50 border border-indigo-205 text-indigo-850 text-[9px] font-mono font-bold px-2 py-0.5 rounded">
                                           Override applied
+                                        </span>
+                                      )}
+
+                                      {bResponse.type !== "mc" && sSignals.some((s) => {
+                                        const t = (s.eventType || "").toLowerCase();
+                                        return (
+                                          t.includes("blur") ||
+                                          t.includes("visibility") ||
+                                          t.includes("focus") ||
+                                          t.includes("copy") ||
+                                          t.includes("paste") ||
+                                          t.includes("fullscreen")
+                                        );
+                                      }) && (
+                                        <span className="bg-amber-100 border border-amber-300 text-amber-900 text-[9px] font-mono font-bold px-2 py-0.5 rounded flex items-center gap-1 shadow-2xs" title="Browser focus loss or copy-paste events recorded.">
+                                          <ShieldAlert className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                                          Integrity Signal
                                         </span>
                                       )}
                                     </div>
@@ -1833,9 +1996,27 @@ export default function StudentDossierModal({
                               <div className="p-3.5 bg-white border border-dashed border-amber-300 rounded-lg shadow-2xs">
                                 <div className="flex justify-between items-center mb-2.5 pb-2 border-b border-slate-100 flex-wrap gap-2">
                                   <span className="text-[9px] font-bold font-mono uppercase text-amber-600 tracking-wider">Draft Response (Autosaved)</span>
-                                  <span className="text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded font-mono">
-                                    {gradingStateLabel}
-                                  </span>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded font-mono">
+                                      {gradingStateLabel}
+                                    </span>
+                                    {questionDef?.type !== "mc" && sSignals.some((s) => {
+                                      const t = (s.eventType || "").toLowerCase();
+                                      return (
+                                        t.includes("blur") ||
+                                        t.includes("visibility") ||
+                                        t.includes("focus") ||
+                                        t.includes("copy") ||
+                                        t.includes("paste") ||
+                                        t.includes("fullscreen")
+                                      );
+                                    }) && (
+                                      <span className="bg-amber-100 border border-amber-300 text-amber-900 text-[9px] font-mono font-bold px-2 py-0.5 rounded flex items-center gap-1 shadow-2xs" title="Browser focus loss or copy-paste events recorded.">
+                                        <ShieldAlert className="w-2.5 h-2.5 text-amber-605 shrink-0" />
+                                        Integrity Signal
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                                 <div className="font-sans leading-relaxed text-slate-800 text-xs whitespace-pre-wrap bg-slate-50 border border-slate-150 p-2.5 rounded leading-relaxed">
                                   {draftText}
@@ -1920,8 +2101,9 @@ export default function StudentDossierModal({
 
                                       {/* MCQ Choices representation */}
                                       {questionDef && questionDef.type === "mc" && (
-                                        <div className="p-1">
+                                        <div className="p-1 space-y-4">
                                           {renderChoicesWithGrades(questionDef, cr.responseValue)}
+                                          {renderMCAttemptsHistory(cr, questionDef)}
                                         </div>
                                       )}
 
@@ -1966,6 +2148,22 @@ export default function StudentDossierModal({
                                           {cr.teacherOverride && (
                                             <span className="bg-indigo-50 border border-indigo-100 text-indigo-800 px-2 py-0.5 rounded">
                                               Override applied
+                                            </span>
+                                          )}
+                                          {cr.type !== "mc" && sSignals.some((s) => {
+                                            const t = (s.eventType || "").toLowerCase();
+                                            return (
+                                              t.includes("blur") ||
+                                              t.includes("visibility") ||
+                                              t.includes("focus") ||
+                                              t.includes("copy") ||
+                                              t.includes("paste") ||
+                                              t.includes("fullscreen")
+                                            );
+                                          }) && (
+                                            <span className="bg-amber-100 border border-amber-300 text-amber-900 px-2 py-0.5 rounded flex items-center gap-1 font-mono text-[9px] font-bold" title="Browser focus loss or copy-paste events recorded.">
+                                              <ShieldAlert className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                                              Integrity Signal
                                             </span>
                                           )}
                                         </div>

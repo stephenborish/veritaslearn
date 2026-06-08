@@ -447,7 +447,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
 
   // Handle external value and documentKey changes
   useEffect(() => {
-    if (!editor) return;
+    if (!editor || !editor.commands) return;
 
     if (docKeyChanged) {
       lastEmittedRef.current = null;
@@ -537,7 +537,7 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
           ? "border-blue-500 ring-2 ring-blue-500/20 shadow-blue-50/50"
           : "border-slate-200 hover:border-slate-300"
     }`}>
-      {!disabled && editor && (
+      {!disabled && editor && editor.commands && (
         <>
           <div className="bg-slate-50 border-b border-slate-200 px-2 py-2 flex flex-wrap items-center gap-0.5 select-none text-slate-800">
             <Btn title="Undo" onClick={() => editor.chain().focus().undo().run()}><Undo size={16} /></Btn>
@@ -706,19 +706,19 @@ export const RichContentEditor: React.FC<RichContentEditorProps> = ({
  
       <div 
         onClick={() => {
-          if (!disabled && editor) {
+          if (!disabled && editor && editor.commands) {
             editor.commands.focus();
           }
         }}
         className={`p-3 relative cursor-text select-text flex flex-col ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`}
       >
-        {editor && (
+        {editor && editor.commands && (
           <EditorContent
             editor={editor}
             className={`w-full h-full flex-1 flex flex-col ${compactHeight ? "min-h-[60px]" : "min-h-[150px]"}`}
           />
         )}
-        {editor && editor.isEmpty && (
+        {editor && editor.commands && editor.isEmpty && (
           <div className="absolute top-3 left-3 text-slate-400 pointer-events-none text-sm leading-relaxed select-none">{placeholder}</div>
         )}
       </div>

@@ -18,11 +18,13 @@ export interface LearnMCQuestionProps {
   /** When submitted, the choices lock and the selection is shown as final. */
   isSubmitted?: boolean;
   /**
-   * Practice-only correctness for the *selected* choice. Never reveals which other
-   * choice is correct — only whether the student's own pick was right. Omitted
-   * entirely for assessment questions so correctness is never shown.
-   */
+    * Practice-only correctness for the *selected* choice. Never reveals which other
+    * choice is correct — only whether the student's own pick was right. Omitted
+    * entirely for assessment questions so correctness is never shown.
+    */
   selectedCorrect?: boolean;
+  /** Explicitly revealed correct choice ID (revealed only upon question completion). */
+  correctChoiceId?: string;
 }
 
 /**
@@ -38,6 +40,7 @@ export function LearnMCQuestion({
   onSelectChoice,
   isSubmitted,
   selectedCorrect,
+  correctChoiceId,
 }: LearnMCQuestionProps) {
   const reduceMotion = useReducedMotion();
 
@@ -48,9 +51,20 @@ export function LearnMCQuestion({
         const isSelected =
           selectedChoiceId !== undefined && String(selectedChoiceId) === String(choice.id);
 
-        // Practice correctness applies only to the selected choice after submission.
-        const showCorrect = isSubmitted && isSelected && selectedCorrect === true;
-        const showIncorrect = isSubmitted && isSelected && selectedCorrect === false;
+        // If correct choice ID is explicitly provided (after question completion):
+        const hasRevealedCorrect = correctChoiceId !== undefined && correctChoiceId !== null && correctChoiceId !== "";
+        const isThisChoiceCorrect = hasRevealedCorrect && String(choice.id) === String(correctChoiceId);
+
+        let showCorrect = false;
+        let showIncorrect = false;
+
+        if (hasRevealedCorrect) {
+          showCorrect = isSubmitted && isThisChoiceCorrect;
+          showIncorrect = isSubmitted && isSelected && !isThisChoiceCorrect;
+        } else {
+          showCorrect = isSubmitted && isSelected && selectedCorrect === true;
+          showIncorrect = isSubmitted && isSelected && selectedCorrect === false;
+        }
 
         return (
           <motion.button

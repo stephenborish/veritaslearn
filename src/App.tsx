@@ -476,6 +476,28 @@ export default function App() {
     }
   };
 
+  // Force Submit & Grade any started draft attempt
+  const handleForceSubmitStudent = async (attemptId: string) => {
+    const token = await getFreshToken();
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/attempts/${attemptId}/force-submit`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        fetchLmsPayload(currentUser, token);
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to force submit student attempt.");
+      }
+    } catch (e) {
+      console.error("Error force submitting attempt:", e);
+    }
+  };
+
   // Launch Focus player — pass assignmentId so the server can verify eligibility
   // and tie the attempt to the correct assignment record.
   const handleLaunchStudentPlayer = async (lessonId: string, assignmentId?: string) => {
@@ -955,6 +977,7 @@ export default function App() {
           onOverrideSave={handleOverrideScore}
           onReviewAction={handleReviewAction}
           onUnlockStudent={handleUnlockStudent}
+          onForceSubmitStudent={handleForceSubmitStudent}
           onClose={() => setActiveDossier(null)}
         />
       )}

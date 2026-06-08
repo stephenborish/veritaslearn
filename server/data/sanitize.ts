@@ -265,6 +265,24 @@ export function sanitizeResponseForStudent(r: any): any {
     teacherReleased ||
     (isPractice && (feedbackVis === "student_visible" || feedbackVis === "immediate"));
 
+  // Ensure secret MC helper properties are pruned for assessments
+  if (!isPractice || !feedbackAllowed) {
+    delete safe.correctChoiceId;
+    delete safe.explanation;
+  }
+
+  // Scrub history items to prevent leaking correctness markers in assessment mode
+  if (Array.isArray(safe.attemptsHistory)) {
+    safe.attemptsHistory = safe.attemptsHistory.map((h: any) => {
+      const cloned = { ...h };
+      if (!isPractice || !feedbackAllowed) {
+        delete cloned.isCorrect;
+        delete cloned.score;
+      }
+      return cloned;
+    });
+  }
+
   // Assessment responses never expose scoring, correctness, AI grading, rubric
   // breakdowns, rationale, teacher notes, or feedback in the student payload.
   // Students see only that the response was submitted for teacher review.

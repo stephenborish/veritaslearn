@@ -26,6 +26,8 @@ export interface SaFeedbackData {
 export interface McFeedback {
   correct: boolean;
   desc?: string;
+  correctChoiceId?: string;
+  explanation?: string;
 }
 
 export interface LearnQuestionCardProps {
@@ -42,6 +44,14 @@ export interface LearnQuestionCardProps {
   // MC
   selectedChoiceId?: string;
   onSelectChoice?: (id: string) => void;
+  correctChoiceId?: string;
+  attemptsState?: {
+    attemptsCount: number;
+    maxAttempts: number;
+    attemptsRemaining: number;
+    isComplete: boolean;
+    isCorrect: boolean;
+  };
 
   // SA
   saValue?: string;
@@ -95,6 +105,8 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
     mcFeedback,
     saGradingState = "unsent",
     saFeedback,
+    correctChoiceId,
+    attemptsState,
   } = props;
 
   const reduceMotion = useReducedMotion();
@@ -138,6 +150,30 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
           </span>
         ) : null}
 
+        {isMc && (() => {
+          const max = attemptsState?.maxAttempts ?? question.maxAttempts ?? (isPractice ? (question.checkpointId ? 2 : 2) : 1);
+          const remaining = attemptsState?.attemptsRemaining ?? max;
+          const completed = attemptsState?.isComplete;
+          const correct = attemptsState?.isCorrect;
+
+          return (
+            <span className={cn(
+              "text-xs font-semibold border rounded-full px-2.5 py-0.5 inline-flex items-center gap-1 font-mono transition-all duration-200",
+              completed
+                ? correct
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-rose-50 text-rose-700 border-rose-200"
+                : "bg-amber-50 text-amber-700 border-amber-200"
+            )}>
+              {completed
+                ? correct
+                  ? "Completed · Correct"
+                  : "Completed · Incorrect"
+                : `${remaining} of ${max} attempts remaining`}
+            </span>
+          );
+        })()}
+
         <span className="text-sm text-slate-400 w-full sm:w-auto sm:ml-1">{MODE_HELPER[mode]}</span>
       </div>
 
@@ -161,6 +197,7 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
             onSelectChoice={onSelectChoice}
             isSubmitted={isSubmitted}
             selectedCorrect={selectedCorrect}
+            correctChoiceId={correctChoiceId}
           />
         ) : (
           <LearnSAQuestion
@@ -175,26 +212,39 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
       {/* Action / status */}
       <div className="mt-6">
         {!isSubmitted ? (
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={isSaving || !canSubmit}
-            className={cn(
-              "learn-focusable inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold transition-colors duration-150 outline-none",
-              "focus-visible:ring-4 focus-visible:ring-indigo-500/30",
-              canSubmit && !isSaving
-                ? "bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer shadow-sm"
-                : "bg-slate-100 text-slate-400 cursor-not-allowed",
+          <div className="space-y-4">
+            {isMc && attemptsState && attemptsState.attemptsCount > 0 && (
+              <div className="bg-amber-50 border border-amber-200 text-slate-700 rounded-2xl p-4 text-sm flex items-start gap-3">
+                <RefreshCw className="w-5 h-5 shrink-0 text-amber-600 mt-0.5" />
+                <div className="space-y-1">
+                  <span className="font-semibold text-amber-800 block">Not quite. Try again!</span>
+                  <span className="text-slate-600 leading-relaxed block">
+                    You have used <strong>{attemptsState.attemptsCount}</strong> of <strong>{attemptsState.maxAttempts}</strong> attempts. You have <strong>{attemptsState.attemptsRemaining}</strong> attempts remaining before your final answer is scored.
+                  </span>
+                </div>
+              </div>
             )}
-          >
-            {isSaving ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin" /> Submitting…
-              </>
-            ) : (
-              "Submit"
-            )}
-          </button>
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={isSaving || !canSubmit}
+              className={cn(
+                "learn-focusable inline-flex items-center justify-center gap-2 rounded-xl px-6 py-3 text-sm font-semibold transition-colors duration-150 outline-none",
+                "focus-visible:ring-4 focus-visible:ring-indigo-500/30",
+                canSubmit && !isSaving
+                  ? "bg-indigo-600 text-white hover:bg-indigo-700 cursor-pointer shadow-sm"
+                  : "bg-slate-100 text-slate-400 cursor-not-allowed",
+              )}
+            >
+              {isSaving ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" /> Submitting…
+                </>
+              ) : (
+                "Submit"
+              )}
+            </button>
+          </div>
         ) : (
           <SubmittedState
             isMc={isMc}

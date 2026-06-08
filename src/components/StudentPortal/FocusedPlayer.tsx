@@ -89,7 +89,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [saText, setSaText] = useState<{ [qId: string]: string }>({});
   const [submittedLocal, setSubmittedLocal] = useState<{ [qId: string]: boolean }>({});
   const [savingResponse, setSavingResponse] = useState<{ [qId: string]: boolean }>({});
-  const [feedbackState, setFeedbackState] = useState<{ [qId: string]: { correct: boolean; desc?: string } }>({});
+  const [feedbackState, setFeedbackState] = useState<{ [qId: string]: { correct: boolean; desc?: string; correctChoiceId?: string; explanation?: string } }>({});
 
   // SA autosave state per question
   const [saAutosave, setSaAutosave] = useState<{ [qId: string]: AutosaveState }>({});
@@ -97,6 +97,16 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [saGradingState, setSaGradingState] = useState<{ [qId: string]: SaGradingState }>({});
   // SA AI feedback data per question (practice only, after grading completes)
   const [saFeedback, setSaFeedback] = useState<{ [qId: string]: SaFeedbackData }>({});
+  // MCQ Attempts tracking state
+  const [mcAttemptsState, setMcAttemptsState] = useState<{
+    [qId: string]: {
+      attemptsCount: number;
+      maxAttempts: number;
+      attemptsRemaining: number;
+      isComplete: boolean;
+      isCorrect: boolean;
+    }
+  }>({});
   const draftSaveTimers = useRef<{ [qId: string]: ReturnType<typeof setTimeout> }>({});
   const latestDraftClientUpdatedAtRef = useRef<{ [qId: string]: string }>({});
 
@@ -196,13 +206,26 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const localFeed: any = {};
       const localSaGrading: { [qId: string]: SaGradingState } = {};
       const localSaFeedback: { [qId: string]: SaFeedbackData } = {};
+      const localMcAttempts: any = {};
 
       data.responses.forEach((r: any) => {
-        localSub[r.questionId] = true;
         if (r.type === "mc") {
+          const isComplete = r.isComplete !== false;
+          localSub[r.questionId] = isComplete;
           setSelectedMC((prev: any) => ({ ...prev, [r.questionId]: r.responseValue }));
-          localFeed[r.questionId] = { correct: r.isCorrect };
+          localFeed[r.questionId] = { correct: r.isCorrect, desc: r.explanation, correctChoiceId: r.correctChoiceId };
+          
+          if (r.attemptsCount !== undefined) {
+            localMcAttempts[r.questionId] = {
+              attemptsCount: r.attemptsCount,
+              maxAttempts: r.maxAttempts,
+              attemptsRemaining: r.attemptsRemaining,
+              isComplete: r.isComplete,
+              isCorrect: r.isCorrect
+            };
+          }
         } else {
+          localSub[r.questionId] = true;
           setSaText((prev: any) => ({ ...prev, [r.questionId]: r.responseValue }));
 
           const gradingMode = r.gradingMode || r.gradebookCategory || "assessment";
@@ -234,6 +257,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setFeedbackState(localFeed);
       setSaGradingState(localSaGrading);
       setSaFeedback(localSaFeedback);
+      setMcAttemptsState(localMcAttempts);
 
       // Restore SA drafts — prefer server-persisted drafts (cross-device), fall back to localStorage.
       const serverDrafts: Record<string, string> = data.attempt.draftResponses || {};
@@ -975,7 +999,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         return;
       }
 
-      setSubmittedLocal((prev: any) => ({ ...prev, [questionId]: true }));
+      const isComplete = data.isComplete !== false;
+      setSubmittedLocal((prev: any) => ({ ...prev, [questionId]: isComplete }));
       setSaAutosave((prev: any) => ({ ...prev, [questionId]: "idle" }));
 
       localStorage.removeItem(`veritas_draft_${attemptId}_${questionId}`);
@@ -987,8 +1012,20 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       if (data.gradedImmediate) {
         setFeedbackState((prev: any) => ({
           ...prev,
-          [questionId]: { correct: data.isCorrect, desc: data.explanation },
+          [questionId]: { correct: data.isCorrect, desc: data.explanation, correctChoiceId: data.correctChoiceId },
         }));
+        if (data.attemptsCount !== undefined) {
+          setMcAttemptsState((prev: any) => ({
+            ...prev,
+            [questionId]: {
+              attemptsCount: data.attemptsCount,
+              maxAttempts: data.maxAttempts,
+              attemptsRemaining: data.attemptsRemaining,
+              isComplete: data.isComplete,
+              isCorrect: data.isCorrect
+            }
+          }));
+        }
       } else {
         // SA response: determine practice vs assessment from the block to set initial grading state
         const block = blocks.find((b: any) => b.id === blockId);
@@ -1054,99 +1091,6 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setResolvedVideoUrl("");
     }
   }, [blocks, currentBlockIndex]);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center font-sans">
-        <RefreshCw className="w-7 h-7 animate-spin text-indigo-500 mb-3" />
-        <span className="text-sm font-medium text-slate-500">Loading your lesson…</span>
-      </div>
-    );
-  }
-
-  const activeBlock = blocks[currentBlockIndex];
-  const totalBlocks = blocks.length;
-
-  const studentProgression = useMemo(() => {
-    if (!blocks || blocks.length === 0) return { completed: 0, total: 0, percent: 0 };
-    
-    let totalStepsCount = 0;
-    let completedStepsCount = 0;
-    
-    blocks.forEach((b: any, idx: number) => {
-      // 1. Add the block itself
-      totalStepsCount++;
-      const blockStatus = getBlockStatus(b, idx);
-      const isBlockCompleted = blockStatus === "completed" || blockStatus === "current_complete";
-      if (isBlockCompleted) {
-        completedStepsCount++;
-      } else if (idx === currentBlockIndex && b.type === "video") {
-        // Partial video watched credit
-        const dur = b.duration ?? b.videoDuration ?? 0;
-        const furthest = attemptData?.furthestVideoTimestamps?.[b.id] || 0;
-        if (dur > 0 && furthest >= dur * 0.9) {
-          completedStepsCount++;
-        }
-      }
-      
-      // 2. Add checkpoints if video
-      if (b.type === "video" && b.videoCheckpoints && b.videoCheckpoints.length > 0) {
-        b.videoCheckpoints.forEach((cp: any) => {
-          totalStepsCount++;
-          const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
-          if (allAnswered || idx < currentBlockIndex) {
-            completedStepsCount++;
-          }
-        });
-      }
-    });
-    
-    const percent = totalStepsCount > 0 ? Math.round((completedStepsCount / totalStepsCount) * 100) : 0;
-    return { completed: completedStepsCount, total: totalStepsCount, percent };
-  }, [blocks, currentBlockIndex, submittedLocal, attemptData, assignments]);
-
-  const progressPercent = studentProgression.percent;
-  const assignedSet = assignments.filter((asg: any) => asg.blockId === activeBlock?.id);
-  const isLastBlock = currentBlockIndex === totalBlocks - 1;
-
-  // Determine next-button disabled reason
-  const getNextBlockedReason = (): string | null => {
-    if (!activeBlock) return null;
-    if (activeBlock.type === "question") {
-      const blockAssignments = assignments.filter((a: any) => a.blockId === activeBlock.id);
-      const anyUnsubmitted = blockAssignments.some((a: any) => !submittedLocal[a.questionId]);
-      if (anyUnsubmitted) return "Submit your response to continue.";
-    }
-    if (activeBlock.type === "video") {
-      if (activeBlock.videoCheckpoints && activeBlock.videoCheckpoints.length > 0) {
-        const anyCpIncomplete = activeBlock.videoCheckpoints.some((cp: any) => {
-          if (cp.isRequired) {
-            const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
-            return !allAnswered;
-          }
-          return false;
-        });
-        if (anyCpIncomplete) {
-          return "Answer all checkpoint questions to continue.";
-        }
-      }
-
-      const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
-      const duration = activeBlock.duration ?? activeBlock.videoDuration;
-      if (restrictSeeking && duration) {
-        const requiredSeconds = duration * 0.9;
-        const furthestWatch = attemptData?.furthestVideoTimestamps?.[activeBlock.id] || 0;
-        if (furthestWatch < requiredSeconds) {
-          return "Finish the video to continue.";
-        }
-      }
-    }
-    if (activeCheckpoint) {
-      const allAnswered = activeCheckpoint.questions.every((q: any) => submittedLocal[q.id]);
-      if (!allAnswered) return "Answer all checkpoint questions to continue.";
-    }
-    return null;
-  };
 
   const getBlockStatus = (block: any, idx: number) => {
     if (!block) return "locked";
@@ -1238,6 +1182,101 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
     return "locked";
   };
+
+  const studentProgression = useMemo(() => {
+    if (!blocks || blocks.length === 0) return { completed: 0, total: 0, percent: 0 };
+    
+    let totalStepsCount = 0;
+    let completedStepsCount = 0;
+    
+    blocks.forEach((b: any, idx: number) => {
+      // 1. Add the block itself
+      totalStepsCount++;
+      const blockStatus = getBlockStatus(b, idx);
+      const isBlockCompleted = blockStatus === "completed" || blockStatus === "current_complete";
+      if (isBlockCompleted) {
+        completedStepsCount++;
+      } else if (idx === currentBlockIndex && b.type === "video") {
+        // Partial video watched credit
+        const dur = b.duration ?? b.videoDuration ?? 0;
+        const furthest = attemptData?.furthestVideoTimestamps?.[b.id] || 0;
+        if (dur > 0 && furthest >= dur * 0.9) {
+          completedStepsCount++;
+        }
+      }
+      
+      // 2. Add checkpoints if video
+      if (b.type === "video" && b.videoCheckpoints && b.videoCheckpoints.length > 0) {
+        b.videoCheckpoints.forEach((cp: any) => {
+          totalStepsCount++;
+          const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
+          if (allAnswered || idx < currentBlockIndex) {
+            completedStepsCount++;
+          }
+        });
+      }
+    });
+    
+    const percent = totalStepsCount > 0 ? Math.round((completedStepsCount / totalStepsCount) * 100) : 0;
+    return { completed: completedStepsCount, total: totalStepsCount, percent };
+  }, [blocks, currentBlockIndex, submittedLocal, attemptData, assignments]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center font-sans">
+        <RefreshCw className="w-7 h-7 animate-spin text-indigo-500 mb-3" />
+        <span className="text-sm font-medium text-slate-500">Loading your lesson…</span>
+      </div>
+    );
+  }
+
+  const activeBlock = blocks[currentBlockIndex];
+  const totalBlocks = blocks.length;
+
+  const progressPercent = studentProgression.percent;
+  const assignedSet = assignments.filter((asg: any) => asg.blockId === activeBlock?.id);
+  const isLastBlock = currentBlockIndex === totalBlocks - 1;
+
+  // Determine next-button disabled reason
+  const getNextBlockedReason = (): string | null => {
+    if (!activeBlock) return null;
+    if (activeBlock.type === "question") {
+      const blockAssignments = assignments.filter((a: any) => a.blockId === activeBlock.id);
+      const anyUnsubmitted = blockAssignments.some((a: any) => !submittedLocal[a.questionId]);
+      if (anyUnsubmitted) return "Submit your response to continue.";
+    }
+    if (activeBlock.type === "video") {
+      if (activeBlock.videoCheckpoints && activeBlock.videoCheckpoints.length > 0) {
+        const anyCpIncomplete = activeBlock.videoCheckpoints.some((cp: any) => {
+          if (cp.isRequired) {
+            const allAnswered = cp.questions?.every((q: any) => submittedLocal[q.id]);
+            return !allAnswered;
+          }
+          return false;
+        });
+        if (anyCpIncomplete) {
+          return "Answer all checkpoint questions to continue.";
+        }
+      }
+
+      const restrictSeeking = attemptData?.lesson?.settings?.restrictSeeking ?? true;
+      const duration = activeBlock.duration ?? activeBlock.videoDuration;
+      if (restrictSeeking && duration) {
+        const requiredSeconds = duration * 0.9;
+        const furthestWatch = attemptData?.furthestVideoTimestamps?.[activeBlock.id] || 0;
+        if (furthestWatch < requiredSeconds) {
+          return "Finish the video to continue.";
+        }
+      }
+    }
+    if (activeCheckpoint) {
+      const allAnswered = activeCheckpoint.questions.every((q: any) => submittedLocal[q.id]);
+      if (!allAnswered) return "Answer all checkpoint questions to continue.";
+    }
+    return null;
+  };
+
+
 
   const nextBlockedReason = getNextBlockedReason();
 
@@ -1903,6 +1942,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                   mcFeedback={feedbackState[q.id]}
                                   saGradingState={resolveSaState(q.id, cpIsPractice, isSubmitted)}
                                   saFeedback={saFeedback[q.id]}
+                                  attemptsState={mcAttemptsState[q.id]}
+                                  correctChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
                                 />
                               </motion.div>
                             </AnimatePresence>
@@ -2012,6 +2053,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                         mcFeedback={feedbackState[q.id]}
                         saGradingState={resolveSaState(q.id, isPracticeBlock, isSubmitted)}
                         saFeedback={saFeedback[q.id]}
+                        attemptsState={mcAttemptsState[q.id]}
+                        correctChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
                       />
                     </div>
                   );
