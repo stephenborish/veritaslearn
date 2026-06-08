@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { safeCheckpointLabel } from '../../lib/dataIntegrity';
+import { deriveStudentAssignmentSummary } from '../../lib/teacherAnalytics';
 
 interface TimelineStep {
   id: string;
@@ -26,6 +27,7 @@ interface StepStatus {
   entry?: any;
   attempt?: any;
   draftText?: string;
+  markers?: any[];
 }
 
 interface TimelineRow {
@@ -37,6 +39,8 @@ interface TimelineRow {
   completedSteps: number;
   overallEntry?: any;
   historicalTrend: number[];
+  summary?: any;
+  rowOnlyMarkers?: any[];
 }
 
 interface UseTimelineAlignmentProps {
@@ -88,6 +92,35 @@ function getPointsFromSnapshot(snapshotBlocks: any[], step: any): number {
     }
   }
   return step.points;
+}
+
+function isMarkerForCell(marker: any, step: TimelineStep, cellResponse: any): boolean {
+  if (cellResponse && marker.responseId === cellResponse.id) {
+    return true;
+  }
+  if (cellResponse && marker.questionId === cellResponse.questionId) {
+    return true;
+  }
+  if (marker.stepId) {
+    if (step.checkpointId) {
+      const stepIdStr = `${step.blockId}:${step.checkpointId}`;
+      if (marker.stepId === stepIdStr || marker.stepId === step.checkpointId) {
+        return true;
+      }
+    } else {
+      if (marker.stepId === step.blockId) {
+        return true;
+      }
+    }
+  }
+  if (marker.blockId && marker.blockId === step.blockId) {
+    if (step.checkpointId) {
+      return marker.stepId === step.checkpointId || marker.stepId === `${step.blockId}:${step.checkpointId}`;
+    } else {
+      return !marker.stepId?.includes(':') && !marker.stepId?.startsWith('checkpoint');
+    }
+  }
+  return false;
 }
 
 export function useTimelineAlignment({
@@ -443,20 +476,46 @@ export function useTimelineAlignment({
     const pastAssignments = sortedAssignments.slice(0, 5).reverse();
 
     return displayStudents.map((student): TimelineRow => {
-      const steps = timelineSteps.map((step) =>
-        evaluateStepStatus(student.id, step)
-      );
+      // Build canonical student integrity/attention summary for the row
+      const assignment = selectedAssignmentId
+        ? assignments.find((asg) => asg.id === selectedAssignmentId)
+        : null;
+
+      const summary = deriveStudentAssignmentSummary({
+        student,
+        lesson: { id: selectedLessonId },
+        assignment,
+        blocks,
+        attempts: filteredAttempts,
+        responses: filteredResponses,
+        signals,
+        lessonVersions,
+        gradebookResponseEntries,
+      });
+
+      // Map cells and their markers
+      const steps = timelineSteps.map((step) => {
+        const cell = evaluateStepStatus(student.id, step);
+        const cellMarkers = (summary.markers || []).filter((marker) =>
+          isMarkerForCell(marker, step, cell.response)
+        );
+        return {
+          ...cell,
+          markers: cellMarkers,
+        };
+      });
 
       const overallSignals = (signals || []).filter(
         (s) => s.studentId === student.id && s.lessonId === selectedLessonId
       );
-      const overallSeverity = overallSignals.some((s) => s.severity === 'high')
-        ? 'high'
-        : overallSignals.some((s) => s.severity === 'medium')
-        ? 'medium'
-        : overallSignals.length > 0
-        ? 'low'
-        : 'none';
+      
+      // Use attention level from our canonical summary for overallSeverity
+      const overallSeverity = summary?.integrity?.attentionLevel || 'none';
+
+      // Distinguish row-level only markers (those that do not map to any specific cell)
+      const rowOnlyMarkers = (summary?.markers || []).filter(
+        (marker) => !timelineSteps.some((step, sIdx) => isMarkerForCell(marker, step, steps[sIdx]?.response))
+      );
 
       const needsReviewCount = steps.filter(
         (s) => s.status === 'needs_teacher_review' || s.status === 'pending_ai'
@@ -500,6 +559,8 @@ export function useTimelineAlignment({
         completedSteps,
         overallEntry,
         historicalTrend,
+        summary,
+        rowOnlyMarkers,
       };
     });
   }, [
@@ -513,6 +574,7 @@ export function useTimelineAlignment({
     gradebookEntries,
     gradebookResponseEntries,
     assignments,
+    lessonVersions,
   ]);
 
   // 4. Class Averages

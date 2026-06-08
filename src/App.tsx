@@ -70,6 +70,7 @@ export default function App() {
   const [activeStudentAttempt, setActiveStudentAttempt] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
   const [joinFeedback, setJoinFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [gradebookAssignmentId, setGradebookAssignmentId] = useState<string | null>(null);
 
   // Listen to Firebase Auth state change dynamically (Durable Auth Persistence)
   useEffect(() => {
@@ -900,7 +901,10 @@ export default function App() {
                   lessonVersions={lessonVersions}
                   idToken={idToken}
                   onOpenDossier={(req) => setActiveDossier(req)}
-                  onOpenGradebook={() => setActiveTab("gradebook")}
+                  onOpenGradebook={(assignmentId) => {
+                    setGradebookAssignmentId(assignmentId);
+                    setActiveTab("gradebook");
+                  }}
                 />
               )}
 
@@ -973,6 +977,8 @@ export default function App() {
                      idToken={idToken}
                      onRefresh={() => fetchLmsPayload(currentUser)}
                      gradebookEntries={gradebookEntries} lessonVersions={lessonVersions}
+                      initialAssignmentId={gradebookAssignmentId}
+                      onSelectedAssignmentChange={setGradebookAssignmentId}
                    />
                  )
                )}

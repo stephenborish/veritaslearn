@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { RichContentRenderer, getPlainText } from "../RichContent/RichContentRenderer";
 import { safeScore, safeText } from "../../lib/dataIntegrity";
 import {
@@ -45,6 +45,20 @@ function resolveMultipleChoiceText(block: any, responseValue: any): string | nul
   return null;
 }
 
+function getHighestCellMarker(markers: any[]) {
+  if (!markers || markers.length === 0) return null;
+  // AI agent use is the absolute highest priority cell marker
+  const aiMarker = markers.find((m: any) => m.type === "ai_agent");
+  if (aiMarker) return aiMarker;
+  const highMarker = markers.find((m: any) => m.level === "high");
+  if (highMarker) return highMarker;
+  const modMarker = markers.find((m: any) => m.level === "moderate");
+  if (modMarker) return modMarker;
+  const lowMarker = markers.find((m: any) => m.level === "low" || m.level === "info");
+  if (lowMarker) return lowMarker;
+  return markers[0];
+}
+
 interface GradebookProps {
   students: any[];
   lessons: any[];
@@ -58,6 +72,8 @@ interface GradebookProps {
   idToken?: string | null;
   onRefresh?: () => void;
   lessonVersions?: any[];
+  initialAssignmentId?: string | null;
+  onSelectedAssignmentChange?: (assignmentId: string | null) => void;
 }
 
 export default function TimelineGradebook({
@@ -72,7 +88,9 @@ export default function TimelineGradebook({
   signals = [],
   idToken = null,
   onRefresh,
-  lessonVersions = []
+  lessonVersions = [],
+  initialAssignmentId = null,
+  onSelectedAssignmentChange
 }: GradebookProps) {
   const [showPreviewAttempts, setShowPreviewAttempts] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -85,9 +103,18 @@ export default function TimelineGradebook({
     }).sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [assignments, lessons]);
 
-  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(
-    assignmentOptions.length > 0 ? assignmentOptions[0].id : null
-  );
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState<string | null>(() => {
+    if (initialAssignmentId && assignmentOptions.some(a => a.id === initialAssignmentId)) {
+      return initialAssignmentId;
+    }
+    return assignmentOptions.length > 0 ? assignmentOptions[0].id : null;
+  });
+
+  useEffect(() => {
+    if (initialAssignmentId && assignmentOptions.some(a => a.id === initialAssignmentId)) {
+      setSelectedAssignmentId(initialAssignmentId);
+    }
+  }, [initialAssignmentId, assignmentOptions]);
 
   const selectedAssignment = assignmentOptions.find(a => a.id === selectedAssignmentId);
   const selectedLessonId = selectedAssignment?.lessonId;
@@ -207,7 +234,11 @@ export default function TimelineGradebook({
             <select 
               className="appearance-none pl-3 pr-10 py-2 bg-slate-50 border border-slate-200 rounded text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer shadow-sm"
               value={selectedAssignmentId || ""}
-              onChange={(e) => setSelectedAssignmentId(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedAssignmentId(val);
+                onSelectedAssignmentChange?.(val);
+              }}
             >
               {assignmentOptions.length === 0 && <option value="">No Assignments found</option>}
               {assignmentOptions.map(a => (
@@ -337,9 +368,33 @@ export default function TimelineGradebook({
                                 )}
                                 {row.overallSeverity !== 'none' && (
                                   <span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded shadow-sm border ${
-                                     row.overallSeverity === 'high' ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'
-                                  }`}>
-                                    <ShieldAlert className="w-3 h-3" /> Signals
+                                     row.summary?.integrity?.aiAgentSignalCount > 0
+                                       ? 'bg-rose-50 text-rose-700 border-rose-200 animate-pulse'
+                                       : row.overallSeverity === 'high'
+                                       ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                       : row.overallSeverity === 'moderate'
+                                       ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                       : 'bg-slate-50 text-slate-600 border-slate-200'
+                                  }`}
+                                  title={row.summary?.integrity?.topReasons?.join(', ')}
+                                  >
+                                    {row.summary?.integrity?.aiAgentSignalCount > 0 ? (
+                                      <>
+                                        <Bot className="w-3 h-3 shrink-0" /> Signals of AI Agent Use
+                                      </>
+                                    ) : row.overallSeverity === 'high' ? (
+                                      <>
+                                        <AlertTriangle className="w-3 h-3 shrink-0" /> High attention
+                                      </>
+                                    ) : row.overallSeverity === 'moderate' ? (
+                                      <>
+                                        <AlertCircle className="w-3 h-3 shrink-0" /> Review suggested
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ShieldAlert className="w-3 h-3 shrink-0" /> Low attention
+                                      </>
+                                    )}
                                   </span>
                                 )}
                               </div>
@@ -388,41 +443,54 @@ export default function TimelineGradebook({
                         </div>
                       </td>
 
-                      {row.steps.map((cell, idx) => (
-                        <td 
-                           key={idx} 
-                           className="py-2 px-3 border-r border-slate-100 cursor-pointer hover:bg-slate-100/50 transition relative group/cell"
-                           onClick={() => setSelectedCell({ studentId: row.student.id, stepId: timelineSteps[idx].id })}
-                        >
-                           <div className="flex flex-col gap-1.5">
-                              <div className="flex items-center justify-between gap-1">
-                                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border shadow-sm select-none ${getColorClasses(cell.color)}`}>
-                                    {cell.label}
-                                 </span>
-                                 {cell.signalSeverity !== 'none' && (
-                                    <ShieldAlert className={`w-3.5 h-3.5 shrink-0 ${cell.signalSeverity === 'high' ? 'text-rose-500 animate-pulse' : 'text-amber-500'}`} />
-                                 )}
-                              </div>
-                              
-                              <div className="flex items-center justify-between min-h-[16px]">
-                                {cell.score !== null ? (
-                                   <span className="text-[11px] text-slate-600 font-mono font-bold bg-slate-50 px-1 rounded select-none">
-                                     {safeScore(cell.score, cell.maxScore)}
+                      {row.steps.map((cell, idx) => {
+                        const highestCellMarker = cell.markers && cell.markers.length > 0 ? getHighestCellMarker(cell.markers) : null;
+                        const cellTitle = highestCellMarker ? `${highestCellMarker.label}: ${highestCellMarker.reason}` : undefined;
+                        return (
+                          <td 
+                             key={idx} 
+                             className="py-2 px-3 border-r border-slate-100 cursor-pointer hover:bg-slate-100/50 transition relative group/cell"
+                             onClick={() => setSelectedCell({ studentId: row.student.id, stepId: timelineSteps[idx].id })}
+                             title={cellTitle}
+                          >
+                             <div className="flex flex-col gap-1.5">
+                                <div className="flex items-center justify-between gap-1">
+                                   <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border shadow-sm select-none ${getColorClasses(cell.color)}`}>
+                                      {cell.label}
                                    </span>
-                                ) : (
-                                   <span className="text-[10px] text-slate-300 font-mono select-none">—</span>
-                                )}
+                                   {highestCellMarker && (
+                                      highestCellMarker.type === "ai_agent" ? (
+                                         <Bot className="w-3.5 h-3.5 shrink-0 text-red-500 animate-pulse" />
+                                      ) : highestCellMarker.level === "high" ? (
+                                         <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-red-500" />
+                                      ) : highestCellMarker.level === "moderate" ? (
+                                         <AlertCircle className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+                                      ) : (
+                                         <ShieldAlert className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                                      )
+                                   )}
+                                </div>
                                 
-                                {cell.status === 'needs_teacher_review' && (
-                                   <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                                )}
-                              </div>
-                           </div>
-                           
-                           {/* Tooltip hint on hover */}
-                           <div className="absolute inset-0 ring-2 ring-indigo-500 ring-inset opacity-0 group-hover/cell:opacity-100 pointer-events-none rounded transition-opacity" />
-                        </td>
-                      ))}
+                                <div className="flex items-center justify-between min-h-[16px]">
+                                  {cell.score !== null ? (
+                                     <span className="text-[11px] text-slate-600 font-mono font-bold bg-slate-50 px-1 rounded select-none">
+                                       {safeScore(cell.score, cell.maxScore)}
+                                     </span>
+                                  ) : (
+                                     <span className="text-[10px] text-slate-300 font-mono select-none">—</span>
+                                  )}
+                                  
+                                  {cell.status === 'needs_teacher_review' && (
+                                     <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                  )}
+                                </div>
+                             </div>
+                             
+                             {/* Tooltip hint on hover */}
+                             <div className="absolute inset-0 ring-2 ring-indigo-500 ring-inset opacity-0 group-hover/cell:opacity-100 pointer-events-none rounded transition-opacity" />
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
@@ -603,31 +671,95 @@ export default function TimelineGradebook({
                      </div>
                    )}
 
-                   {/* Integrity Signals */}
+                   {/* Integrity Attention Markers & Signal Clusters */}
+                   {activeDrawerStepData.markers && activeDrawerStepData.markers.length > 0 && (
+                     <div className="space-y-4">
+                       {activeDrawerStepData.markers.map((marker: any, mIdx: number) => {
+                         const colorMap = {
+                           high: { text: "text-red-900 bg-red-50 border-red-200 shadow-red-100", headerBg: "bg-red-100/50 border-red-200" },
+                           moderate: { text: "text-amber-900 bg-amber-50 border-amber-200 shadow-amber-100", headerBg: "bg-amber-100/50 border-amber-200" },
+                           low: { text: "text-slate-800 bg-slate-50 border-slate-200 shadow-slate-100", headerBg: "bg-slate-200/50 border-slate-200" },
+                           info: { text: "text-slate-800 bg-slate-50 border-slate-200 shadow-slate-100", headerBg: "bg-slate-200/50 border-slate-200" },
+                           none: { text: "text-slate-800 bg-slate-50 border-slate-200 shadow-slate-100", headerBg: "bg-slate-200/50 border-slate-200" }
+                         };
+                         const currentStyles = colorMap[marker.level as keyof typeof colorMap] || colorMap.low;
+                         const isAi = marker.type === "ai_agent";
+                         
+                         return (
+                           <div key={marker.id || mIdx} className={`border rounded-xl overflow-hidden shadow-sm ${currentStyles.text}`}>
+                             <div className={`px-4 py-3 flex items-center gap-2 border-b ${currentStyles.headerBg}`}>
+                               {isAi ? (
+                                 <Bot className="w-4 h-4 text-red-500 animate-pulse" />
+                               ) : marker.level === "high" ? (
+                                 <AlertTriangle className="w-4 h-4 text-rose-500" />
+                               ) : marker.level === "moderate" ? (
+                                 <AlertCircle className="w-4 h-4 text-amber-500" />
+                               ) : (
+                                 <ShieldAlert className="w-4 h-4 text-slate-500" />
+                               )}
+                               <h4 className="text-sm font-bold">
+                                 {isAi ? "Signals of AI Agent Use" : marker.label}
+                               </h4>
+                               <span className="ml-auto text-[10px] font-bold uppercase tracking-widest bg-white border px-2 py-0.5 rounded shadow-sm">
+                                 {isAi ? "AI Agent Use" : marker.shortLabel || marker.level}
+                               </span>
+                             </div>
+                             <div className="p-4 space-y-2 bg-white/50">
+                               <div className="text-sm font-semibold">{marker.reason}</div>
+                               {marker.suggestedAction && (
+                                 <div className="text-xs text-slate-600 bg-white/80 p-2.5 rounded border border-slate-100 mt-2">
+                                   <strong>Teacher Guidance:</strong> {marker.suggestedAction}
+                                 </div>
+                               )}
+                               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 mt-2 pt-2 border-t border-slate-100/65">
+                                 {marker.evidenceStrength && (
+                                   <span>
+                                     <strong>Evidence:</strong> <span className="capitalize">{marker.evidenceStrength}</span>
+                                   </span>
+                                 )}
+                                 {marker.dataCompleteness && (
+                                   <span>
+                                     <strong>Pacing Completeness:</strong> <span className="capitalize">{marker.dataCompleteness}</span>
+                                   </span>
+                                 )}
+                                 {marker.count && (
+                                   <span>
+                                     <strong>Events:</strong> {marker.count}
+                                   </span>
+                                 )}
+                               </div>
+                             </div>
+                           </div>
+                         );
+                       })}
+                     </div>
+                   )}
+
+                   {/* Collapsible Raw Activity Records */}
                    {activeDrawerStepData.signals && activeDrawerStepData.signals.length > 0 && (
-                     <div className={`border rounded-xl overflow-hidden shadow-sm ${activeDrawerStepData.signalSeverity === 'high' ? 'bg-rose-50/30 border-rose-200' : 'bg-amber-50/30 border-amber-200'}`}>
-                        <div className={`px-4 py-3 flex items-center gap-2 border-b ${activeDrawerStepData.signalSeverity === 'high' ? 'bg-rose-50 border-rose-100' : 'bg-amber-50 border-amber-100'}`}>
-                           {getSignalIcon(activeDrawerStepData.signalSeverity)}
-                           <h4 className={`text-sm font-bold ${activeDrawerStepData.signalSeverity === 'high' ? 'text-rose-900' : 'text-amber-900'}`}>Integrity Signals</h4>
-                           <span className={`ml-auto text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded ${activeDrawerStepData.signalSeverity === 'high' ? 'text-rose-700 bg-rose-100' : 'text-amber-700 bg-amber-100'}`}>Teacher Only</span>
-                        </div>
-                        <div className="p-4 space-y-3">
-                           <p className="text-xs text-slate-600 mb-3 bg-white p-3 rounded border border-slate-200 shadow-sm">
-                             <Info className="w-4 h-4 inline-block mr-1.5 text-indigo-500 align-text-bottom" />
-                             VERITAS found activity records that may need review. This is not automatic proof of misconduct. Review the answer, timing, and activity before making a decision. Grades are never changed automatically.
+                     <details className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm group">
+                       <summary className="bg-slate-50 px-4 py-3 flex items-center gap-2 cursor-pointer font-bold text-sm text-slate-700 hover:bg-slate-100/70 select-none transition-colors">
+                         <Activity className="w-4 h-4 text-slate-500" />
+                         <span>Raw Activity Records ({activeDrawerStepData.signals.length})</span>
+                         <ChevronRight className="w-4 h-4 text-slate-400 ml-auto transition-transform group-open:rotate-90" />
+                       </summary>
+                       <div className="p-4 space-y-3 bg-slate-50/20 border-t border-slate-100">
+                           <p className="text-xs text-slate-500 mb-2">
+                             <Info className="w-3.5 h-3.5 inline-block mr-1 text-slate-400 align-text-bottom" />
+                             Review the raw timing and event timestamps recorded during this specific step.
                            </p>
                            {activeDrawerStepData.signals.map((sig: any, sIdx: number) => (
-                              <div key={sIdx} className="flex gap-3 bg-white p-3 rounded-md border border-slate-200 shadow-sm">
+                              <div key={sIdx} className="flex gap-3 bg-white p-3 rounded-md border border-slate-100 shadow-sm text-xs">
                                  <div className="mt-0.5 shrink-0">
-                                   {sig.type.includes('clipboard') || sig.type.includes('paste') ? <FileText className="w-4 h-4 text-slate-400" /> :
-                                    sig.type.includes('visibility') || sig.type.includes('fullscreen') ? <Maximize className="w-4 h-4 text-slate-400" /> :
-                                    sig.type.includes('guard_marker') ? <Bot className="w-4 h-4 text-rose-500" /> :
-                                    <MousePointerClick className="w-4 h-4 text-slate-400" />}
+                                   {sig.type.includes('clipboard') || sig.type.includes('paste') ? <FileText className="w-3.5 h-3.5 text-slate-400" /> :
+                                    sig.type.includes('visibility') || sig.type.includes('fullscreen') ? <Maximize className="w-3.5 h-3.5 text-slate-400" /> :
+                                    sig.type.includes('guard_marker') ? <Bot className="w-3.5 h-3.5 text-rose-500" /> :
+                                    <MousePointerClick className="w-3.5 h-3.5 text-slate-400" />}
                                  </div>
-                                 <div>
-                                   <div className="font-bold text-sm text-slate-800">{getSignalLabel(sig.type)}</div>
-                                   <div className="text-xs text-slate-500 mt-1">{sig.details || "No additional context."}</div>
-                                   <div className="text-[10px] font-mono text-slate-400 mt-2 uppercase tracking-wide">
+                                 <div className="flex-1 min-w-0">
+                                   <div className="font-bold text-slate-700">{getSignalLabel(sig.type)}</div>
+                                   <div className="text-slate-500 mt-0.5 break-words">{sig.details || "No additional context."}</div>
+                                   <div className="text-[10px] font-mono text-slate-400 mt-1.5 uppercase tracking-wide">
                                      {sig.timestamp && !isNaN(new Date(sig.timestamp).getTime())
                                        ? `Recorded ${new Date(sig.timestamp).toLocaleDateString([], { month: "short", day: "numeric" })}, ${new Date(sig.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
                                        : "Time unavailable"}
@@ -635,8 +767,8 @@ export default function TimelineGradebook({
                                  </div>
                               </div>
                            ))}
-                        </div>
-                     </div>
+                       </div>
+                     </details>
                    )}
 
                    {/* Class Comparison Section */}

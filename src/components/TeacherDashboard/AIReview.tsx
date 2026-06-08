@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   MessageSquare,
   Check,
@@ -18,10 +18,19 @@ import {
   ChevronDown,
   ChevronUp,
   Zap,
+  Sparkles,
+  ShieldAlert,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { RichContentEditor } from "../RichContent/RichContentEditor";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
+import { deriveStudentAssignmentSummary } from "../../lib/teacherAnalytics";
+import {
+  deriveReviewQueueItems,
+  reviewQueueTypeLabel,
+  type ReviewQueueItem,
+  type ReviewQueueItemType,
+} from "../../lib/courseProgress";
 
 // Review queue status categories
 type ReviewStatus =
@@ -32,7 +41,7 @@ type ReviewStatus =
   | "reviewed_not_released"
   | "feedback_released";
 
-type ReviewFilter = ReviewStatus | "all" | "integrity" | "anomalies";
+type ReviewFilter = "all" | "needs_grading" | "integrity" | "ai_agent" | "feedback_not_released" | "high_priority";
 
 interface QueueItem {
   responseId: string;
@@ -108,6 +117,15 @@ interface AIReviewProps {
   onRefresh?: () => void;
 }
 
+const FILTERS: { value: ReviewFilter; label: string; bgClass: string; textClass: string; borderClass: string }[] = [
+  { value: "all", label: "All Items", bgClass: "bg-slate-50", textClass: "text-slate-700", borderClass: "border-slate-200" },
+  { value: "needs_grading", label: "Needs Grading", bgClass: "bg-violet-50", textClass: "text-violet-700", borderClass: "border-violet-200" },
+  { value: "integrity", label: "Integrity Signals", bgClass: "bg-amber-50", textClass: "text-amber-700", borderClass: "border-amber-200" },
+  { value: "ai_agent", label: "Signals of AI Agent Use", bgClass: "bg-rose-50", textClass: "text-rose-700", borderClass: "border-rose-200 animate-pulse" },
+  { value: "feedback_not_released", label: "Feedback Ready", bgClass: "bg-emerald-50", textClass: "text-emerald-700", borderClass: "border-emerald-200" },
+  { value: "high_priority", label: "High Priority", bgClass: "bg-red-50", textClass: "text-red-700", borderClass: "border-red-200" },
+];
+
 export default function AIReview({
   students,
   lessons,
@@ -121,7 +139,7 @@ export default function AIReview({
   idToken,
   onRefresh,
 }: AIReviewProps) {
-  const [activeFilter, setActiveFilter] = useState<ReviewFilter>("needs_teacher_review");
+  const [activeFilter, setActiveFilter] = useState<ReviewFilter>("all");
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loadingQueue, setLoadingQueue] = useState(false);
@@ -144,41 +162,40 @@ export default function AIReview({
   const [quickGradeError, setQuickGradeError] = useState<string | null>(null);
   const [quickGradeSuccess, setQuickGradeSuccess] = useState<boolean>(false);
 
-  // Integrity signals
-  const highSignals = signals.filter((s) => s.severity === "high");
-  const signalsByStudent: Record<string, any[]> = {};
-  highSignals.forEach((s) => {
-    if (!signalsByStudent[s.studentId]) signalsByStudent[s.studentId] = [];
-    signalsByStudent[s.studentId].push(s);
-  });
-  const studentSignalEntries = Object.entries(signalsByStudent);
+  // Derive student-assignment summaries using original helper modules
+  const summaries = useMemo(() => {
+    const list: any[] = [];
+    const studentList = students || [];
+    const assignmentList = assignments || [];
+    for (const student of studentList) {
+      if (!student?.id) continue;
+      for (const assignment of assignmentList) {
+        if (!assignment?.id) continue;
+        const lesson = (lessons || []).find((l) => l.id === assignment.lessonId) || {
+          id: assignment.lessonId,
+          title: assignment.lessonTitle || "Untitled Lesson",
+        };
+        const summary = deriveStudentAssignmentSummary({
+          student,
+          lesson,
+          assignment,
+          blocks: blocks || [],
+          attempts: attempts || [],
+          responses: responses || [],
+          signals: signals || [],
+          activities: [],
+          lessonVersions: [],
+        });
+        list.push(summary);
+      }
+    }
+    return list;
+  }, [students, assignments, lessons, blocks, attempts, responses, signals]);
 
-  // Anomalies (built from props, as before)
-  const anomalies: Array<{ type: string; student: any; attempt: any; lesson: any; detail: string }> = [];
-  attempts.forEach((attempt) => {
-    const student = students.find((s) => s.id === attempt.studentId);
-    const lesson = lessons.find((l) => l.id === attempt.lessonId);
-    if (!student || !lesson) return;
-    if (attempt.status === "completed" && lesson.estimatedMinutes > 0) {
-      const expected = lesson.estimatedMinutes * 60;
-      if (attempt.activeTimeSpent < expected * 0.3) {
-        anomalies.push({ type: "fast_completion", student, attempt, lesson,
-          detail: `Completed in ${Math.round(attempt.activeTimeSpent / 60)}m active time (expected ~${lesson.estimatedMinutes}m)` });
-      }
-    }
-    if (attempt.status !== "completed") {
-      const hoursAgo = (Date.now() - new Date(attempt.lastActiveAt || attempt.startedAt).getTime()) / 3600000;
-      if (hoursAgo > 48) {
-        anomalies.push({ type: "inactive", student, attempt, lesson,
-          detail: `Started ${Math.round(hoursAgo / 24)}d ago — has not completed` });
-      }
-    }
-    const aResponses = responses.filter((r) => r.attemptId === attempt.id);
-    if (aResponses.length > 0 && attempt.activeTimeSpent < 60) {
-      anomalies.push({ type: "low_time", student, attempt, lesson,
-        detail: `${aResponses.length} response(s) submitted with only ${attempt.activeTimeSpent}s active time` });
-    }
-  });
+  // Unified action-item Review Queue derived from those summaries
+  const derivedItems = useMemo(() => {
+    return deriveReviewQueueItems(summaries);
+  }, [summaries]);
 
   const loadQueue = useCallback(async () => {
     if (!idToken) return;
@@ -322,53 +339,79 @@ export default function AIReview({
   };
 
   // Derived counts for filter tabs
-  const saQueueCount = (Object.values(counts) as number[]).reduce((a, b) => a + b, 0);
-  const filterCounts: Record<ReviewFilter, number> = {
-    all: saQueueCount + studentSignalEntries.length + anomalies.length,
-    pending_ai: counts["pending_ai"] || 0,
-    error: counts["error"] || 0,
-    needs_teacher_review: counts["needs_teacher_review"] || 0,
-    ai_scored_awaiting_review: counts["ai_scored_awaiting_review"] || 0,
-    reviewed_not_released: counts["reviewed_not_released"] || 0,
-    feedback_released: counts["feedback_released"] || 0,
-    integrity: studentSignalEntries.length,
-    anomalies: anomalies.length,
-  };
+  const filterCounts = useMemo(() => {
+    return {
+      all: derivedItems.length,
+      needs_grading: derivedItems.filter((i) => i.type === "needs_grading").length,
+      integrity: derivedItems.filter((i) => i.type === "integrity_cluster").length,
+      ai_agent: derivedItems.filter((i) => i.type === "ai_agent").length,
+      feedback_not_released: derivedItems.filter((i) => i.type === "feedback_ready").length,
+      high_priority: derivedItems.filter((i) => i.priority === "high" || i.type === "ai_agent").length,
+    };
+  }, [derivedItems]);
 
-  const filteredQueueItems =
-    activeFilter === "all" ||
-    activeFilter === "integrity" ||
-    activeFilter === "anomalies"
-      ? queueItems
-      : queueItems.filter((i) => i.reviewStatus === activeFilter);
+  const filteredQueueItems = useMemo(() => {
+    return derivedItems.filter((item) => {
+      // 1. Filter by assignment
+      if (filterAssignment && item.assignmentId !== filterAssignment) return false;
 
-  const visibleQueueItems = [...filteredQueueItems].sort((a, b) => {
-    if (sortBy === "confidenceAsc") {
-      const cA = a.confidence !== undefined ? a.confidence : 1;
-      const cB = b.confidence !== undefined ? b.confidence : 1;
-      return cA - cB;
-    } else if (sortBy === "confidenceDesc") {
-      const cA = a.confidence !== undefined ? a.confidence : 1;
-      const cB = b.confidence !== undefined ? b.confidence : 1;
-      return cB - cA;
-    } else if (sortBy === "submittedAtDesc") {
-      const tA = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
-      const tB = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
-      return tB - tA;
-    } else if (sortBy === "submittedAtAsc") {
-      const tA = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
-      const tB = b.submittedAt ? new Date(b.submittedAt).getTime() : 0;
-      return tA - tB;
+      // 2. Filter by category (practice vs assessment)
+      if (filterCategory) {
+        const hasPractice = queueItems.some(
+          (q) => q.studentId === item.studentId && q.assignmentId === item.assignmentId && q.isPractice
+        );
+        if (filterCategory === "practice" && !hasPractice) return false;
+        if (filterCategory === "assessment" && hasPractice) return false;
+      }
+
+      // 3. Filter by Active Filter Tab
+      if (activeFilter === "needs_grading") {
+        return item.type === "needs_grading";
+      }
+      if (activeFilter === "integrity") {
+        return item.type === "integrity_cluster";
+      }
+      if (activeFilter === "ai_agent") {
+        return item.type === "ai_agent";
+      }
+      if (activeFilter === "feedback_not_released") {
+        return item.type === "feedback_ready";
+      }
+      if (activeFilter === "high_priority") {
+        return item.priority === "high" || item.type === "ai_agent";
+      }
+      return true; // "all"
+    });
+  }, [derivedItems, activeFilter, filterAssignment, filterCategory]);
+
+  const visibleQueueItems = useMemo(() => {
+    const result = [...filteredQueueItems];
+    if (sortBy === "confidenceAsc" || sortBy === "confidenceDesc") {
+      result.sort((a, b) => {
+        // Find minimum confidence in responses of both
+        const getMinConf = (x: typeof a) => {
+          const confs = (responses || [])
+            .filter((r) => r.attemptId === x.attemptId && r.aiGrading?.confidence !== undefined)
+            .map((r) => r.aiGrading.confidence);
+          return confs.length > 0 ? Math.min(...confs) : 1;
+        };
+        const cA = getMinConf(a);
+        const cB = getMinConf(b);
+        return sortBy === "confidenceAsc" ? cA - cB : cB - cA;
+      });
+    } else if (sortBy === "submittedAtDesc" || sortBy === "submittedAtAsc") {
+      result.sort((a, b) => {
+        const tA = a.lastActivityAt ? new Date(a.lastActivityAt).getTime() : 0;
+        const tB = b.lastActivityAt ? new Date(b.lastActivityAt).getTime() : 0;
+        return sortBy === "submittedAtDesc" ? tB - tA : tA - tB;
+      });
     }
-    return 0;
-  });
+    return result;
+  }, [filteredQueueItems, sortBy, responses]);
 
-  const showSAQueue =
-    activeFilter !== "integrity" && activeFilter !== "anomalies";
-  const showIntegrity =
-    activeFilter === "all" || activeFilter === "integrity";
-  const showAnomalies =
-    activeFilter === "all" || activeFilter === "anomalies";
+  const showSAQueue = true;
+  const showIntegrity = false;
+  const showAnomalies = false;
 
   const formatEventType = (t: string): string => {
     const labels: Record<string, string> = {
@@ -403,34 +446,23 @@ export default function AIReview({
     <div className="space-y-5">
       {/* Filter bar */}
       <div className="flex flex-wrap gap-2 items-center justify-between">
-        <div className="flex flex-wrap gap-1 bg-white border border-slate-200 rounded p-1 shadow-sm">
-          {/* All */}
-          {(["all", ...FILTER_ORDER, "integrity", "anomalies"] as ReviewFilter[]).map((f) => {
-            const meta = FILTER_ORDER.includes(f as ReviewStatus)
-              ? STATUS_LABELS[f as ReviewStatus]
-              : null;
+        <div className="flex flex-wrap gap-1 bg-white border border-slate-200 rounded p-1 shadow-sm font-sans">
+          {FILTERS.map((f) => {
+            const count = filterCounts[f.value];
             return (
               <button
-                key={f}
-                onClick={() => setActiveFilter(f)}
+                key={f.value}
+                onClick={() => setActiveFilter(f.value)}
                 className={`px-2.5 py-1.5 rounded text-[10px] font-bold uppercase tracking-widest transition cursor-pointer flex items-center gap-1 ${
-                  activeFilter === f
+                  activeFilter === f.value
                     ? "bg-[#0A192F] text-white"
-                    : meta
-                    ? `${meta.color} ${meta.bg} border ${meta.border} hover:opacity-90`
-                    : "text-slate-500 hover:bg-slate-50"
+                    : `${f.bgClass} ${f.textClass} border ${f.borderClass} hover:opacity-90`
                 }`}
               >
-                {f === "all"
-                  ? "All"
-                  : f === "integrity"
-                  ? "Integrity Signals"
-                  : f === "anomalies"
-                  ? "Anomalies"
-                  : STATUS_LABELS[f as ReviewStatus]?.label || f}
-                {filterCounts[f] > 0 && (
-                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono ${activeFilter === f ? "bg-white/20 text-white" : "bg-white/70 text-slate-700"}`}>
-                    {filterCounts[f]}
+                {f.label}
+                {count > 0 && (
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-mono ${activeFilter === f.value ? "bg-white/20 text-white" : "bg-white/70 text-slate-700"}`}>
+                    {count}
                   </span>
                 )}
               </button>
@@ -498,511 +530,517 @@ export default function AIReview({
 
       {/* SA Review Queue */}
       {showSAQueue && (
-        <div className="space-y-4">
+        <div className="space-y-4 font-sans">
           {visibleQueueItems.length === 0 && !loadingQueue && (
-            <div className="text-center py-12 bg-white border border-slate-200 rounded text-slate-400">
+            <div className="text-center py-12 bg-white border border-slate-200 rounded text-slate-400 font-sans">
               <Check className="w-10 h-10 mx-auto text-slate-300 stroke-1 mb-2" />
               <p className="text-sm font-medium">
-                {activeFilter === "needs_teacher_review"
-                  ? "No responses need your review right now."
-                  : activeFilter === "feedback_released"
-                  ? "No feedback has been released yet."
-                  : "Nothing in this category."}
+                No items match the selected filter.
               </p>
             </div>
           )}
 
           {loadingQueue && (
-            <div className="flex items-center justify-center py-8 text-slate-400 text-sm gap-2">
+            <div className="flex items-center justify-center py-8 text-slate-400 text-sm gap-2 font-mono">
               <RotateCcw className="w-4 h-4 animate-spin" />
-              Loading review queue…
+              Loading review queue details…
             </div>
           )}
 
           {visibleQueueItems.map((item) => {
-            const statusMeta = STATUS_LABELS[item.reviewStatus];
-            const isExpanded = expandedItem === item.responseId;
-            const state = actionState[item.responseId] || "idle";
+            const isExpanded = expandedItem === item.id;
+
+            // Select color-logical styling based on the item category/classification
+            const typeStylesValue = {
+              ai_agent: {
+                borderL: "border-l-4 border-l-rose-500",
+                badgeBg: "bg-rose-50 border border-rose-200 animate-pulse",
+                badgeText: "text-rose-700",
+                bgHover: "hover:bg-rose-50/20"
+              },
+              integrity_cluster: {
+                borderL: "border-l-4 border-l-amber-500",
+                badgeBg: "bg-amber-50 border border-amber-200",
+                badgeText: "text-amber-700",
+                bgHover: "hover:bg-amber-50/20"
+              },
+              needs_grading: {
+                borderL: "border-l-4 border-l-violet-500",
+                badgeBg: "bg-violet-50 border border-violet-200",
+                badgeText: "text-violet-700",
+                bgHover: "hover:bg-violet-50/20"
+              },
+              feedback_ready: {
+                borderL: "border-l-4 border-l-emerald-500",
+                badgeBg: "bg-emerald-50 border border-emerald-200",
+                badgeText: "text-emerald-700",
+                bgHover: "hover:bg-emerald-50/20"
+              }
+            };
+            const styles = typeStylesValue[item.type] || typeStylesValue.needs_grading;
+
+            // Fetch responses matching this student + assignment
+            const matchingResponses = queueItems.filter(
+              (q) => q.studentId === item.studentId && q.assignmentId === item.assignmentId
+            );
+
+            // Fetch integrity signals matching this student + attempt
+            const studentSignals = signals.filter(
+              (s) => s.studentId === item.studentId && s.attemptId === item.attemptId
+            );
 
             return (
               <motion.div
-                key={item.responseId}
+                key={item.id}
                 initial={{ opacity: 0, y: 5 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="bg-white border border-slate-200 rounded overflow-hidden shadow-sm"
+                className={`bg-white border border-slate-200 rounded overflow-hidden shadow-sm transition ${
+                  isExpanded ? "ring-1 ring-slate-300" : ""
+                }`}
               >
                 {/* Header */}
                 <div
-                  className={`border-b border-slate-200 px-5 py-3 flex flex-wrap justify-between items-center gap-2 cursor-pointer transition ${
-                    quickGradeMode
-                      ? "bg-amber-50/40 hover:bg-amber-50 border-l-2 border-l-amber-500"
-                      : "bg-slate-50 hover:bg-slate-100 border-l-2 border-l-transparent"
-                  }`}
+                  className={`border-b border-slate-200 px-5 py-3 flex flex-wrap justify-between items-center gap-2 cursor-pointer transition bg-slate-50 ${styles.borderL} ${styles.bgHover}`}
                   onClick={() => {
-                    if (quickGradeMode) {
-                      openQuickGrade(item);
-                    } else {
-                      setExpandedItem(isExpanded ? null : item.responseId);
-                    }
+                    setExpandedItem(isExpanded ? null : item.id);
                   }}
                 >
                   <div className="flex items-center gap-3 flex-wrap">
                     <div>
                       <span className="text-xs font-bold text-slate-800">{item.studentName}</span>
-                      <span className="text-[10px] text-slate-400 font-mono ml-2">({item.studentEmail})</span>
+                      <span className="text-[10px] text-slate-400 font-mono ml-2">({item.summary.studentEmail})</span>
                     </div>
-                    <span className="text-[9px] font-mono text-slate-400">{item.lessonTitle}</span>
-                    <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border ${
-                      item.isPractice ? "bg-sky-50 text-sky-700 border-sky-200" : "bg-slate-100 text-slate-700 border-slate-200"
-                    }`}>
-                      {item.isPractice ? "Practice" : "Assessment"}
+                    <span className="text-[9px] font-mono text-slate-400 font-medium truncate max-w-[150px] sm:max-w-[250px]">
+                      {item.lessonTitle}
                     </span>
+                    <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm ${styles.badgeBg} ${styles.badgeText}`}>
+                      {reviewQueueTypeLabel(item.type)}
+                    </span>
+                    {item.priority === "high" && (
+                      <span className="text-[8px] bg-red-100 text-red-800 border border-red-200 font-extrabold uppercase px-1.5 py-0.5 rounded-sm animate-pulse flex items-center gap-1">
+                        <ShieldAlert className="w-3 h-3 text-red-600" /> High Attention
+                      </span>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                    {/* Floating Quick Grade button directly visible on header */}
-                    <button
-                      onClick={() => openQuickGrade(item)}
-                      className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white border border-amber-500 rounded text-[9px] font-extrabold uppercase tracking-widest flex items-center gap-1 transition cursor-pointer shadow-sm"
-                      title="Open immediate float grading entry modal"
-                    >
-                      <Zap className="w-3 h-3 fill-white" /> Quick Grade
-                    </button>
 
-                    {/* Status badge */}
-                    <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border ${statusMeta?.color} ${statusMeta?.bg} ${statusMeta?.border}`}>
-                      {statusMeta?.label}
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    <span className="text-[10px] text-slate-500 italic max-w-xs truncate hidden md:inline-block">
+                      {item.reason}
                     </span>
-                    {item.confidence !== undefined && (
-                      <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border flex items-center gap-1 ${
-                        item.confidence < 0.65
-                          ? "bg-rose-50 text-rose-700 border-rose-200 animate-pulse"
-                          : item.confidence < 0.85
-                          ? "bg-amber-50 text-amber-700 border-amber-200"
-                          : "bg-emerald-50 text-emerald-700 border-emerald-200"
-                      }`} title={`AI model completed this grading with ${Math.round(item.confidence * 100)}% confidence.`}>
-                        {item.confidence < 0.65 ? (
-                          <AlertTriangle className="w-3 h-3 text-rose-600" />
-                        ) : item.confidence < 0.85 ? (
-                          <AlertCircle className="w-3 h-3 text-amber-500" />
-                        ) : (
-                          <Check className="w-3 h-3 text-emerald-600" />
-                        )}
-                        <span>AI Confidence: {Math.round(item.confidence * 100)}%</span>
-                      </span>
-                    )}
-                    {item.isLowEffort && (
-                      <span className="text-[9px] font-mono uppercase bg-rose-50 text-rose-700 border border-rose-300 font-bold px-2 py-0.5 rounded-sm flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3" /> Low Effort
-                      </span>
-                    )}
-                    {item.teacherOverride && (
-                      <span className="text-[9px] font-mono uppercase bg-amber-50 text-amber-700 border border-amber-200 font-bold px-2 py-0.5 rounded-sm">
-                        Override Applied
-                      </span>
-                    )}
+                    
                     <button
-                      onClick={() => setExpandedItem(isExpanded ? null : item.responseId)}
-                      className="p-1 rounded hover:bg-slate-200 transition text-slate-500"
+                      onClick={() => setExpandedItem(isExpanded ? null : item.id)}
+                      className="p-1 rounded hover:bg-slate-200 transition text-slate-500 font-sans cursor-pointer"
                     >
                       {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-400" /> : <ChevronDown className="w-4 h-4 text-slate-400" />}
                     </button>
                   </div>
                 </div>
 
-                {/* Collapsed summary */}
+                {/* Collapsed summary info */}
                 {!isExpanded && (
-                  <div className="px-5 py-2 flex items-center gap-4 text-[10px] font-mono text-slate-500 border-b border-slate-100">
-                    <span>AI: <strong className="text-slate-700">{item.aiScore ?? "—"}/{item.maxScore ?? "—"}</strong></span>
-                    {item.confidence !== undefined && (
-                      <span className={`font-semibold ${
-                        item.confidence < 0.65
-                          ? "text-rose-600 font-bold animate-pulse"
-                          : item.confidence < 0.85
-                          ? "text-amber-600"
-                          : "text-emerald-600"
-                      }`}>
-                        {Math.round(item.confidence * 100)}% AI Confidence
-                      </span>
+                  <div className="px-5 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] font-mono text-slate-500 border-b border-slate-100 bg-white">
+                    <span>REASON: <strong className="text-slate-700 font-sans font-medium">{item.reason}</strong></span>
+                    {item.lastActivityAt && (
+                      <span>Activity: <strong className="text-slate-600 font-sans font-medium">{new Date(item.lastActivityAt).toLocaleString()}</strong></span>
                     )}
-                    <span className="truncate max-w-xs italic text-slate-400">
-                      {typeof item.studentResponse === "string" ? item.studentResponse.substring(0, 80) : ""}…
-                    </span>
+                    <span className="text-slate-400 font-medium whitespace-nowrap ml-auto">Click to view details & actions →</span>
                   </div>
                 )}
 
+                {/* Expanded Sections */}
                 <AnimatePresence>
                   {isExpanded && (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: "auto", opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
+                      transition={{ duration: 0.15 }}
                       className="overflow-hidden"
                     >
-                      <div className="p-5 grid grid-cols-1 lg:grid-cols-12 gap-6">
-                        {/* Left: Question + Response */}
-                        <div className="lg:col-span-7 space-y-4">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Question Prompt</span>
-                              {item.lessonTitle && (
-                                <span className="text-[9px] font-mono text-slate-400 uppercase bg-slate-100 px-1.5 py-0.5 rounded">{item.lessonTitle}</span>
-                              )}
-                            </div>
-                            <div className="p-4 bg-slate-50/50 border border-slate-200/60 rounded text-slate-800 font-serif text-sm leading-relaxed">
-                              {item.questionText ? (
-                                <RichContentRenderer content={item.questionText} />
-                              ) : (
-                                <span className="italic text-slate-400">Question text not available.</span>
-                              )}
-                            </div>
-                          </div>
-
-                          <div>
-                            <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-widest font-mono">Student Response</span>
-                            <div className="bg-slate-50 border border-slate-200 p-4 rounded font-serif text-sm leading-relaxed text-slate-800 shadow-inner">
-                              {item.studentResponse || <span className="text-slate-400 italic">No response</span>}
-                            </div>
-                            {item.isLowEffort && (
-                              <div className="mt-2 bg-rose-50 border border-rose-200 rounded p-3 text-xs text-rose-800 flex items-start gap-2">
-                                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                                <div>
-                                  <strong className="block">Low-Effort Flag</strong>
-                                  <span>{item.lowEffortReason || "Short or gibberish pattern."}</span>
-                                </div>
-                              </div>
-                            )}
-                            <div className="text-[10px] text-slate-400 font-mono mt-1.5">
-                              ACTIVE WRITING TIME: <strong>{Math.floor(item.activeTimeSpent / 60)}m {item.activeTimeSpent % 60}s</strong>
-                            </div>
-                          </div>
-
-                          {/* Rubric breakdown */}
-                          {Object.keys(item.rubricBreakdown || {}).length > 0 && (
-                            <div>
-                              <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-widest font-mono">Rubric Breakdown</span>
-                              <div className="space-y-1.5">
-                                {Object.entries(item.rubricBreakdown).map(([cat, val]: [string, any]) => (
-                                  <div key={cat} className="bg-slate-50 border border-slate-100 rounded p-2.5 text-[11px]">
-                                    <div className="flex justify-between items-center mb-0.5">
-                                      <span className="font-semibold text-slate-700">{cat}</span>
-                                      <span className="font-mono font-bold text-slate-800">{val.score}/{val.maxScore ?? "?"}</span>
-                                    </div>
-                                    {val.feedback && <p className="text-slate-500 leading-relaxed">{val.feedback}</p>}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Right: AI Assessment + Actions */}
-                        <div className="lg:col-span-5 space-y-4 border-t lg:border-t-0 lg:border-l border-slate-200 pt-4 lg:pt-0 lg:pl-6">
-                          {/* AI score panel */}
-                          <div>
-                            <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-widest font-mono">AI Assessment</span>
-                            {item.reviewStatus === "pending_ai" ? (
-                              <div className="bg-blue-50 border border-blue-200 rounded p-3 text-xs text-blue-700 flex items-center gap-2">
-                                <RotateCcw className="w-4 h-4 animate-spin text-blue-500" />
-                                AI grading in progress…
-                              </div>
-                            ) : item.reviewStatus === "error" ? (
-                              <div className="bg-red-50 border border-red-200 rounded p-3 text-xs text-red-700 flex items-center gap-2">
-                                <AlertCircle className="w-4 h-4" />
-                                AI grading failed. Manual override required.
+                      {/* Grading / Feedback release types */}
+                      {(item.type === "needs_grading" || item.type === "feedback_ready") ? (
+                        matchingResponses.length === 0 ? (
+                          <div className="p-6 text-center text-slate-400 text-xs">
+                            {loadingQueue ? (
+                              <div className="flex items-center justify-center gap-2">
+                                <RotateCcw className="w-4 h-4 animate-spin text-slate-400" />
+                                Loading response details from servers…
                               </div>
                             ) : (
-                              <div className="space-y-2">
-                                <div className="flex justify-between border-b border-slate-100 pb-1.5">
-                                  <span className="text-xs text-slate-500">AI Score</span>
-                                  <span className="font-bold font-mono text-slate-800">{item.aiScore}/{item.maxScore}</span>
+                              "No short-answer response details available in this queue item right now."
+                            )}
+                          </div>
+                        ) : (
+                          <div className="divide-y divide-slate-200 bg-slate-50/30">
+                            {matchingResponses.map((rItem) => {
+                              const statusMeta = STATUS_LABELS[rItem.reviewStatus];
+                              const state = actionState[rItem.responseId] || "idle";
+
+                              return (
+                                <div key={rItem.responseId} className="p-5 grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                  {/* Left: Question + Response */}
+                                  <div className="lg:col-span-7 space-y-4">
+                                    <div className="flex justify-between items-center bg-white border border-slate-100 rounded-sm p-2 shadow-sm">
+                                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest font-mono">Response ID: {rItem.responseId.substring(0, 8)}</span>
+                                      <div className="flex gap-2">
+                                        <button
+                                          onClick={() => openQuickGrade(rItem)}
+                                          className="px-2 py-0.5 bg-amber-500 hover:bg-amber-600 text-white rounded text-[9px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                                        >
+                                          <Zap className="w-3 h-3 fill-white" /> Quick Grade
+                                        </button>
+                                        <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-sm border ${statusMeta?.color} ${statusMeta?.bg} ${statusMeta?.border}`}>
+                                          {statusMeta?.label}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <div>
+                                      <div className="flex justify-between items-center mb-1">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Question Prompt</span>
+                                        {rItem.lessonTitle && (
+                                          <span className="text-[9px] font-mono text-slate-400 uppercase bg-slate-100 px-1.5 py-0.5 rounded">{rItem.lessonTitle}</span>
+                                        )}
+                                      </div>
+                                      <div className="p-4 bg-slate-50/50 border border-slate-200/60 rounded text-slate-800 font-serif text-sm leading-relaxed">
+                                        {rItem.questionText ? (
+                                          <RichContentRenderer content={rItem.questionText} />
+                                        ) : (
+                                          <span className="italic text-slate-400">Question prompt not available.</span>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div>
+                                      <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-widest font-mono">Student Response</span>
+                                      <div className="bg-white border border-slate-200 p-4 rounded font-serif text-sm leading-relaxed text-slate-800 shadow-sm">
+                                        {rItem.studentResponse || <span className="text-slate-400 italic">No response</span>}
+                                      </div>
+                                      {rItem.isLowEffort && (
+                                        <div className="mt-2 bg-rose-50 border border-rose-200 rounded p-3 text-xs text-rose-800 flex items-start gap-2">
+                                          <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                                          <div>
+                                            <strong className="block font-sans">Low-Effort Flag</strong>
+                                            <span className="font-sans">{rItem.lowEffortReason || "Short or low-effort pattern detected."}</span>
+                                          </div>
+                                        </div>
+                                      )}
+                                      <div className="text-[10px] text-slate-400 font-mono mt-1.5 flex justify-between items-center">
+                                        <span>ACTIVE WRITING TIME: <strong>{Math.floor(rItem.activeTimeSpent / 60)}m {rItem.activeTimeSpent % 60}s</strong></span>
+                                        <button
+                                          onClick={() => {
+                                            onOpenDossier(rItem.studentId, rItem.assignmentId, {
+                                              entries: [{ studentId: rItem.studentId, lessonId: rItem.assignmentId, label: rItem.studentName }],
+                                              index: 0,
+                                              label: "Detailed Review",
+                                              initialSection: "responses"
+                                            });
+                                          }}
+                                          className="text-indigo-600 hover:text-indigo-800 font-bold hover:underline cursor-pointer"
+                                        >
+                                          Open Full Dossier →
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {/* Rubric breakdown */}
+                                    {Object.keys(rItem.rubricBreakdown || {}).length > 0 && (
+                                      <div>
+                                        <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-widest font-mono">Rubric Breakdown</span>
+                                        <div className="space-y-1.5 font-sans">
+                                          {Object.entries(rItem.rubricBreakdown).map(([cat, val]: [string, any]) => (
+                                            <div key={cat} className="bg-white border border-slate-100 rounded p-2.5 text-[11px] shadow-sm">
+                                              <div className="flex justify-between items-center mb-0.5">
+                                                <span className="font-semibold text-slate-700">{cat}</span>
+                                                <span className="font-mono font-bold text-slate-800">{val.score}/{val.maxScore ?? "?"}</span>
+                                              </div>
+                                              {val.feedback && <p className="text-slate-500 leading-relaxed font-sans">{val.feedback}</p>}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {/* Right: AI Assessment + Actions */}
+                                  <div className="lg:col-span-5 space-y-4 border-t lg:border-t-0 lg:border-l border-slate-200 pt-4 lg:pt-0 lg:pl-6 bg-white rounded-md p-4 shadow-sm font-sans">
+                                    <div>
+                                      <span className="text-[10px] font-bold text-slate-400 block mb-1 uppercase tracking-widest font-mono">AI Assessment</span>
+                                      {rItem.reviewStatus === "pending_ai" ? (
+                                        <div className="bg-blue-50 border border-blue-200 rounded p-3 text-xs text-blue-700 flex items-center gap-2 font-mono">
+                                          <RotateCcw className="w-4 h-4 animate-spin text-blue-500" />
+                                          AI grading in progress…
+                                        </div>
+                                      ) : rItem.reviewStatus === "error" ? (
+                                        <div className="bg-red-50 border border-red-200 rounded p-3 text-xs text-red-700 flex items-center gap-2 font-sans font-medium">
+                                          <AlertCircle className="w-4 h-4 shrink-0 text-red-500" />
+                                          AI grading paused. Manual override required.
+                                        </div>
+                                      ) : (
+                                        <div className="space-y-2">
+                                          <div className="flex justify-between border-b border-slate-100 pb-1.5 text-xs text-slate-500">
+                                            <span>AI Assigned Score</span>
+                                            <span className="font-bold font-mono text-slate-800">{rItem.aiScore}/{rItem.maxScore}</span>
+                                          </div>
+                                          {rItem.confidence !== undefined && (
+                                            <div className="flex justify-between border-b border-slate-100 pb-1.5 text-xs text-slate-500">
+                                              <span>Grading Confidence</span>
+                                              <span className={`text-[9px] uppercase font-mono font-bold px-1.5 py-0.5 rounded-sm border ${
+                                                rItem.confidence < 0.65
+                                                  ? "bg-rose-50 text-rose-800 border-rose-100 animate-pulse"
+                                                  : rItem.confidence < 0.85
+                                                  ? "bg-amber-50 text-amber-800 border-amber-100"
+                                                  : "bg-emerald-50 text-emerald-800 border-emerald-100"
+                                              }`}>
+                                                {Math.round(rItem.confidence * 100)}% {rItem.confidence < 0.65 ? "(Uncertain)" : rItem.confidence < 0.85 ? "(Medium)" : "(High)"}
+                                              </span>
+                                            </div>
+                                          )}
+                                          {rItem.aiRationale && (
+                                            <div className="bg-slate-50 border border-slate-200 p-3 rounded text-[11px] text-slate-600 leading-relaxed font-sans">
+                                              <strong className="block text-[10px] uppercase tracking-wider mb-1 font-mono text-slate-400 font-bold">AI Rationale (Private)</strong>
+                                              {rItem.aiRationale}
+                                            </div>
+                                          )}
+                                          {rItem.aiFeedback && (
+                                            <div className="bg-sky-50 border border-sky-100 p-3 rounded text-[11px] text-slate-600 leading-relaxed font-sans">
+                                              <strong className="block text-[10px] uppercase tracking-wider mb-1 font-mono text-sky-500 font-bold font-sans">Generated Student Feedback</strong>
+                                              {rItem.aiFeedback}
+                                            </div>
+                                          )}
+                                          {rItem.teacherOverride && (
+                                            <div className="bg-amber-50 border border-amber-200 p-2.5 rounded text-[11px] text-amber-800 font-sans">
+                                              <strong>Override Verdict: </strong>{rItem.teacherOverride.score} pts — {rItem.teacherOverride.notes}
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Feedback release status indicator */}
+                                    <div className="flex items-center gap-2 py-2 border-t border-slate-100">
+                                      {rItem.feedbackVisibleToStudent ? (
+                                        <>
+                                          <Eye className="w-4 h-4 text-emerald-500" />
+                                          <span className="text-[10px] text-emerald-700 font-mono font-bold uppercase tracking-wider">Feedback Visible to Student</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <EyeOff className="w-4 h-4 text-slate-400" />
+                                          <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider">Hidden from Student</span>
+                                        </>
+                                      )}
+                                    </div>
+
+                                    {/* Actions form */}
+                                    {rItem.reviewStatus !== "feedback_released" && (
+                                      <div className="border-t border-slate-200 pt-4 space-y-3">
+                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono flex items-center gap-1.5">
+                                          <Award className="w-4 h-4 text-[#0A192F]" /> Review Decision Actions
+                                        </span>
+
+                                        <div className="flex gap-2 items-end">
+                                          <div className="w-1/3">
+                                            <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Score</label>
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              max={rItem.maxScore}
+                                              value={overrideScores[rItem.responseId] !== undefined
+                                                ? overrideScores[rItem.responseId]
+                                                : (rItem.teacherOverride?.score ?? rItem.aiScore ?? 0)}
+                                              onChange={(e) => setOverrideScores({ ...overrideScores, [rItem.responseId]: Number(e.target.value) })}
+                                              className="w-full text-xs font-mono font-bold text-center bg-slate-50 border border-slate-200 rounded p-1.5 focus:outline-none focus:border-slate-400"
+                                            />
+                                          </div>
+                                          <div className="flex-1">
+                                            <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Private Notes</label>
+                                            <input
+                                              type="text"
+                                              value={overrideNotes[rItem.responseId] || ""}
+                                              onChange={(e) => setOverrideNotes({ ...overrideNotes, [rItem.responseId]: e.target.value })}
+                                              placeholder="Private review notes…"
+                                              className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-1.5 focus:outline-none"
+                                            />
+                                          </div>
+                                        </div>
+
+                                        <div>
+                                          <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Interactive Student Feedback</label>
+                                          <textarea
+                                            rows={2}
+                                            value={studentFeedback[rItem.responseId] !== undefined
+                                              ? studentFeedback[rItem.responseId]
+                                              : (rItem.aiFeedback || "")}
+                                            onChange={(e) => setStudentFeedback({ ...studentFeedback, [rItem.responseId]: e.target.value })}
+                                            placeholder="Refine or write student-facing response feedback here…"
+                                            className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-2 focus:outline-none font-serif leading-relaxed resize-none text-slate-800"
+                                          />
+                                        </div>
+
+                                        <div className="flex flex-wrap gap-2">
+                                          {(rItem.reviewStatus === "ai_scored_awaiting_review" || rItem.reviewStatus === "needs_teacher_review") && (
+                                            <button
+                                              onClick={() => handleApprove(rItem)}
+                                              disabled={state === "loading"}
+                                              className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition-all cursor-pointer shadow-sm font-sans"
+                                            >
+                                              <ThumbsUp className="w-3.5 h-3.5 animate-pulse" /> Approve AI Score
+                                            </button>
+                                          )}
+                                          <button
+                                            onClick={() => handleOverride(rItem)}
+                                            disabled={state === "loading"}
+                                            className="flex items-center gap-1 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition-all cursor-pointer shadow-sm font-sans"
+                                          >
+                                            <Edit3 className="w-3.5 h-3.5" /> Override Score
+                                          </button>
+                                          {rItem.reviewStatus === "needs_teacher_review" && (
+                                            <button
+                                              onClick={() => handleMarkReviewed(rItem)}
+                                              disabled={state === "loading"}
+                                              className="flex items-center gap-1 bg-slate-600 hover:bg-slate-700 disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition-all cursor-pointer shadow-sm font-sans"
+                                            >
+                                              <Check className="w-3.5 h-3.5" /> Mark Reviewed
+                                            </button>
+                                          )}
+                                          {(rItem.reviewStatus === "reviewed_not_released" ||
+                                            rItem.reviewStatus === "ai_scored_awaiting_review" ||
+                                            rItem.teacherReviewedAt) && (
+                                            <button
+                                              onClick={() => handleReleaseFeedback(rItem)}
+                                              disabled={state === "loading"}
+                                              className="flex items-center gap-1 bg-[#0A192F] hover:bg-[#15294b] disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition-all cursor-pointer shadow-sm font-sans"
+                                            >
+                                              <Send className="w-3.5 h-3.5" /> Release Feedback
+                                            </button>
+                                          )}
+                                        </div>
+
+                                        {state === "done" && (
+                                          <p className="text-[10px] text-emerald-600 font-mono font-semibold">✓ Action Saved Successfully</p>
+                                        )}
+                                        {state === "error" && (
+                                          <p className="text-[10px] text-red-600 font-mono font-semibold">Failed to persist. Try again.</p>
+                                        )}
+                                      </div>
+                                    )}
+
+                                    {rItem.reviewStatus === "feedback_released" && (
+                                      <div className="border-t border-slate-200 pt-3 text-[11px] text-emerald-700 flex items-center gap-2 font-mono font-bold">
+                                        <Eye className="w-4 h-4 text-emerald-500" /> Released {rItem.feedbackReleasedAt && new Date(rItem.feedbackReleasedAt).toLocaleDateString()}
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
-                                {item.confidence !== undefined && (
-                                  <div className="flex justify-between border-b border-slate-100 pb-1.5">
-                                    <span className="text-xs text-slate-500">Confidence</span>
-                                    <span className={`text-[9px] uppercase font-mono font-bold px-1.5 py-0.5 rounded-sm border ${
-                                      item.confidence < 0.65
-                                        ? "bg-rose-50 text-rose-800 border-rose-100 animate-pulse"
-                                        : item.confidence < 0.85
-                                        ? "bg-amber-50 text-amber-800 border-amber-100"
-                                        : "bg-emerald-50 text-emerald-800 border-emerald-100"
-                                    }`}>
-                                      {Math.round(item.confidence * 100)}% {item.confidence < 0.65 ? "(Low)" : item.confidence < 0.85 ? "(Medium)" : "(High)"}
+                              );
+                            })}
+                          </div>
+                        )
+                      ) : (
+                        /* Integrity alerts and pacing patterns types */
+                        <div className="p-5 space-y-4 bg-white border-t border-slate-100 font-sans">
+                          <div className={`p-4 rounded-md border flex gap-3 ${
+                            item.type === "ai_agent"
+                              ? "bg-rose-50 border-rose-200 text-rose-800"
+                              : "bg-amber-50 border-amber-200 text-amber-800"
+                          }`}>
+                            <AlertTriangle className={`w-5 h-5 shrink-0 mt-0.5 ${
+                              item.type === "ai_agent" ? "text-rose-600" : "text-amber-500"
+                            }`} />
+                            <div className="space-y-1">
+                              <h4 className="text-sm font-bold font-sans">
+                                {item.type === "ai_agent"
+                                  ? "High-Attention Pattern (Signals of AI Agent Use)"
+                                  : "Teacher Attention Recommended (Unusual Pacing Pattern)"}
+                              </h4>
+                              <p className="text-xs leading-relaxed text-slate-600 font-sans">
+                                This student-friendly activity record represents focus shifts and timeline timestamps rather than formal surveillance. Use it to check if the student needs scaffolding before school starts.
+                              </p>
+                              {item.reason && (
+                                <div className="text-xs font-mono font-bold mt-2 bg-white/70 px-2 py-1.5 rounded border border-slate-100 max-w-lg">
+                                  TIMELINE HIGHLIGHT: {item.reason}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
+                            {/* Left: Signals List */}
+                            <div className="md:col-span-8 space-y-3">
+                              <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-widest font-mono">Student Focus & Event Timeline</span>
+                              <div className="border border-slate-200 rounded overflow-hidden bg-white max-h-60 overflow-y-auto shadow-sm">
+                                {studentSignals.length === 0 ? (
+                                  <p className="p-4 text-xs text-slate-400 italic font-sans text-center">No focus events logged for this attempt index.</p>
+                                ) : (
+                                  <div className="divide-y divide-slate-100 font-mono text-[10px] text-slate-600">
+                                    {studentSignals.map((sig, sidx) => (
+                                      <div key={sidx} className="p-2 flex justify-between hover:bg-slate-50 transition items-center">
+                                        <div className="flex gap-2 items-center">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                                          <span className="font-bold text-slate-700 font-sans">{formatEventType(sig.eventType)}</span>
+                                          {sig.detail && <span className="text-slate-400">({sig.detail})</span>}
+                                        </div>
+                                        <span className="text-slate-400 font-mono">
+                                          {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : ""}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Right: Actions */}
+                            <div className="md:col-span-4 p-4 bg-slate-50 rounded border border-slate-200 flex flex-col justify-between space-y-4 font-sans">
+                              <div className="space-y-2">
+                                <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-widest font-mono">Dossier Overview</span>
+                                <div className="text-xs font-sans text-slate-700 space-y-1">
+                                  <div className="flex justify-between font-sans">
+                                    <span className="text-slate-400">Pacing Punctuality:</span>
+                                    <span className="font-bold font-mono font-sans">
+                                      {item.summary?.startedAt && item.summary?.lastActivityAt
+                                        ? `${Math.round((new Date(item.summary.lastActivityAt).getTime() - new Date(item.summary.startedAt).getTime()) / 60000)} mins`
+                                        : "Incomplete/Inactive"}
                                     </span>
                                   </div>
-                                )}
-                                {item.aiRationale && (
-                                  <div className="bg-slate-50 border border-slate-200 p-3 rounded text-[11px] text-slate-600 leading-relaxed">
-                                    <strong className="block text-[10px] uppercase tracking-wider mb-1 font-mono text-slate-400">Rationale (teacher-only)</strong>
-                                    {item.aiRationale}
+                                  <div className="flex justify-between font-sans">
+                                    <span className="text-slate-400">Step Progress:</span>
+                                    <span className="font-bold font-mono">
+                                      {item.summary?.progressPct ?? 0}% completed
+                                    </span>
                                   </div>
-                                )}
-                                {item.aiFeedback && (
-                                  <div className="bg-sky-50 border border-sky-100 p-3 rounded text-[11px] text-slate-600 leading-relaxed">
-                                    <strong className="block text-[10px] uppercase tracking-wider mb-1 font-mono text-sky-500">Student-Facing Feedback</strong>
-                                    {item.aiFeedback}
+                                  <div className="flex justify-between font-bold text-[#0D1A2D] pt-1 border-t border-slate-200 mt-2 font-sans">
+                                    <span>Attention Events:</span>
+                                    <span>{studentSignals.length} records</span>
                                   </div>
-                                )}
-                                {item.teacherOverride && (
-                                  <div className="bg-amber-50 border border-amber-200 p-2.5 rounded text-[11px] text-amber-800">
-                                    <strong>Override: </strong>{item.teacherOverride.score} pts — {item.teacherOverride.notes}
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Feedback release status */}
-                          <div className="flex items-center gap-2 py-2 border-t border-slate-100">
-                            {item.feedbackVisibleToStudent ? (
-                              <>
-                                <Eye className="w-4 h-4 text-emerald-500" />
-                                <span className="text-[10px] text-emerald-700 font-mono font-bold">Feedback visible to student</span>
-                              </>
-                            ) : (
-                              <>
-                                <EyeOff className="w-4 h-4 text-slate-400" />
-                                <span className="text-[10px] text-slate-500 font-mono">Hidden from student</span>
-                              </>
-                            )}
-                          </div>
-
-                          {/* Teacher actions */}
-                          {item.reviewStatus !== "feedback_released" && (
-                            <div className="border-t border-slate-200 pt-4 space-y-3">
-                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono flex items-center gap-1.5">
-                                <Award className="w-4 h-4 text-[#0A192F]" /> Teacher Actions
-                              </span>
-
-                              {/* Score override */}
-                              <div className="flex gap-2 items-end">
-                                <div className="w-1/3">
-                                  <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Score</label>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    max={item.maxScore}
-                                    value={overrideScores[item.responseId] !== undefined
-                                      ? overrideScores[item.responseId]
-                                      : (item.teacherOverride?.score ?? item.aiScore ?? 0)}
-                                    onChange={(e) => setOverrideScores({ ...overrideScores, [item.responseId]: Number(e.target.value) })}
-                                    className="w-full text-xs font-mono font-bold text-center bg-slate-50 border border-slate-200 rounded p-1.5 focus:outline-none focus:border-slate-400"
-                                  />
-                                </div>
-                                <div className="flex-1">
-                                  <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Teacher Notes (private)</label>
-                                  <input
-                                    type="text"
-                                    value={overrideNotes[item.responseId] || ""}
-                                    onChange={(e) => setOverrideNotes({ ...overrideNotes, [item.responseId]: e.target.value })}
-                                    placeholder="Teacher-only note…"
-                                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-1.5 focus:outline-none"
-                                  />
                                 </div>
                               </div>
 
-                              {/* Student-facing feedback editor */}
-                              <div>
-                                <label className="text-[9px] font-mono font-bold uppercase text-slate-400 block mb-1">Student-Facing Feedback (visible after release)</label>
-                                <textarea
-                                  rows={3}
-                                  value={studentFeedback[item.responseId] !== undefined
-                                    ? studentFeedback[item.responseId]
-                                    : (item.aiFeedback || "")}
-                                  onChange={(e) => setStudentFeedback({ ...studentFeedback, [item.responseId]: e.target.value })}
-                                  placeholder="Edit the feedback students will see…"
-                                  className="w-full text-xs bg-slate-50 border border-slate-200 rounded p-2 focus:outline-none font-serif leading-relaxed resize-none"
-                                />
-                              </div>
-
-                              {/* Action buttons */}
-                              <div className="flex flex-wrap gap-2">
-                                {/* Approve AI (no score change) */}
-                                {(item.reviewStatus === "ai_scored_awaiting_review" || item.reviewStatus === "needs_teacher_review") && (
-                                  <button
-                                    onClick={() => handleApprove(item)}
-                                    disabled={state === "loading"}
-                                    className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition cursor-pointer"
-                                  >
-                                    <ThumbsUp className="w-3.5 h-3.5" />
-                                    Approve AI Score
-                                  </button>
-                                )}
-                                {/* Override */}
-                                <button
-                                  onClick={() => handleOverride(item)}
-                                  disabled={state === "loading"}
-                                  className="flex items-center gap-1 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition cursor-pointer"
-                                >
-                                  <Edit3 className="w-3.5 h-3.5" />
-                                  Override Score
-                                </button>
-                                {/* Mark reviewed (no score change) */}
-                                {item.reviewStatus === "needs_teacher_review" && (
-                                  <button
-                                    onClick={() => handleMarkReviewed(item)}
-                                    disabled={state === "loading"}
-                                    className="flex items-center gap-1 bg-slate-600 hover:bg-slate-700 disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition cursor-pointer"
-                                  >
-                                    <Check className="w-3.5 h-3.5" />
-                                    Mark Reviewed
-                                  </button>
-                                )}
-                                {/* Release feedback */}
-                                {(item.reviewStatus === "reviewed_not_released" ||
-                                  item.reviewStatus === "ai_scored_awaiting_review" ||
-                                  item.teacherReviewedAt) && (
-                                  <button
-                                    onClick={() => handleReleaseFeedback(item)}
-                                    disabled={state === "loading"}
-                                    className="flex items-center gap-1 bg-[#0A192F] hover:bg-[#15294b] disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition cursor-pointer"
-                                  >
-                                    <Send className="w-3.5 h-3.5" />
-                                    Release Feedback
-                                  </button>
-                                )}
-                              </div>
-
-                              {state === "done" && (
-                                <p className="text-[10px] text-emerald-600 font-mono">✓ Saved</p>
-                              )}
-                              {state === "error" && (
-                                <p className="text-[10px] text-red-600 font-mono">Failed to save. Try again.</p>
-                              )}
+                              <button
+                                onClick={() => {
+                                  onOpenDossier(item.studentId, item.assignmentId, {
+                                    entries: [{ studentId: item.studentId, lessonId: item.assignmentId, label: item.studentName }],
+                                    index: 0,
+                                    label: "Integrity Signals Details",
+                                    initialSection: "integrity"
+                                  });
+                                }}
+                                className="w-full py-2 bg-[#0A192F] hover:bg-[#15294b] text-white font-bold rounded text-xs tracking-wider uppercase flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                              >
+                                <Award className="w-4 h-4" /> Open Student Dossier
+                              </button>
                             </div>
-                          )}
-
-                          {/* Already released state */}
-                          {item.reviewStatus === "feedback_released" && (
-                            <div className="border-t border-slate-200 pt-3 text-[11px] text-emerald-700 flex items-center gap-2">
-                              <Eye className="w-4 h-4" />
-                              Feedback released to student.
-                              {item.feedbackReleasedAt && (
-                                <span className="text-slate-400 font-mono text-[9px]">
-                                  {new Date(item.feedbackReleasedAt).toLocaleDateString()}
-                                </span>
-                              )}
-                            </div>
-                          )}
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>
               </motion.div>
             );
           })}
-        </div>
-      )}
-
-      {/* Integrity Signals Section */}
-      {showIntegrity && studentSignalEntries.length > 0 && (
-        <div className="space-y-3">
-          {(activeFilter === "all" || activeFilter === "integrity") && (
-            <div className="flex items-center gap-2 mt-2">
-              <AlertTriangle className="w-4 h-4 text-amber-500" />
-              <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-500 font-mono">Integrity Signals</h3>
-            </div>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {studentSignalEntries.map(([sid, sigs]) => {
-              const student = students.find((s) => s.id === sid);
-              const firstSig = sigs[0];
-              const attempt = (firstSig?.attemptId ? attempts.find((a) => a.id === firstSig.attemptId) : null) || attempts.find((a) => a.studentId === sid);
-              const lesson = attempt ? lessons.find((l) => l.id === attempt.lessonId) : null;
-              const eventTypes = [...new Set(sigs.map((s) => s.eventType))];
-              return (
-                <div
-                  key={sid}
-                  className="bg-white border border-amber-200 rounded p-4 shadow-sm hover:shadow transition cursor-pointer"
-                  onClick={() => {
-                    const finalLessonId = lesson?.id || attempt?.lessonId || lessons[0]?.id || "";
-                    if (finalLessonId) {
-                      // Build a nav list across all integrity review entries so the
-                      // dossier prev/next moves through the Review Queue.
-                      const entries = studentSignalEntries.map(([eid, esigs]) => {
-                        const eAttempt = (esigs[0]?.attemptId ? attempts.find((a) => a.id === esigs[0].attemptId) : null) || attempts.find((a) => a.studentId === eid);
-                        const eStudent = students.find((s) => s.id === eid);
-                        return {
-                          studentId: eid,
-                          lessonId: eAttempt?.lessonId || finalLessonId,
-                          label: eStudent?.name || eStudent?.email || "Student",
-                        };
-                      });
-                      const index = entries.findIndex((e) => e.studentId === sid);
-                      onOpenDossier(sid, finalLessonId, {
-                        entries,
-                        index: index < 0 ? 0 : index,
-                        label: "Integrity review",
-                        initialSection: "integrity",
-                      });
-                    }
-                  }}
-                >
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <div className="text-sm font-bold text-slate-800">{student?.name || "Unknown"}</div>
-                      <div className="text-[10px] font-mono text-slate-400">{student?.email}</div>
-                    </div>
-                    <span className="bg-amber-100 text-amber-800 text-[9px] font-mono font-bold px-2 py-0.5 rounded-sm uppercase tracking-widest">
-                      {sigs.length} signal{sigs.length !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                  {lesson && <div className="text-[10px] text-slate-500 font-medium mb-2">{lesson.title}</div>}
-                  <div className="flex flex-wrap gap-1">
-                    {eventTypes.slice(0, 4).map((t) => (
-                      <span key={t} className="text-[8px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded-sm font-mono uppercase tracking-wider">
-                        {formatEventType(t)}
-                      </span>
-                    ))}
-                    {eventTypes.length > 4 && <span className="text-[8px] text-slate-400 font-mono">+{eventTypes.length - 4} more</span>}
-                  </div>
-                  <div className="mt-2 text-[9px] text-slate-400 font-mono uppercase tracking-wider">Review dossier →</div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Anomalies Section */}
-      {showAnomalies && anomalies.length > 0 && (
-        <div className="space-y-3">
-          {(activeFilter === "all" || activeFilter === "anomalies") && (
-            <div className="flex items-center gap-2 mt-2">
-              <TrendingDown className="w-4 h-4 text-slate-400" />
-              <h3 className="text-[10px] font-bold uppercase tracking-widest text-slate-500 font-mono">Anomalies</h3>
-            </div>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {anomalies.map((item, idx) => (
-              <div
-                key={idx}
-                className="bg-white border border-slate-200 rounded p-4 shadow-sm hover:shadow transition cursor-pointer"
-                onClick={() => onOpenDossier(item.student.id, item.lesson.id)}
-              >
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <div className="text-sm font-bold text-slate-800">{item.student.name}</div>
-                    <div className="text-[10px] font-mono text-slate-400">{item.student.email}</div>
-                  </div>
-                  <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-sm uppercase tracking-widest ${
-                    item.type === "fast_completion" ? "bg-orange-50 text-orange-700 border border-orange-200"
-                    : item.type === "inactive" ? "bg-slate-100 text-slate-600"
-                    : "bg-red-50 text-red-700 border border-red-100"
-                  }`}>
-                    {item.type === "fast_completion" ? "Fast Completion" : item.type === "inactive" ? "Inactive" : "Low Active Time"}
-                  </span>
-                </div>
-                <div className="text-[10px] text-slate-500 font-medium mb-1">{item.lesson.title}</div>
-                <div className="flex items-start gap-1.5 text-[11px] text-slate-600">
-                  <Clock className="w-3 h-3 text-slate-400 mt-0.5 shrink-0" />
-                  {item.detail}
-                </div>
-                <div className="mt-2 text-[9px] text-slate-400 font-mono uppercase tracking-wider">Review dossier →</div>
-              </div>
-            ))}
-          </div>
         </div>
       )}
 
