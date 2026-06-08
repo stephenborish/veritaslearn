@@ -40,8 +40,12 @@ interface StudentDossierModalProps {
 }
 
 function formatVideoTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
+  const sNum = Number(seconds);
+  if (isNaN(sNum) || sNum === Infinity || sNum === -Infinity || seconds === undefined || seconds === null) {
+    return "0:00";
+  }
+  const m = Math.floor(sNum / 60);
+  const s = Math.floor(sNum % 60);
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
