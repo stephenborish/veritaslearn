@@ -396,7 +396,7 @@ function renderMCAttemptsHistory(response: any, question: any) {
           })
         ) : (
           <div className="text-[11px] text-slate-500 italic pl-1">
-            No detailed attempts history recorded. Single attempt submitted: Choice {selectedMultipleChoiceToLetterOrId(question, response.responseValue)} ({response.isCorrect ? "Correct" : "Incorrect"}).
+            No detailed attempts history recorded. Single attempt submitted: Choice {getChoiceLetterFromValue(question, response.responseValue) || selectedMultipleChoiceToLetterOrId(question, response.responseValue)} ({response.isCorrect ? "Correct" : "Incorrect"}).
           </div>
         )}
       </div>
@@ -432,6 +432,20 @@ function selectedMultipleChoiceToLetterOrId(question: any, value: any): string {
     return String(question.choices[idx].id);
   }
   return v;
+}
+
+function getChoiceLetterFromValue(question: any, value: any): string | null {
+  if (!question || !Array.isArray(question.choices) || value === undefined || value === null) return null;
+  const valStr = String(value);
+  let idx = question.choices.findIndex((c: any) => String(c.id) === valStr);
+  if (idx !== -1) {
+    return String.fromCharCode(65 + idx);
+  }
+  const num = Number(value);
+  if (!isNaN(num) && question.choices[num]) {
+    return String.fromCharCode(65 + num);
+  }
+  return null;
 }
 
 function renderRubricDetails(question: any) {
@@ -1666,10 +1680,13 @@ export default function StudentDossierModal({
                                         <div className="flex items-center gap-1.5 flex-wrap">
                                           <span className="text-slate-500 font-medium font-sans">Selected Choice:</span>
                                           <span className="text-slate-900 font-bold bg-white border border-slate-200 px-2 py-0.5 rounded font-mono">
-                                            {resolveMultipleChoiceText(qBlock, bResponse.responseValue) ||
-                                              selectedMultipleChoiceToLetterOrId(questionDef, bResponse.responseValue) ||
-                                              bResponse.responseText ||
-                                              "Selected choice unavailable"}
+                                            {(() => {
+                                              const letter = getChoiceLetterFromValue(questionDef, bResponse.responseValue);
+                                              const text = resolveMultipleChoiceText(qBlock, bResponse.responseValue) || bResponse.responseText;
+                                              if (letter && text) return `Choice ${letter}: ${text}`;
+                                              if (letter) return `Choice ${letter}`;
+                                              return text || selectedMultipleChoiceToLetterOrId(questionDef, bResponse.responseValue) || "Selected choice unavailable";
+                                            })()}
                                           </span>
                                         </div>
                                       </div>
@@ -1688,7 +1705,7 @@ export default function StudentDossierModal({
                                       {bResponse.type === "mc" ? "Auto-graded Score" : "Current Score"}
                                     </span>
                                     <div className="text-[11px] font-mono font-bold text-slate-705">
-                                      {bResponse.score} / {maxPoints} pts
+                                      {bResponse.score ?? 0} / {maxPoints} pts
                                     </div>
                                   </div>
 
@@ -2114,10 +2131,13 @@ export default function StudentDossierModal({
                                             <div className="flex items-center gap-1.5 flex-wrap">
                                               <span className="text-slate-500 font-medium">Selected:</span>
                                               <span className="text-slate-900 font-bold bg-white px-2 py-0.5 border border-slate-200 rounded font-mono">
-                                                {resolveMultipleChoiceText(qBlock, cr.responseValue) ||
-                                                  selectedMultipleChoiceToLetterOrId(questionDef, cr.responseValue) ||
-                                                  cr.responseText ||
-                                                  "Selected choice unavailable"}
+                                                {(() => {
+                                                  const letter = getChoiceLetterFromValue(questionDef, cr.responseValue);
+                                                  const text = resolveMultipleChoiceText(qBlock, cr.responseValue) || cr.responseText;
+                                                  if (letter && text) return `Choice ${letter}: ${text}`;
+                                                  if (letter) return `Choice ${letter}`;
+                                                  return text || selectedMultipleChoiceToLetterOrId(questionDef, cr.responseValue) || "Selected choice unavailable";
+                                                })()}
                                               </span>
                                             </div>
                                           ) : (
@@ -2168,7 +2188,7 @@ export default function StudentDossierModal({
                                           )}
                                         </div>
                                         <span className="font-bold font-mono text-slate-600">
-                                          {cr.score} / {cpPoints} pts
+                                          {cr.score ?? 0} / {cpPoints} pts
                                         </span>
                                       </div>
 

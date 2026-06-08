@@ -264,6 +264,9 @@ export default function LessonsBuilder({
   const normalizeBlocksForEditor = (raw: any[]): any[] =>
     raw.map((b) => {
       let out = ensureQuestionForBlock({ ...b });
+      if (!out.id) {
+        out.id = "b_" + Math.random().toString(36).substring(2, 9);
+      }
       if (out.type === "video" && Array.isArray(out.videoCheckpoints)) {
         out = { ...out, videoCheckpoints: out.videoCheckpoints.map(ensureQuestionForCheckpoint) };
       }
@@ -2141,7 +2144,7 @@ export default function LessonsBuilder({
                         </button>
 
                         {/* Inline controls on hover */}
-                        <div className={`absolute right-1 top-1 ${deletingBlockId === b.id ? "flex z-10" : "hidden group-hover:flex"} items-center gap-0.5 ${isActive ? "flex" : ""}`}>
+                        <div className={`absolute right-1 top-1 ${deletingBlockId === b.id ? "flex z-10" : isActive ? "flex" : "hidden group-hover:flex"} items-center gap-0.5`}>
                           {deletingBlockId === b.id ? (
                             <div className="flex items-center gap-1 bg-white border border-red-200 rounded shadow-lg px-1.5 py-0.5 text-[10px] select-none text-slate-700 animate-pulse">
                               <span className="text-red-600 font-bold font-sans tracking-tight">Delete?</span>
