@@ -12,6 +12,7 @@ import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 import { cn } from "../../lib/utils";
 import { LearnQuestionCard, type QuestionMode, type SaGradingState as CardSaGradingState } from "./LearnQuestionCard";
 import { BrowserAiGuard } from "./BrowserAiGuard";
+import LessonCompletionScreen from "./LessonCompletionScreen";
 import YouTubeLessonPlayer, { type YouTubeLessonPlayerHandle } from "./YouTubeLessonPlayer";
 import { looksLikeYouTubeUrl, resolveYouTubeLegacy } from "../../utils/youtubeParser";
 
@@ -98,6 +99,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [saGradingState, setSaGradingState] = useState<{ [qId: string]: SaGradingState }>({});
   // SA AI feedback data per question (practice only, after grading completes)
   const [saFeedback, setSaFeedback] = useState<{ [qId: string]: SaFeedbackData }>({});
+  const [showCompletionScreen, setShowCompletionScreen] = useState(false);
   // MCQ Attempts tracking state
   const [mcAttemptsState, setMcAttemptsState] = useState<{
     [qId: string]: {
@@ -933,9 +935,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             setSaFeedback((prev: any) => ({
               ...prev,
               [r.questionId]: {
-                score: r.score,
+                score: r.score !== undefined ? r.score : r.aiGrading?.score,
                 maxPoints: r.maxPoints,
-                feedback: r.aiGrading?.feedback,
+                feedback: r.aiGrading?.feedback || r.feedback,
                 rubricBreakdown: r.aiGrading?.rubricBreakdown,
                 misconceptions: r.aiGrading?.misconceptions,
               },
@@ -1119,8 +1121,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         setNavigationError(data.error || "Unable to finish the lesson yet. Please try again.");
         return;
       }
-      await exitFullscreenGracefully();
-      onExit();
+      setShowCompletionScreen(true);
     } catch {
       // Keep player open if complete fails
       setNavigationError("Unable to finish the lesson yet. Please check your connection and try again.");
@@ -2248,6 +2249,20 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         )}
       </main>
       </div> {/* Blurred, locked background wrapper */}
+      
+      <AnimatePresence>
+        {showCompletionScreen && (
+          <LessonCompletionScreen
+            lessonTitle={attemptData?.lesson?.title || "Lesson"}
+            onExit={async () => {
+              await exitFullscreenGracefully();
+              onExit();
+            }}
+            onReview={() => setShowCompletionScreen(false)}
+            reduceMotion={reduceMotion}
+          />
+        )}
+      </AnimatePresence>
     </div>
   </div>
   );

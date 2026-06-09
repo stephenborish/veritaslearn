@@ -428,10 +428,11 @@ function SubmittedState({
     );
   }
 
-  if (saGradingState === "feedback_ready" && saFeedback && saFeedback.score !== undefined) {
-    const { score, feedback, rubricBreakdown, misconceptions } = saFeedback;
+  if (saGradingState === "feedback_ready" && saFeedback) {
+    const score = saFeedback.score !== undefined ? saFeedback.score : 0;
+    const { feedback, rubricBreakdown, misconceptions } = saFeedback;
     const isPerfect = score === maxPoints;
-    const isTooShort = saFeedback.score === 0 && (!feedback || feedback.toLowerCase().includes("too short")); 
+    const isTooShort = score === 0 && (!feedback || feedback.toLowerCase().includes("too short")); 
 
     if (isTooShort) {
        return (
@@ -531,9 +532,10 @@ function SubmittedState({
           <motion.div variants={itemVariants} className="space-y-3">
              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Success criteria</h4>
              <ul className="space-y-2">
-                {Object.entries(rubricBreakdown).map(([category, rData]) => {
-                   const rScore = Number(rData.score) || 0;
-                   const rMax = Number(rData.maxScore) || 1;
+                {Object.entries(rubricBreakdown || {}).map(([category, rData]) => {
+                   const rDataSafe = (rData || {}) as any;
+                   const rScore = Number(rDataSafe.score) || 0;
+                   const rMax = Number(rDataSafe.maxScore) || 1;
                    const resultText = rScore === rMax ? "Met" : rScore > 0 ? "Partial" : "Missing";
                    const resultColor = rScore === rMax ? "text-emerald-700 bg-emerald-50 border-emerald-200" :
                                       rScore > 0 ? "text-amber-700 bg-amber-50 border-amber-200" :

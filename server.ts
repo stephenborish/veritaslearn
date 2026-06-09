@@ -5044,11 +5044,13 @@ app.post("/api/attempts/:id/draft", requireAuth, async (req, res) => {
       (asg: any) => asg.attemptId === id && asg.questionId === questionId
     );
     let isPracticeQuestion = false;
+    let block: any = null;
+    let checkpoint: any = null;
+
     if (assignment) {
       const blockId = assignment.blockId;
       const checkpointId = assignment.checkpointId;
       const attempt = db.attempts[attemptIdx];
-      let block: any = null;
       if (attempt.lessonVersionId) {
         const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
         const resolved = resolveQuestionFromVersion(version, blockId, checkpointId, questionId);
@@ -5060,12 +5062,43 @@ app.post("/api/attempts/:id/draft", requireAuth, async (req, res) => {
         block = db.blocks.find((b: any) => b.id === blockId);
       }
       if (block) {
-        let checkpoint: any = null;
         if (checkpointId && Array.isArray(block.videoCheckpoints)) {
           checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
         }
-        isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
       }
+    }
+
+    // Direct search fallback if block wasn't found via assignment lookup
+    if (!block) {
+      const attempt = db.attempts[attemptIdx];
+      let versionBlocks: any[] = [];
+      if (attempt.lessonVersionId) {
+        const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
+        versionBlocks = version?.blocks || [];
+      }
+      const searchBlocks = versionBlocks.length > 0 ? versionBlocks : (db.blocks || []);
+
+      for (const b of searchBlocks) {
+        if (b.type === "video" && Array.isArray(b.videoCheckpoints)) {
+          for (const cp of b.videoCheckpoints) {
+            if (Array.isArray(cp.questions) && cp.questions.some((q: any) => q.id === questionId)) {
+              block = b;
+              checkpoint = cp;
+              break;
+            }
+          }
+        } else if (b.type === "question") {
+          if (b.singleQuestion?.id === questionId || (b.questionPool?.questions || []).some((q: any) => q.id === questionId)) {
+            block = b;
+            break;
+          }
+        }
+        if (block) break;
+      }
+    }
+
+    if (block) {
+      isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
     }
 
     if (!isPracticeQuestion) {
