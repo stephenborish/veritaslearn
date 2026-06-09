@@ -21,6 +21,8 @@ import {
   Send,
   ChevronLeft,
   ChevronRight,
+  Play,
+  Sparkles,
 } from "lucide-react";
 import {
   deriveIntegritySignalSummary,
@@ -28,6 +30,7 @@ import {
   attentionLabel,
   attentionColorClasses,
   getSignalDetailedExplanation,
+  getDetailedSignalContext,
 } from "../../lib/integritySignals";
 import { safeText } from "../../lib/dataIntegrity";
 
@@ -114,24 +117,9 @@ function resolveMultipleChoiceText(block: any, responseValue: any): string | nul
   return null;
 }
 
-function signalEventLabel(eventType: string): string {
-  const labels: Record<string, string> = {
-    blur_focus_lost: "Visibility hidden",
-    visibilitychange: "Tab or window changed",
-    fullscreen_exit: "Fullscreen exited",
-    fullscreen_exited: "Fullscreen exited",
-    seek_attempt_blocked: "Video seek attempt blocked",
-    copy_blocked: "Copy attempt blocked",
-    paste_blocked: "Paste attempt blocked",
-    context_menu_blocked: "Right-click blocked",
-    rapid_navigation: "Fast navigation detected",
-    checkpoint_triggered: "Checkpoint reached",
-    possible_ai_agent_use: "Possible AI agent use",
-    hidden_assessment_text_in_answer: "Assessment content detected in answer",
-    ai_guard_marker_in_answer: "Browser AI Guard marker in answer",
-    ai_guard_refusal_phrase_in_answer: "AI refusal phrase in answer",
-  };
-  return labels[eventType] || eventType.replace(/_/g, " ");
+function signalEventLabel(eventType: string, block?: any): string {
+  const ctx = getDetailedSignalContext({ eventType, blockId: block?.id }, block ? [block] : []);
+  return ctx.label;
 }
 
 export function get7DayActivityHeatmap(studentId: string, studentActivities: any[]) {
@@ -1705,12 +1693,17 @@ export default function StudentDossierModal({
                 No activity signals recorded.
               </div>
             ) : (
-              <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/20">
-                <div className="flex justify-between items-center py-1 border-b border-slate-250/50 mb-3">
-                  <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 select-none">
-                    <Activity className="w-4 h-4 text-indigo-600" />
-                    Focus Event & Activity Timeline ({sSignals.length})
-                  </h5>
+              <div className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-4">
+                <div className="flex justify-between items-center border-b border-slate-100 pb-3 flex-wrap gap-2">
+                  <div className="space-y-0.5">
+                    <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wide flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-amber-500" />
+                      Academic Integrity Audit Log & Chronological Timeline
+                    </h4>
+                    <p className="text-[10px] text-slate-400">
+                      Maps every integrity signal chronologically to the student's actual lesson path and academic actions.
+                    </p>
+                  </div>
                   {sSignals.some((s) => !s.dismissedAt) && (
                     <button
                       type="button"
@@ -1722,97 +1715,235 @@ export default function StudentDossierModal({
                     </button>
                   )}
                 </div>
-                <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-                {sSignals.slice().reverse().map((signal) => {
-                  const isReviewed = !!signal.dismissedAt;
-                  const matchingBlock = lessonBlocks.find((b) => b.id === signal.blockId);
-                  const blockIdx = matchingBlock ? lessonBlocks.indexOf(matchingBlock) : -1;
-                  const blockLabel = blockIdx !== -1
-                    ? `Step ${blockIdx + 1}: ${matchingBlock.title || "Untitled Block"}`
-                    : "General Student Navigation Session";
 
-                  const details = getSignalDetailedExplanation(signal.eventType);
+                <div className="relative border-l border-slate-200 ml-4 pl-6 space-y-5 py-2 max-h-[500px] overflow-y-auto pr-2">
+                  {(() => {
+                    // Construct Chronological Audit Log
+                    const auditTimelineEvents: any[] = [];
 
-                  return (
-                    <div
-                      key={signal.id}
-                      className={`p-3 text-xs flex flex-col gap-2 rounded-lg border transition-all duration-200 ${
-                        isReviewed
-                          ? "bg-slate-50/50 opacity-60 text-slate-400 border-l-4 border-slate-300 border-slate-200"
-                          : "bg-white border-slate-200 border-l-4 border-l-indigo-500 shadow-sm"
-                      }`}
-                    >
-                      <div className="flex justify-between items-start gap-4">
-                        <div className="space-y-1 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span
-                              className={`text-[9.5px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider ${
-                                isReviewed
-                                  ? "bg-slate-100 text-slate-400 border-slate-200"
-                                  : signal.eventType?.includes("ai_guard") || signal.eventType?.includes("possible_ai")
-                                  ? "bg-red-50 text-red-700 border-red-200 animate-pulse"
-                                  : "bg-amber-50 text-amber-800 border-amber-200"
-                              }`}
-                            >
-                              {signalEventLabel(signal.eventType)}
+                    // 1. Start Event
+                    if (attempt.startedAt) {
+                      auditTimelineEvents.push({
+                        id: "milestone-start",
+                        timestamp: attempt.startedAt,
+                        type: "start",
+                        label: "Lesson Attempt Initiated",
+                        description: "The student opened the lesson player workspace and began progressing through required steps.",
+                        icon: <Play className="w-3 h-3 text-blue-600 fill-blue-600" />,
+                        colorClasses: {
+                          bg: "bg-blue-50/40 border-blue-100 text-blue-900",
+                          text: "text-blue-900",
+                          border: "border-blue-200",
+                          iconBg: "bg-blue-50 border-blue-200"
+                        }
+                      });
+                    }
+
+                    // 2. Submission Events
+                    sResponses.forEach((resp: any) => {
+                      const timestamp = resp.submittedAt || resp.createdAt;
+                      if (!timestamp) return;
+
+                      const b = lessonBlocks.find((bl) => bl.id === resp.blockId);
+                      const blockIdx = b ? lessonBlocks.indexOf(b) : -1;
+                      const stepLabel = blockIdx !== -1 ? `Step ${blockIdx + 1}` : "Checkpoint";
+                      const blockTitle = b?.title || "Untitled step";
+                      
+                      const isMc = resp.type === "mc";
+                      let desc = "";
+                      if (isMc) {
+                        let chosenText = "Selection made";
+                        if (b?.choices && typeof resp.response === "string") {
+                          const found = b.choices.find((c: any) => c.id === resp.response);
+                          if (found) chosenText = getPlainText(found.text) || "Option selected";
+                        }
+                        desc = `Submitted selection: "${chosenText}"`;
+                      } else {
+                        const text = typeof resp.response === "string" ? resp.response : "";
+                        const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+                        desc = `Submitted written answer response (${words} words).`;
+                      }
+
+                      auditTimelineEvents.push({
+                        id: `milestone-sub-${resp.id}`,
+                        timestamp,
+                        type: "submission",
+                        label: `${stepLabel} Answer Submitted`,
+                        description: desc,
+                        blockTitle,
+                        blockStep: blockIdx !== -1 ? blockIdx + 1 : undefined,
+                        icon: <Check className="w-3 h-3 text-emerald-600 stroke-[3]" />,
+                        colorClasses: {
+                          bg: "bg-emerald-50/20 border-emerald-100 text-emerald-900",
+                          text: "text-emerald-900",
+                          border: "border-emerald-200",
+                          iconBg: "bg-emerald-50 border-emerald-200"
+                        }
+                      });
+                    });
+
+                    // 3. Completion Event
+                    if (attempt.completedAt || attempt.status === "completed") {
+                      auditTimelineEvents.push({
+                        id: "milestone-complete",
+                        timestamp: attempt.completedAt || attempt.startedAt, // safe fallback
+                        type: "end",
+                        label: "Assignment Completed & Submitted",
+                        description: "All required steps completed. Completed attempt saved securely.",
+                        icon: <Sparkles className="w-3 h-3 text-amber-600 fill-amber-300" />,
+                        colorClasses: {
+                          bg: "bg-amber-50/30 border-amber-100 text-amber-900",
+                          text: "text-amber-900",
+                          border: "border-amber-200",
+                          iconBg: "bg-amber-50 border-amber-200"
+                        }
+                      });
+                    }
+
+                    // 4. Integrity Signals
+                    sSignals.forEach((sig: any) => {
+                      if (!sig.timestamp) return;
+                      const isReviewed = !!sig.dismissedAt;
+                      const b = lessonBlocks.find((bl) => bl.id === sig.blockId);
+                      const blockIdx = b ? lessonBlocks.indexOf(b) : -1;
+                      const blockTitle = b?.title || "general study flow";
+
+                      const details = getDetailedSignalContext(sig, lessonBlocks);
+
+                      const colors = isReviewed ? {
+                        bg: "bg-slate-50/50 opacity-60 text-slate-400 border-slate-200",
+                        text: "text-slate-400",
+                        border: "border-slate-200",
+                        iconBg: "bg-slate-50 border-slate-200"
+                      } : (sig.eventType?.includes("ai_guard") || sig.eventType?.includes("possible_ai") || sig.eventType?.includes("ai_agent")) ? {
+                        bg: "bg-red-50/90 border-red-200 text-red-900 shadow-xs border-l-4 border-l-red-500",
+                        text: "text-red-900 font-semibold",
+                        border: "border-red-200",
+                        iconBg: "bg-red-50 border-red-200"
+                      } : {
+                        bg: "bg-amber-50/90 border-amber-200 text-amber-900 border-l-4 border-l-amber-500",
+                        text: "text-amber-900 font-semibold",
+                        border: "border-amber-200",
+                        iconBg: "bg-amber-50 border-amber-200"
+                      };
+
+                      auditTimelineEvents.push({
+                        id: `signal-${sig.id}`,
+                        timestamp: sig.timestamp,
+                        type: "integrity",
+                        label: details.label,
+                        description: sig.metadata?.message || details.records,
+                        blockTitle,
+                        blockStep: blockIdx !== -1 ? blockIdx + 1 : undefined,
+                        icon: <ShieldAlert className={`w-3.5 h-3.5 ${isReviewed ? "text-slate-400" : "text-amber-605"}`} />,
+                        colorClasses: colors,
+                        signal: sig,
+                        details: details
+                      });
+                    });
+
+                    // Sort chronologically
+                    const sortedAuditEvents = [...auditTimelineEvents].sort((a, b) => {
+                      return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+                    });
+
+                    return sortedAuditEvents.map((event) => {
+                      const eventDateStr = renderFormattedDate(event.timestamp);
+                      const isSign = event.type === "integrity";
+                      const isRev = isSign && !!event.signal?.dismissedAt;
+
+                      return (
+                        <div key={event.id} className="relative group">
+                          {/* Chronological Connector Pin */}
+                          <div className="absolute -left-[31px] top-1.5 flex items-center justify-center">
+                            <span className={`w-6 h-6 rounded-full border flex items-center justify-center shadow-xs ${event.colorClasses.iconBg} shrink-0`}>
+                              {event.icon}
                             </span>
-                            <span className="text-[9px] text-slate-400 font-mono">
-                              {renderFormattedDate(signal.timestamp)}
-                            </span>
-                            {signal.videoTimestamp != null && (
-                              <span className="text-[9px] font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-500">
-                                Video: {formatVideoTime(signal.videoTimestamp)}
-                              </span>
-                            )}
                           </div>
-                          
-                          {/* Paired Specific Academic Activity Name */}
-                          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono mt-1.5">
-                            PAIRED STUDENT ACTIVITY: <span className="text-slate-800 uppercase bg-slate-100/80 px-1.5 py-0.5 rounded font-bold font-sans">{blockLabel}</span>
+
+                          <div className={`p-3 text-xs rounded-lg border transition-all duration-200 ${event.colorClasses.bg} ${event.colorClasses.border}`}>
+                            <div className="flex justify-between items-start flex-wrap gap-2">
+                              <div className="space-y-1">
+                                {/* Event Name & Timestamp */}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span 
+                                    className={`text-[11px] font-bold ${event.colorClasses.text} flex items-center gap-1.5`}
+                                    title={event.details?.tooltip}
+                                  >
+                                    {event.label}
+                                    {event.details?.tooltip && (
+                                      <span className="cursor-help text-slate-400 group-hover:text-slate-600 text-[10px]" title={event.details.tooltip}>
+                                        [ℹ]
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span className="text-[9px] text-slate-400 font-mono">
+                                    {eventDateStr}
+                                  </span>
+                                </div>
+
+                                {/* Submitter Block Link */}
+                                {event.blockTitle && (
+                                  <div className="text-[10.5px] font-medium text-slate-500 font-sans mt-1">
+                                    Location:{" "}
+                                    <span className="text-slate-800 bg-white/70 border border-slate-100 px-1.5 py-0.5 rounded font-semibold">
+                                      {event.blockStep !== undefined ? `Step ${event.blockStep}: ` : ""}
+                                      {event.blockTitle}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* Main Description */}
+                                <p className="text-slate-600 font-sans mt-1.5 text-[11px] leading-relaxed">
+                                  {event.description}
+                                </p>
+
+                                {/* Integrity Signal Specific Actionable Detail Panels */}
+                                {isSign && !isRev && event.details && (
+                                  <div className="mt-2.5 pt-2 border-t border-slate-200/50 space-y-2">
+                                    <div className="space-y-0.5">
+                                      <span className="font-bold text-slate-500 block text-[9.5px] uppercase tracking-wider">What this indicates:</span>
+                                      <p className="text-slate-600 leading-relaxed font-sans font-normal text-[10.5px]">
+                                        {event.details.indicates}
+                                      </p>
+                                    </div>
+                                    <div className="pt-2 border-t border-slate-200/30 text-[10.5px] text-indigo-700 italic font-medium font-sans flex items-start gap-1">
+                                      <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" /> 
+                                      <span>
+                                        <strong className="not-italic text-indigo-800">Academic Integrity Insight:</strong> {event.details.actionSuggestion}
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Actions (e.g. Dismiss Flag) */}
+                              {isSign && (
+                                <div className="mt-1 lg:mt-0 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleSignal(event.signal.id)}
+                                    disabled={togglingDoneSig === event.signal.id}
+                                    className={`text-[9.5px] font-mono font-bold px-2 py-1 rounded transition border cursor-pointer select-none ${
+                                      isRev
+                                        ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                                        : "bg-white text-slate-600 border-slate-250 hover:bg-slate-50 hover:text-slate-800"
+                                    }`}
+                                  >
+                                    {togglingDoneSig === event.signal.id
+                                      ? "Saving..."
+                                      : isRev
+                                      ? "Resolved (Restore)"
+                                      : "Dismiss Flag"}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => handleToggleSignal(signal.id)}
-                            disabled={togglingDoneSig === signal.id}
-                            className={`text-[9px] font-mono font-bold px-2 py-1 rounded transition border cursor-pointer select-none ${
-                              isReviewed
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
-                                : "bg-white text-slate-600 border-slate-250 hover:bg-slate-50 hover:text-slate-800"
-                            }`}
-                          >
-                            {togglingDoneSig === signal.id
-                              ? "Saving..."
-                              : isReviewed
-                              ? "Resolved (Restore)"
-                              : "Dismiss Flag"}
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Content Section: Records / Indicates details to maximize Pointed Context */}
-                      <div className="mt-1 bg-slate-50/80 p-2.5 rounded border border-slate-150 space-y-1.5 text-[11px] leading-relaxed">
-                        <div>
-                          <span className="font-bold text-slate-600 font-sans">Recorded Signal:</span>{" "}
-                          <span className="text-slate-800 font-sans">{signal.metadata?.message || details.records}</span>
-                        </div>
-                        {!isReviewed && (
-                          <>
-                            <div>
-                              <span className="font-bold text-slate-500 font-sans">What this indicates:</span>{" "}
-                              <p className="text-slate-600 font-sans mt-0.5 font-normal">{details.indicates}</p>
-                            </div>
-                            <div className="pt-1.5 border-t border-slate-200/60 text-[10px] text-indigo-700 italic font-medium font-sans flex items-center gap-1">
-                              <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> Academic support advice: {details.actionSuggestion}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    });
+                  })()}
                 </div>
               </div>
             )}

@@ -503,59 +503,176 @@ export function attentionColorClasses(level: IntegrityAttentionLevel): { text: s
 }
 
 export function getSignalDetailedExplanation(eventType: string): { records: string; indicates: string; actionSuggestion: string } {
+  const ctx = getDetailedSignalContext({ eventType }, []);
+  return {
+    records: ctx.records,
+    indicates: ctx.indicates,
+    actionSuggestion: ctx.actionSuggestion,
+  };
+}
+
+export interface DetailedSignalContext {
+  label: string;
+  tooltip: string;
+  records: string;
+  indicates: string;
+  actionSuggestion: string;
+  isAssessment: boolean;
+  activityType: string;
+}
+
+export function getDetailedSignalContext(signal: any, blocks: any[]): DetailedSignalContext {
+  const eventType = signal.eventType || "";
+  const matchingBlock = (blocks || []).find((b) => b.id === signal.blockId);
+  
+  let isAssessment = true; // default to assessment if unknown, or determine based on block
+  let activityType = "lesson";
+
+  if (matchingBlock) {
+    if (matchingBlock.type === "video") {
+      activityType = "video";
+      if (signal.checkpointId) {
+        const cp = (matchingBlock.videoCheckpoints || []).find((c: any) => c.id === signal.checkpointId);
+        if (cp) {
+          isAssessment = !cp.isPractice;
+          activityType = cp.isPractice ? "practice checkpoint" : "assessment checkpoint";
+        } else {
+          isAssessment = !matchingBlock.isPractice;
+        }
+      } else {
+        isAssessment = !matchingBlock.isPractice;
+      }
+    } else if (matchingBlock.type === "reading") {
+      activityType = "reading";
+      isAssessment = !matchingBlock.isPractice;
+    } else if (matchingBlock.type === "question") {
+      activityType = "question";
+      isAssessment = !matchingBlock.isPractice;
+    }
+  }
+
+  const activityName = isAssessment ? "assessment" : "practice/learning";
+
+  let label = "Activity logged";
+  let tooltip = "Ambient activity log in the student lesson flow.";
+  let records = "Session activity record.";
+  let indicates = "Ambient student interaction logged in the lesson telemetry queue.";
+  let actionSuggestion = "Use to reconstruct their lesson path and study context.";
+
   switch (eventType) {
     case "blur_focus_lost":
     case "visibilitychange":
-      return {
-        records: "Active window focus change (student switched browser tabs, minimized active window, or clicked another application).",
-        indicates: "The student clicked away from the VERITAS player interface. This is extremely common when checking background assignments, seeking outside references, or navigating distraction apps.",
-        actionSuggestion: "Review the active writing time inside blocks and corresponding short answer responses to check if the text matches the student's natural tone."
-      };
+    case "blur":
+    case "visibility_hidden":
+    case "tab_change":
+    case "focus_lost":
+    case "window_blur":
+      if (isAssessment) {
+        label = "Browser tab focus lost during assessment";
+        tooltip = "The student left the assessment workspace, minimizing full focus during a graded question or checkpoint. Teachers should check this to assess active focus integrity.";
+      } else if (activityType === "video") {
+        label = "Browser tab focus lost during instructional video";
+        tooltip = "The student clicked away, opened a new tab, or minimized the window while the required video lesson was active. This suggests split attention during instruction.";
+      } else if (activityType === "reading") {
+        label = "Browser tab focus lost during reading assignment";
+        tooltip = "The student switched tabs or minimized the reading content. Useful for tracking actual reading duration and cognitive engagement.";
+      } else {
+        label = "Browser tab focus lost during lesson practice";
+        tooltip = "The student clicked away during practice tasks, showing potential distraction but no grade-altering impact.";
+      }
+      records = `Active window focus change detected during ${activityType} (student switched browser tabs, minimized active window, or clicked another application).`;
+      indicates = `The student clicked away from the VERITAS player interface during ${isAssessment ? "a graded assessment" : "a learning activity"}. While common, frequent loss of focus during assessments can indicate searching for answers or side-task distractions.`;
+      actionSuggestion = "Look closely at the student's active writing duration inside this step, and read written responses to verify if thoughts match their typical voice and tone.";
+      break;
+
     case "fullscreen_exit":
     case "fullscreen_exited":
-      return {
-        records: "Left the secure full-screen learning window.",
-        indicates: "The student deliberately minimized or exited full-screen mode, which is required under locked study policies to encourage single-tasking.",
-        actionSuggestion: "If exited multiple times, check if the student felt overwhelmed, experienced technical glitches, or felt a need to switch screens."
-      };
+      if (isAssessment) {
+        label = "Locked fullscreen mode exited during assessment";
+        tooltip = "The student exited the full-screen view while actively answering a graded assessment or checkpoint. Highly relevant for tracking proctored task integrity.";
+      } else {
+        label = "Locked fullscreen mode exited during lesson";
+        tooltip = "The student minimized or left full-screen view during general video or reading steps. Minimizes strict compliance but does not directly impact assessment reliability.";
+      }
+      records = "Left the dedicated full-screen learning window.";
+      indicates = `The student deliberately minimized the application window or exited full-screen mode, which is requested to maintain a clean, distraction-free environment for ${isAssessment ? "graded questions" : "study material"}.`;
+      actionSuggestion = "Verify if multiple exits occurred. Check whether the student completed the lesson steps in a reasonable timeframe or appeared to use external references.";
+      break;
+
     case "paste_blocked":
-      return {
-        records: "A paste attempt into a protected short-answer or checkpoint answer field was intercepted.",
-        indicates: "The student copied text from outside the platform and tried to paste it directly as their response, bypassing direct retrieval writing.",
-        actionSuggestion: "Analyze the written response. Look for sudden vocabulary shifts, perfect structures, or formatting artifacts typical of copied reference texts."
-      };
+    case "paste":
+      if (isAssessment) {
+        label = "Copy/Paste detected from external source during assessment";
+        tooltip = "The student attempted to copy text from another browser tab or document and paste it directly into a graded answer field. Copy-pasting assessments is a strong signal for external resource usage.";
+      } else {
+        label = "Copy/Paste detected from external source during practice";
+        tooltip = "The student pasted text into a practice or checkpoint writing field. While less strict, it indicates the student used pre-written or external notes rather than real-time typing.";
+      }
+      records = `A paste attempt into a protected ${isAssessment ? "graded short-answer" : "practice"} answer field was intercepted and blocked.`;
+      indicates = "The student copied text from outside the lesson workspace and attempted to insert it as a direct answer, bypassing the required writing retrieval process.";
+      actionSuggestion = "Review the written text in the Dossier (flagged red). Look for formal vocabulary shifts, unusual punctuation formats, or AI-like response architectures.";
+      break;
+
     case "copy_blocked":
-      return {
-        records: "An attempt to copy lesson prompt text fields was intercepted.",
-        indicates: "The student highlighted and tried to copy prompt text, which is frequently done to paste into translator engines, search bars, or AI assistants.",
-        actionSuggestion: "Focus on whether response times were unusually brief. No penalty is typically justified unless paired with copied-replies."
-      };
+    case "copy":
+      if (isAssessment) {
+        label = "Copy attempt blocked on assessment prompt";
+        tooltip = "The student highlighted text from a graded assessment question and tried to copy it. This is typically done to paste prompts into translate engines or AI portals.";
+      } else {
+        label = "Copy attempt blocked on lesson content";
+        tooltip = "An attempt to copy reading paragraphs, video text, or instructions was blocked by the student player.";
+      }
+      records = `An attempt to copy secure ${isAssessment ? "assessment question" : "lesson instruction"} text fields was blocked.`;
+      indicates = "The student tried to copy text from the browser viewport, which is common when attempting to feed questions into AI chat engines or translator tools.";
+      actionSuggestion = "Cross-reference response speed and note if the student spent unusually short time on this block before submitting a complete answer.";
+      break;
+
     case "rapid_navigation":
-      return {
-        records: "Unusually fast progression (under 5 seconds) through materials before clicking 'next' or 'continue'.",
-        indicates: "The student is skimming or entirely skipping requested readings, images, and videos without deep interaction.",
-        actionSuggestion: "Examine active study time records to see if the student possesses the pre-requisite reading readiness before the fall course starts."
-      };
+      label = "Rapid slide/step skipping (insufficient reading time)";
+      tooltip = "The student clicked 'Next' or 'Continue' almost immediately (under 5s), spending virtually no active time reading the required materials.";
+      records = "Unusually fast progression through materials before advancing.";
+      indicates = "The student is rushing or skimming through slides, checklists, or reading sections without digesting the summer preparation details.";
+      actionSuggestion = "View their total active lesson time. Suggest resetting progress if key readings show high skipping rates before school begins.";
+      break;
+
     case "seek_attempt_blocked":
-      return {
-        records: "The player blocked a request to fast-forward past required instruction chapters.",
-        indicates: "The student attempted to scroll past core video lessons. The player automatically seeking back to the furthest watched point successfully guarded content delivery.",
-        actionSuggestion: "Ensure their final attempt shows full watch completion (reaches 90%+ duration thresholds) to confirm core readiness."
-      };
-    case "ai_guard_marker_in_answer":
-    case "hidden_assessment_text_in_answer":
-    case "ai_guard_refusal_phrase_in_answer":
+      label = "Video scrubbing/fast-forward attempt blocked";
+      tooltip = "The student tried to fast-forward past un-watched teaching chapters. The player successfully blocked this and rewound them to their furthest watched point.";
+      records = "The player blocked a seek event to skip required video content.";
+      indicates = "The student tried to scrub past instructional chapters to bypass watching. The player successfully countered this, guarding learning completion.";
+      actionSuggestion = "Ensure the video shows high completed watch percentages, validating that the student has received the prerequisite instruction.";
+      break;
+
     case "possible_ai_agent_use":
-      return {
-        records: "Plagiarism analysis signatures or typical AI chatbot refusal statements detected in short-answer response fields.",
-        indicates: "Strong signals of external writing software (such as browser chatbot extensions) generating or editing elements of the submitted assignment.",
-        actionSuggestion: "Mandatorily cross-examine the text with the student before school begins. AI-grading will flag these items automatically for teacher inspection."
-      };
-    default:
-      return {
-        records: "Session activity record.",
-        indicates: "Ambient student browsing interaction logged in the telemetry queue.",
-        actionSuggestion: "Use to reconstruct their timeline of study context."
-      };
+    case "ai_guard_marker_in_answer":
+    case "ai_guard_refusal_phrase_in_answer":
+    case "hidden_assessment_text_in_answer":
+    case "ai_agent_detected":
+    case "ai_agent_use":
+      label = "External language generator heuristics detected (AI Use)";
+      tooltip = "Plagiarism checkers or browser AI guard engines detected structured AI signatures, refusal phrases, or hidden metadata inside the student response.";
+      records = "Direct signature or chatbot output structures detected in writing.";
+      indicates = "Strong heuristics that an AI engine (like ChatGPT, Claude, or browser chatbot extensions) generated or heavily assisted with writing this answer.";
+      actionSuggestion = "Interview the student. AI-generated text has perfect grammar with minimal depth or contains characteristic conversational structures.";
+      break;
+
+    case "context_menu_blocked":
+    case "right_click":
+      label = "Right-click context menu blocked";
+      tooltip = "The student attempted to right-click in the lesson viewer. Right-clicking is blocked to prevent inspection of element source codes or easy external search prompts.";
+      records = "Right-click context menu was intercepted and blocked.";
+      indicates = "The browser prevented opening secondary browser context overlays during lesson study.";
+      actionSuggestion = "No correction generally needed; indicates standard lock-down constraint enforcement.";
+      break;
   }
+
+  return {
+    label,
+    tooltip,
+    records,
+    indicates,
+    actionSuggestion,
+    isAssessment,
+    activityType
+  };
 }

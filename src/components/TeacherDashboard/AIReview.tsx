@@ -31,7 +31,7 @@ import {
   type ReviewQueueItem,
   type ReviewQueueItemType,
 } from "../../lib/courseProgress";
-import { getSignalDetailedExplanation } from "../../lib/integritySignals";
+import { getSignalDetailedExplanation, getDetailedSignalContext } from "../../lib/integritySignals";
 
 // Review queue status categories
 type ReviewStatus =
@@ -1008,13 +1008,16 @@ export default function AIReview({
                                       ? `Step ${blockIdx + 1}: ${matchingBlock.title || "Untitled Block"}`
                                       : "General Navigation Session";
 
-                                    const details = getSignalDetailedExplanation(sig.eventType);
+                                    const detailsCtx = getDetailedSignalContext(sig, blocks);
 
                                     return (
                                       <div key={sidx} className="p-2.5 bg-white border border-slate-200 rounded-lg shadow-sm font-sans space-y-1.5 text-xs">
                                         <div className="flex justify-between items-center flex-wrap gap-2">
-                                          <span className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider bg-amber-50 text-amber-800 border-amber-200">
-                                            {formatEventType(sig.eventType)}
+                                          <span 
+                                            className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider bg-amber-50 text-amber-800 border-amber-200 cursor-help"
+                                            title={detailsCtx.tooltip}
+                                          >
+                                            {detailsCtx.label} [ℹ]
                                           </span>
                                           <span className="text-[9px] text-slate-400 font-mono">
                                             {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : ""}
@@ -1026,10 +1029,13 @@ export default function AIReview({
                                         </div>
 
                                         <p className="text-[11px] text-slate-600 leading-normal">
-                                          <span className="font-semibold text-slate-650">Recorded:</span> {sig.metadata?.message || details.records}
+                                          <span className="font-semibold text-slate-650">Recorded:</span> {sig.metadata?.message || detailsCtx.records}
                                         </p>
                                         <p className="text-[10px] text-slate-500 leading-normal border-t border-slate-150 pt-1.5 font-normal">
-                                          <span className="font-semibold text-slate-450">Indicates:</span> {details.indicates}
+                                          <span className="font-semibold text-slate-450">Indicates:</span> {detailsCtx.indicates}
+                                        </p>
+                                        <p className="text-[9.5px] text-indigo-700 italic border-t border-slate-100 pt-1 flex items-center gap-1">
+                                          <span className="font-bold">Advice:</span> {detailsCtx.actionSuggestion}
                                         </p>
                                       </div>
                                     );
