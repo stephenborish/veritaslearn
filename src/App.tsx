@@ -39,7 +39,9 @@ import { motion } from "motion/react";
 export default function App() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [idToken, setIdToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [authResolved, setAuthResolved] = useState(false);
+  const [showAuthLoader, setShowAuthLoader] = useState(false);
+  const [authMessage, setAuthMessage] = useState("Checking your session...");
   const [isFetching, setIsFetching] = useState(false);
 
   // Curriculum data structures
@@ -74,25 +76,45 @@ export default function App() {
 
   // Listen to Firebase Auth state change dynamically (Durable Auth Persistence)
   useEffect(() => {
+    const loaderTimer = setTimeout(() => {
+      if (!authResolved) {
+        setShowAuthLoader(true);
+      }
+    }, 400);
+
+    return () => clearTimeout(loaderTimer);
+  }, [authResolved]);
+
+  useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         try {
-          const token = await firebaseUser.getIdToken();
-          const response = await fetch("/api/auth/me", {
-            headers: { "Authorization": `Bearer ${token}` }
-          });
-          const ct = response.headers.get("content-type");
-          if (!ct || !ct.includes("application/json")) {
-            console.warn("VERITAS Learn - Authentication service is warming up. Retrying...");
-            return;
+          let retryCount = 0;
+          let data = null;
+          let token = await firebaseUser.getIdToken();
+
+          while (retryCount < 3) {
+            if (retryCount > 0) setAuthMessage("Opening VERITAS Learn...");
+            const response = await fetch("/api/auth/me", {
+              headers: { "Authorization": `Bearer ${token}` }
+            });
+            const ct = response.headers.get("content-type");
+            if (!ct || !ct.includes("application/json")) {
+              console.warn("VERITAS Learn - Authentication service is warming up. Retrying...");
+              retryCount++;
+              await new Promise(r => setTimeout(r, 1000));
+              continue;
+            }
+            data = await response.json();
+            break;
           }
-          const data = await response.json();
-          if (data.loggedIn) {
+
+          if (data && data.loggedIn) {
             setCurrentUser(data.user);
             setIdToken(token);
             fetchLmsPayload(data.user, token);
           } else {
-            console.error("Access forbidden: School domain restriction enforced.");
+            console.error("Access forbidden: School domain restriction enforced or server warmup failed.");
             setCurrentUser(null);
             setIdToken(null);
             await signOut(auth);
@@ -106,7 +128,7 @@ export default function App() {
         setCurrentUser(null);
         setIdToken(null);
       }
-      setLoading(false);
+      setAuthResolved(true);
     });
 
     return () => unsubscribe();
@@ -561,10 +583,30 @@ export default function App() {
     }
   };
 
-  if (loading) {
+  if (!authResolved && !showAuthLoader) {
+    // Show landing page immediately while auth resolves in background
+    return <LandingPage onLoginSuccess={handleLogin} />;
+  }
+
+  if (!authResolved && showAuthLoader) {
     return (
-      <div className="min-h-screen bg-[#F4F5F7] text-slate-900 flex flex-col items-center justify-center font-sans">
-        <RefreshSpinner />
+      <div className="min-h-screen bg-[#F4F5F7] text-slate-900 flex flex-col items-center justify-center font-sans p-6">
+        <div className="bg-white px-8 py-10 rounded-xl shadow-[0_2px_10px_rgba(0,0,0,0.04)] border border-slate-200 flex flex-col items-center justify-center w-full max-w-sm text-center">
+          <div className="mb-5 flex items-center justify-center w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl mx-auto shadow-sm border border-indigo-100">
+            <BookOpen className="w-5 h-5" />
+          </div>
+          <h2 className="text-xl font-bold text-slate-800 tracking-tight mb-2">
+            VERITAS Learn
+          </h2>
+          <p className="text-sm text-slate-500 font-medium">
+            {authMessage}
+          </p>
+          <div className="mt-6 flex items-center justify-center gap-1.5 h-4">
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '0ms' }}></span>
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '150ms' }}></span>
+            <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+          </div>
+        </div>
       </div>
     );
   }
@@ -1078,8 +1120,7 @@ export default function App() {
 function RefreshSpinner() {
   return (
     <div className="flex flex-col items-center gap-1.5">
-      <div className="w-6 h-6 border-2 border-[#0A192F] border-t-[#E5B53B] rounded-full animate-spin"></div>
-      <span className="text-[10px] font-mono font-bold tracking-wider text-slate-500 uppercase">Synchronizing databases...</span>
+      <div className="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
     </div>
   );
 }
