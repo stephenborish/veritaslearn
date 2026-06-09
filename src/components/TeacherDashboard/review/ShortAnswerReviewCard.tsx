@@ -4,6 +4,7 @@ import { RichContentRenderer, getPlainText } from "../../RichContent/RichContent
 import { AIGradingPanel } from "./AIGradingPanel";
 import { ManualScoreEditor } from "./ManualScoreEditor";
 import type { ReviewBinding } from "./reviewBinding";
+import { resolveResponseScoreParts } from "./reviewModel";
 
 /**
  * Short-answer grading workspace: prompt → student response → teacher-only
@@ -28,6 +29,9 @@ export function ShortAnswerReviewCard({
   const promptContent =
     question?.stem || question?.description || block?.singleQuestion?.stem || block?.questionPool?.description || "No prompt text.";
   const answerText = response?.responseValue ?? "";
+
+  const resolvedParts = resolveResponseScoreParts(response);
+  const resolvedMaxPoints = maxPoints > 0 ? maxPoints : (resolvedParts.maxPoints > 0 ? resolvedParts.maxPoints : (question?.points ?? 0));
 
   return (
     <div className="space-y-4">
@@ -80,10 +84,10 @@ export function ShortAnswerReviewCard({
       <ScoringContext question={question} />
 
       {/* AI grading */}
-      {response && <AIGradingPanel response={response} maxPoints={maxPoints} review={review} />}
+      {response && <AIGradingPanel response={response} maxPoints={resolvedMaxPoints} review={review} />}
 
       {/* Manual scoring */}
-      {response && <ManualScoreEditor response={response} maxPoints={maxPoints} review={review} showFeedback />}
+      {response && <ManualScoreEditor response={response} maxPoints={resolvedMaxPoints} review={review} showFeedback />}
     </div>
   );
 }

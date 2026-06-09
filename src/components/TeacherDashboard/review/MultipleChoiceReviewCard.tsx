@@ -1,6 +1,6 @@
 import { Check, X, CircleSlash, ListChecks } from "lucide-react";
 import { RichContentRenderer } from "../../RichContent/RichContentRenderer";
-import { selectedChoiceId, choiceLetter, resolveChoiceText } from "./reviewModel";
+import { selectedChoiceId, choiceLetter, resolveChoiceText, resolveResponseScoreParts } from "./reviewModel";
 
 /**
  * Teacher-facing multiple-choice review. Shows the full formatted stem, every
@@ -25,6 +25,9 @@ export function MultipleChoiceReviewCard({
   const correctId = String(question?.correctChoiceId ?? "");
   const resolvedSelected = hasValue && choices.some((c) => String(c.id) === selectedId);
   const isCorrect = !!response?.isCorrect;
+
+  const resolvedParts = resolveResponseScoreParts(response);
+  const resolvedMaxPoints = maxPoints > 0 ? maxPoints : (resolvedParts.maxPoints > 0 ? resolvedParts.maxPoints : (question?.points ?? 0));
 
   return (
     <div className="space-y-4">
@@ -134,7 +137,7 @@ export function MultipleChoiceReviewCard({
       </div>
 
       {/* Score outcome */}
-      <McScoreOutcome question={question} block={block} response={response} maxPoints={maxPoints} />
+      <McScoreOutcome question={question} block={block} response={response} maxPoints={resolvedMaxPoints} />
     </div>
   );
 }

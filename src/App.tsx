@@ -57,6 +57,7 @@ export default function App() {
   const [gradebookEntries, setGradebookEntries] = useState<any[]>([]);
   const [gradebookResponseEntries, setGradebookResponseEntries] = useState<any[]>([]);
   const [lessonVersions, setLessonVersions] = useState<any[]>([]);
+  const [questionAssignments, setQuestionAssignments] = useState<any[]>([]);
 
   // Selection states
   const [activeTab, setActiveTab] = useState<"course" | "live" | "builder" | "courses" | "gradebook" | "ai" | "admin">("live");
@@ -212,6 +213,7 @@ export default function App() {
             setGradebookResponseEntries(analyticsRaw.gradebookResponseEntries || []);
             setStudentActivities(analyticsRaw.studentActivities || []);
             setLessonVersions(analyticsRaw.lessonVersions || []);
+            setQuestionAssignments(analyticsRaw.questionAssignments || []);
           } else {
             console.warn(`VERITAS Learn - Analytics fetch returned non-ok status: ${analyticsRes.status}`);
           }
@@ -1119,6 +1121,9 @@ export default function App() {
           assignments={assignments}
           studentActivities={studentActivities}
           lessonVersions={lessonVersions}
+          gradebookEntries={gradebookEntries}
+          gradebookResponseEntries={gradebookResponseEntries}
+          questionAssignments={questionAssignments}
           onOverrideSave={handleOverrideScore}
           onReviewAction={handleReviewAction}
           onUnlockStudent={handleUnlockStudent}

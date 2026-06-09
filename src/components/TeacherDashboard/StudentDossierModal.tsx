@@ -28,6 +28,8 @@ import {
   gradingState,
   GRADING_STATE_LABEL,
   gradingStateTone,
+  resolveAttemptScoreParts,
+  resolveQuestionMaxPoints,
   type StepDescriptor,
   type StepResolveContext,
 } from "./review/reviewModel";
@@ -67,6 +69,9 @@ interface StudentDossierModalProps {
   assignments?: any[];
   studentActivities?: any[];
   lessonVersions?: any[];
+  gradebookEntries?: any[];
+  gradebookResponseEntries?: any[];
+  questionAssignments?: any[];
   onClose: () => void;
   onOverrideSave: (responseId: string, score: number, notes: string) => Promise<void>;
   onReviewAction?: (action: ReviewActionName, responseId: string, payload?: any) => Promise<void>;
@@ -113,6 +118,9 @@ export default function StudentDossierModal({
   assignments = [],
   studentActivities = [],
   lessonVersions = [],
+  gradebookEntries = [],
+  gradebookResponseEntries = [],
+  questionAssignments = [],
   onClose,
   onOverrideSave,
   onReviewAction,
@@ -271,7 +279,14 @@ export default function StudentDossierModal({
   const getSnapshotBlock = (bId: string) =>
     versionSnapshot?.blocksSnapshot ? versionSnapshot.blocksSnapshot.find((b: any) => b.id === bId) : null;
 
-  const resolveCtx: StepResolveContext = { blocks: orderedSteps, getSnapshotBlock, responses: sResponses, attempt };
+  const resolveCtx: StepResolveContext = {
+    blocks: orderedSteps,
+    getSnapshotBlock,
+    responses: sResponses,
+    attempt,
+    questionAssignments,
+    gradebookResponseEntries,
+  };
   const stepRows = buildStepRows(allTimelineSteps, resolveCtx, sSignals);
 
   const integritySummary = deriveIntegritySignalSummary(sSignals, {
@@ -290,15 +305,16 @@ export default function StudentDossierModal({
   ).length;
 
   // Score / status summary
-  const calcMaxPoints = () =>
-    orderedSteps.reduce((sum: number, b: any) => {
-      if (b.type !== "question" || b.isPractice) return sum;
-      if (b.singleQuestion) return sum + (b.singleQuestion.points || 0);
-      if (b.questionPool) return sum + (b.questionPool.questions?.[0]?.points || 0) * (b.questionPool.numToSelect || 1);
-      return sum;
-    }, 0);
-  const maxLessonPoints = calcMaxPoints();
-  const earnedPoints = attempt.score || 0;
+  const attemptScoreParts = resolveAttemptScoreParts(
+    attempt,
+    responses,
+    gradebookEntries,
+    gradebookResponseEntries,
+    questionAssignments,
+    blocks
+  );
+  const maxLessonPoints = attemptScoreParts.maxPoints;
+  const earnedPoints = attemptScoreParts.score;
   const scorePercentage = maxLessonPoints > 0 ? Math.round((earnedPoints / maxLessonPoints) * 100) : 0;
 
   const asg = (assignments || []).find((a: any) => a.lessonId === lesson.id);

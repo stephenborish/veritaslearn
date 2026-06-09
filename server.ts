@@ -603,13 +603,37 @@ function calcMaxPointsForAttempt(attempt: any, db: any): number {
   if (total === 0) {
     const lessonBlocks = (db.blocks || []).filter((b: any) => b.lessonId === attempt.lessonId);
     total = lessonBlocks.reduce((sum: number, b: any) => {
-      if (b.type !== "question" || b.isPractice) return sum;
-      if (b.singleQuestion) return sum + (b.singleQuestion.points || 0);
-      if (b.questionPool) {
-        const perQ = b.questionPool.questions?.[0]?.points || 0;
-        return sum + perQ * (b.questionPool.numToSelect || 1);
+      let subTotal = 0;
+      if (b.type === "question" && !b.isPractice) {
+        if (b.singleQuestion) {
+          let pts = Number(b.singleQuestion.points) || 0;
+          if (pts === 0 && Array.isArray(b.singleQuestion.rubricCategories)) {
+            pts = b.singleQuestion.rubricCategories.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+          }
+          subTotal += pts;
+        } else if (b.questionPool) {
+          let perQ = Number(b.questionPool.questions?.[0]?.points) || 0;
+          if (perQ === 0 && Array.isArray(b.questionPool.questions?.[0]?.rubricCategories)) {
+            perQ = b.questionPool.questions[0].rubricCategories.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+          }
+          subTotal += perQ * (b.questionPool.numToSelect || 1);
+        }
       }
-      return sum;
+      if (b.type === "video" && Array.isArray(b.videoCheckpoints)) {
+        b.videoCheckpoints.forEach((cp: any) => {
+          if (!cp.isPractice) {
+            const cpQ = cp.question || cp.questions?.[0];
+            if (cpQ) {
+              let pts = Number(cpQ.points) || 0;
+              if (pts === 0 && Array.isArray(cpQ.rubricCategories)) {
+                pts = cpQ.rubricCategories.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+              }
+              subTotal += pts;
+            }
+          }
+        });
+      }
+      return sum + subTotal;
     }, 0);
   }
   return total;
@@ -4298,7 +4322,10 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
     const gradingMode = isPracticeQuestion ? "practice" : "assessment";
     const feedbackVisibility = isPracticeQuestion ? (isMC ? "student_visible" : "pending") : "teacher_only";
     const gradebookCategory = isPracticeQuestion ? "practice" : "assessment";
-    const maxPointsValue = Number(originalQuestion.points) || 0;
+    let maxPointsValue = Number(originalQuestion.points) || 0;
+    if (maxPointsValue === 0 && Array.isArray(originalQuestion.rubricCategories)) {
+      maxPointsValue = originalQuestion.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+    }
 
     const newResponse: any = {
       id: "resp_" + Math.random().toString(36).substring(2, 9),
@@ -5818,6 +5845,7 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
   const gradebookResponseEntries = db.gradebookResponseEntries || [];
   const studentActivities = db.studentActivities || [];
   const lessonVersions = db.lessonVersions || [];
+  const questionAssignments = db.questionAssignments || [];
 
   res.json({
     students,
@@ -5829,6 +5857,7 @@ app.get("/api/analytics", requireTeacher, (req, res) => {
     gradebookResponseEntries,
     studentActivities,
     lessonVersions,
+    questionAssignments,
   });
 });
 
@@ -6301,16 +6330,67 @@ app.post("/api/ai-review/:responseId/approve", requireTeacher, async (req, res) 
     const response = db.responses[responseIdx];
     const now = new Date().toISOString();
 
-    // Locating latest AI grading record
-    const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === responseId);
+    // Locating latest successful AI grading record (filter then take last element)
+    const aiRecords = (db.aiGradingRecords || []).filter((g: any) => g.responseId === responseId);
+    const aiRecord = aiRecords.length > 0 ? aiRecords[aiRecords.length - 1] : null;
     if (!aiRecord || (aiRecord.parsedScore === undefined && aiRecord.score === undefined)) {
       fail(res, 'VALIDATION_ERROR', 'No usable AI grading proposal found.');
       return;
     }
 
     const proposedScore = aiRecord.parsedScore !== undefined ? aiRecord.parsedScore : aiRecord.score;
-    const maxPoints = response.maxPoints ?? 0;
-    const clampedScore = Math.max(0, Math.min(Number(proposedScore) || 0, maxPoints));
+    const parsedProposedScore = Number(proposedScore);
+    if (isNaN(parsedProposedScore)) {
+      fail(res, 'VALIDATION_ERROR', 'No usable numeric AI grading proposal found.');
+      return;
+    }
+
+    // Resolve maxPoints robustly
+    let maxPoints = Number(response.maxPoints) || 0;
+
+    // Fallback to GradebookResponseEntry
+    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
+    const existingGre = greIdx !== -1 ? db.gradebookResponseEntries[greIdx] : null;
+    if (maxPoints === 0 && existingGre && typeof existingGre.maxScore === "number" && existingGre.maxScore > 0) {
+      maxPoints = existingGre.maxScore;
+    }
+
+    // Fallback to QuestionAssignment
+    if (maxPoints === 0 && response.attemptId && response.blockId) {
+      const qAsg = (db.questionAssignments || []).find((qa: any) => 
+        qa.attemptId === response.attemptId && 
+        qa.blockId === response.blockId && 
+        (response.checkpointId ? qa.checkpointId === response.checkpointId : true)
+      );
+      if (qAsg && typeof qAsg.selectedQuestion?.points === "number" && qAsg.selectedQuestion.points > 0) {
+        maxPoints = qAsg.selectedQuestion.points;
+      }
+    }
+
+    // Fallback to block / checkpoint questionDef / rubric totals
+    if (maxPoints === 0) {
+      const block = (db.blocks || []).find((b: any) => b.id === response.blockId);
+      if (block) {
+        let qDef = null;
+        if (response.checkpointId && Array.isArray(block.videoCheckpoints)) {
+          const cp = block.videoCheckpoints.find((c: any) => c.id === response.checkpointId);
+          if (cp) {
+            qDef = cp.question || cp.questions?.[0];
+          }
+        } else {
+          qDef = block.singleQuestion || block.questionPool?.questions?.[0];
+        }
+        if (qDef) {
+          if (Array.isArray(qDef.rubricCategories) && qDef.rubricCategories.length > 0) {
+            maxPoints = qDef.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+          } else {
+            maxPoints = Number(qDef.points) || 0;
+          }
+        }
+      }
+    }
+
+    const clampedScore = maxPoints > 0 ? Math.max(0, Math.min(parsedProposedScore, maxPoints)) : parsedProposedScore;
 
     // Preserve previous manual score in audit metadata if one existed
     const previousManualScore = (response.teacherOverrideScore !== undefined && response.teacherOverrideScore !== null)
@@ -6321,6 +6401,7 @@ app.post("/api/ai-review/:responseId/approve", requireTeacher, async (req, res) 
 
     response.score = clampedScore;
     response.pointsEarned = clampedScore;
+    response.maxPoints = maxPoints;
     response.teacherReviewedAt = now;
     response.teacherReviewedBy = teacher.id;
     if (aiRecord.feedback !== undefined) {
@@ -6340,15 +6421,15 @@ app.post("/api/ai-review/:responseId/approve", requireTeacher, async (req, res) 
     };
 
     // Update GradebookResponseEntry
-    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
-    if (greIdx !== -1) {
-      db.gradebookResponseEntries[greIdx].status = 'teacher_reviewed';
-      db.gradebookResponseEntries[greIdx].score = clampedScore;
-      db.gradebookResponseEntries[greIdx].originalAiScore = proposedScore;
-      db.gradebookResponseEntries[greIdx].reviewedAt = now;
-      db.gradebookResponseEntries[greIdx].reviewedBy = teacher.id;
-      db.gradebookResponseEntries[greIdx].studentFacingFeedback = aiRecord.feedback || "";
-      db.gradebookResponseEntries[greIdx].updatedAt = now;
+    if (greIdx !== -1 && existingGre) {
+      existingGre.status = 'teacher_reviewed';
+      existingGre.score = clampedScore;
+      existingGre.maxScore = maxPoints;
+      existingGre.originalAiScore = proposedScore;
+      existingGre.reviewedAt = now;
+      existingGre.reviewedBy = teacher.id;
+      existingGre.studentFacingFeedback = aiRecord.feedback || "";
+      existingGre.updatedAt = now;
     } else {
       const attempt = (db.attempts || []).find((a: any) => a.id === response.attemptId);
       if (attempt) {
@@ -6364,6 +6445,7 @@ app.post("/api/ai-review/:responseId/approve", requireTeacher, async (req, res) 
         const newGreIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
         if (newGreIdx !== -1) {
           db.gradebookResponseEntries[newGreIdx].originalAiScore = proposedScore;
+          db.gradebookResponseEntries[newGreIdx].maxScore = maxPoints;
           db.gradebookResponseEntries[newGreIdx].reviewedAt = now;
           db.gradebookResponseEntries[newGreIdx].reviewedBy = teacher.id;
           db.gradebookResponseEntries[newGreIdx].studentFacingFeedback = aiRecord.feedback || "";
@@ -6391,35 +6473,92 @@ app.post("/api/ai-review/:responseId/override", requireTeacher, async (req, res)
     if (responseIdx === -1) { fail(res, 'NOT_FOUND', 'Response not found.'); return; }
 
     const response = db.responses[responseIdx];
+    const parsedScore = Number(score);
+    if (isNaN(parsedScore)) {
+      fail(res, 'VALIDATION_ERROR', 'Score must be a valid number.');
+      return;
+    }
+
+    // Resolve maxPoints robustly
+    let maxPoints = Number(response.maxPoints) || 0;
+
+    // Fallback to GradebookResponseEntry
+    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
+    const existingGre = greIdx !== -1 ? db.gradebookResponseEntries[greIdx] : null;
+    if (maxPoints === 0 && existingGre && typeof existingGre.maxScore === "number" && existingGre.maxScore > 0) {
+      maxPoints = existingGre.maxScore;
+    }
+
+    // Fallback to QuestionAssignment
+    if (maxPoints === 0 && response.attemptId && response.blockId) {
+      const qAsg = (db.questionAssignments || []).find((qa: any) => 
+        qa.attemptId === response.attemptId && 
+        qa.blockId === response.blockId && 
+        (response.checkpointId ? qa.checkpointId === response.checkpointId : true)
+      );
+      if (qAsg && typeof qAsg.selectedQuestion?.points === "number" && qAsg.selectedQuestion.points > 0) {
+        maxPoints = qAsg.selectedQuestion.points;
+      }
+    }
+
+    // Fallback to block / checkpoint questionDef / rubric totals
+    if (maxPoints === 0) {
+      const block = (db.blocks || []).find((b: any) => b.id === response.blockId);
+      if (block) {
+        let qDef = null;
+        if (response.checkpointId && Array.isArray(block.videoCheckpoints)) {
+          const cp = block.videoCheckpoints.find((c: any) => c.id === response.checkpointId);
+          if (cp) {
+            qDef = cp.question || cp.questions?.[0];
+          }
+        } else {
+          qDef = block.singleQuestion || block.questionPool?.questions?.[0];
+        }
+        if (qDef) {
+          if (Array.isArray(qDef.rubricCategories) && qDef.rubricCategories.length > 0) {
+            maxPoints = qDef.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+          } else {
+            maxPoints = Number(qDef.points) || 0;
+          }
+        }
+      }
+    }
+
+    // Reject score outside 0..maxPoints
+    if (parsedScore < 0 || (maxPoints > 0 && parsedScore > maxPoints) || (maxPoints === 0 && parsedScore > 0)) {
+      fail(res, 'VALIDATION_ERROR', `Score ${parsedScore} is outside the valid range (0 to ${maxPoints}).`);
+      return;
+    }
+
     const now = new Date().toISOString();
     const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === responseId);
 
     // Preserve original AI score before override
     const originalAiScore = aiRecord?.parsedScore ?? response.score ?? null;
 
-    response.score = Number(score);
-    response.pointsEarned = Number(score);
+    response.score = parsedScore;
+    response.pointsEarned = parsedScore;
+    response.maxPoints = maxPoints;
     response.teacherReviewedAt = now;
     response.teacherReviewedBy = teacher.id;
-    response.teacherOverrideScore = Number(score);
+    response.teacherOverrideScore = parsedScore;
     response.teacherOverrideFeedback = teacherOnlyNotes || '';
-    response.teacherOverride = { score: Number(score), notes: teacherOnlyNotes || '', gradedAt: now };
+    response.teacherOverride = { score: parsedScore, notes: teacherOnlyNotes || '', gradedAt: now };
     if (studentFacingFeedback !== undefined) {
       response.studentFacingFeedback = studentFacingFeedback;
     }
 
-    // GradebookResponseEntry
-    const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
-    const gre = greIdx !== -1 ? db.gradebookResponseEntries[greIdx] : null;
-    if (greIdx !== -1) {
-      gre.status = 'teacher_overridden';
-      gre.score = Number(score);
-      gre.originalAiScore = originalAiScore;
-      gre.reviewedAt = now;
-      gre.reviewedBy = teacher.id;
-      if (studentFacingFeedback !== undefined) gre.studentFacingFeedback = studentFacingFeedback;
-      if (teacherOnlyNotes) gre.teacherOnlyNotes = teacherOnlyNotes;
-      gre.updatedAt = now;
+    // Apply resolved maxScore and stats to existing / new GradebookResponseEntry
+    if (greIdx !== -1 && existingGre) {
+      existingGre.status = 'teacher_overridden';
+      existingGre.score = parsedScore;
+      existingGre.maxScore = maxPoints;
+      existingGre.originalAiScore = originalAiScore;
+      existingGre.reviewedAt = now;
+      existingGre.reviewedBy = teacher.id;
+      if (studentFacingFeedback !== undefined) existingGre.studentFacingFeedback = studentFacingFeedback;
+      if (teacherOnlyNotes) existingGre.teacherOnlyNotes = teacherOnlyNotes;
+      existingGre.updatedAt = now;
     } else {
       // Create a GradebookResponseEntry if missing
       const attempt = (db.attempts || []).find((a: any) => a.id === response.attemptId);

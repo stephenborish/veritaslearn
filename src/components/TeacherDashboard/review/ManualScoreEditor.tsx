@@ -1,5 +1,6 @@
 import { Check, Minus, Plus, Lock, Send } from "lucide-react";
 import type { ReviewBinding } from "./reviewBinding";
+import { resolveResponseScoreParts } from "./reviewModel";
 
 /**
  * Manual teacher scoring. Score is clamped to [0, maxPoints]; private notes never
@@ -23,10 +24,13 @@ export function ManualScoreEditor({
   const saved = review.saveSuccess[id];
   const action = review.actionStates[id];
 
+  const resolvedParts = resolveResponseScoreParts(response);
+  const resolvedMaxPoints = maxPoints > 0 ? maxPoints : resolvedParts.maxPoints;
+
   const scoreValue =
     review.overrideScores[id] !== undefined
       ? review.overrideScores[id]
-      : response.teacherOverride?.score ?? response.score ?? 0;
+      : resolvedParts.score;
   const notesValue =
     review.overrideNotes[id] !== undefined
       ? review.overrideNotes[id]
@@ -36,7 +40,7 @@ export function ManualScoreEditor({
       ? review.editedFeedbacks[id]
       : response.studentFacingFeedback || response.aiFeedback || response.aiGrading?.rationale || "";
 
-  const clamp = (n: number) => Math.max(0, Math.min(maxPoints || 0, n));
+  const clamp = (n: number) => Math.max(0, Math.min(resolvedMaxPoints || 0, n));
   const setScore = (n: number) => review.setOverrideScore(id, clamp(Number.isFinite(n) ? n : 0));
 
   const isReleased = !!(response.feedbackReleasedAt || response.aiFeedbackReleasedAt || response.feedbackVisibleToStudent);
@@ -76,12 +80,12 @@ export function ManualScoreEditor({
               <input
                 type="number"
                 min={0}
-                max={maxPoints}
+                max={resolvedMaxPoints}
                 value={scoreValue}
                 onChange={(e) => setScore(Number(e.target.value))}
                 className="w-12 bg-transparent text-center text-[15px] font-bold tabular-nums text-slate-800 focus:outline-none"
               />
-              <span className="text-[12px] font-semibold text-slate-400">/ {maxPoints}</span>
+              <span className="text-[12px] font-semibold text-slate-400">/ {resolvedMaxPoints}</span>
             </div>
             <button
               type="button"
@@ -147,7 +151,7 @@ export function ManualScoreEditor({
           )}
           <button
             type="button"
-            onClick={() => review.saveOverride(id, maxPoints)}
+            onClick={() => review.saveOverride(id, resolvedMaxPoints)}
             disabled={saving || !!action?.loading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#0A192F] px-4 py-2 text-[12px] font-bold text-white transition hover:bg-[#15294b] disabled:bg-slate-300"
           >

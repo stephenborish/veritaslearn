@@ -254,8 +254,8 @@ export function gradingStateTone(state: GradingState): { bg: string; text: strin
 
 export function questionMaxPoints(question: any, block: any, isPractice: boolean): number {
   if (isPractice) return 0;
-  if (question?.points !== undefined) return question.points;
-  return block?.points || block?.singleQuestion?.points || 0;
+  if (question?.points !== undefined) return Number(question.points) || 0;
+  return Number(block?.points) || Number(block?.singleQuestion?.points) || 0;
 }
 
 export interface StepResolveContext {
@@ -263,6 +263,8 @@ export interface StepResolveContext {
   getSnapshotBlock: (blockId: string) => any;
   responses: any[];
   attempt: any;
+  questionAssignments?: any[];
+  gradebookResponseEntries?: any[];
 }
 
 /** Resolve a step to its snapshot-preferred block, checkpoint, question, response, and max points. */
@@ -275,13 +277,35 @@ export function resolveStep(step: StepDescriptor, ctx: StepResolveContext): Reso
     const snapCp = (snapshotBlock?.videoCheckpoints || []).find((c: any) => c.id === step.checkpointId) || liveCp;
     const response = ctx.responses.find((r) => r.blockId === step.blockId && r.checkpointId === step.checkpointId) || null;
     const questionDef = findCheckpointQuestionDef(snapCp, response);
-    const maxPoints = questionMaxPoints(questionDef, snapCp, !!snapCp?.isPractice || step.isPractice);
+    
+    const isPractice = !!snapCp?.isPractice || step.isPractice;
+    let maxPoints = 0;
+    if (!isPractice) {
+      const qAsg = (ctx.questionAssignments || []).find((qa: any) => 
+        qa.attemptId === ctx.attempt?.id && 
+        qa.blockId === step.blockId && 
+        qa.checkpointId === step.checkpointId
+      );
+      maxPoints = resolveQuestionMaxPoints(snapshotBlock, snapCp, qAsg, response);
+    }
+    
     return { step, block, snapshotBlock, checkpoint: snapCp, questionDef, response, maxPoints };
   }
 
   const response = ctx.responses.find((r) => r.blockId === step.blockId && !r.checkpointId) || null;
   const questionDef = step.type === "question" ? findQuestionDef(snapshotBlock, response) : null;
-  const maxPoints = step.type === "question" ? questionMaxPoints(questionDef, snapshotBlock, !!snapshotBlock?.isPractice) : 0;
+  
+  const isPractice = !!snapshotBlock?.isPractice || step.isPractice;
+  let maxPoints = 0;
+  if (step.type === "question" && !isPractice) {
+    const qAsg = (ctx.questionAssignments || []).find((qa: any) => 
+      qa.attemptId === ctx.attempt?.id && 
+      qa.blockId === step.blockId && 
+      !qa.checkpointId
+    );
+    maxPoints = resolveQuestionMaxPoints(snapshotBlock, null, qAsg, response);
+  }
+  
   return { step, block, snapshotBlock, checkpoint: null, questionDef, response, maxPoints };
 }
 
@@ -375,13 +399,20 @@ export function computeClassComparison(params: {
   const needsGrading = stepResponses.filter((r) => gradingState(r) === "needs_review" || gradingState(r) === "awaiting_ai").length;
 
   const scored = stepResponses
-    .map((r) => (typeof r.score === "number" ? r.score : null))
+    .map((r) => {
+      const parts = resolveResponseScoreParts(r);
+      return typeof parts.score === "number" ? parts.score : null;
+    })
     .filter((s): s is number => s !== null);
-  const classAverage = scored.length > 0 ? scored.reduce((a, b) => a + b, 0) / scored.length : null;
-  const classAveragePct = classAverage !== null && maxPoints > 0 ? Math.round((classAverage / maxPoints) * 100) : null;
 
-  const studentScore = currentResponse && typeof currentResponse.score === "number" ? currentResponse.score : null;
-  const studentPct = studentScore !== null && maxPoints > 0 ? Math.round((studentScore / maxPoints) * 100) : null;
+  const resolvedCurrentParts = resolveResponseScoreParts(currentResponse);
+  const resolvedMaxPoints = maxPoints > 0 ? maxPoints : (resolvedCurrentParts?.maxPoints || 0);
+
+  const classAverage = scored.length > 0 ? scored.reduce((a, b) => a + b, 0) / scored.length : null;
+  const classAveragePct = classAverage !== null && resolvedMaxPoints > 0 ? Math.round((classAverage / resolvedMaxPoints) * 100) : null;
+
+  const studentScore = currentResponse ? resolvedCurrentParts.score : null;
+  const studentPct = studentScore !== null && resolvedMaxPoints > 0 ? Math.round((studentScore / resolvedMaxPoints) * 100) : null;
 
   let standing: ClassComparison["standing"] = null;
   if (studentScore !== null && classAverage !== null) {
@@ -399,14 +430,14 @@ export function computeClassComparison(params: {
 
   // Simple score distribution buckets when gradable.
   const distribution: { label: string; count: number }[] = [];
-  if (maxPoints > 0 && scored.length > 0) {
+  if (resolvedMaxPoints > 0 && scored.length > 0) {
     const buckets = [
       { label: "Full", test: (p: number) => p >= 0.999 },
       { label: "Partial", test: (p: number) => p > 0 && p < 0.999 },
       { label: "No credit", test: (p: number) => p <= 0 },
     ];
     buckets.forEach((b) => {
-      distribution.push({ label: b.label, count: scored.filter((s) => b.test(s / maxPoints)).length });
+      distribution.push({ label: b.label, count: scored.filter((s) => b.test(s / resolvedMaxPoints)).length });
     });
   }
 
@@ -418,9 +449,198 @@ export function computeClassComparison(params: {
     classAveragePct,
     studentScore,
     studentPct,
-    maxPoints,
+    maxPoints: resolvedMaxPoints,
     standing,
     withSignals,
     distribution,
   };
+}
+
+export function isAssessmentResponse(response: any, block?: any, checkpoint?: any): boolean {
+  if (response) {
+    if (response.gradingMode === "practice" || response.gradebookCategory === "practice") {
+      return false;
+    }
+  }
+  if (checkpoint && checkpoint.isPractice) return false;
+  if (block && block.isPractice) return false;
+  return true;
+}
+
+export function resolveQuestionMaxPoints(block: any, checkpoint: any, qAssignment?: any, response?: any): number {
+  if (response && typeof response.maxPoints === "number" && response.maxPoints > 0) {
+    return response.maxPoints;
+  }
+  if (qAssignment?.selectedQuestion && typeof qAssignment.selectedQuestion.points === "number" && qAssignment.selectedQuestion.points > 0) {
+    return qAssignment.selectedQuestion.points;
+  }
+  
+  // Resolve question definition
+  let qDef = null;
+  if (checkpoint) {
+    qDef = findCheckpointQuestionDef(checkpoint, response);
+  } else if (block) {
+    qDef = findQuestionDef(block, response);
+  }
+  
+  if (qDef) {
+    if (Array.isArray(qDef.rubricCategories) && qDef.rubricCategories.length > 0) {
+      return qDef.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+    }
+    if (typeof qDef.points === "number" && qDef.points > 0) {
+      return qDef.points;
+    }
+    if (typeof qDef.points === "string" && !isNaN(Number(qDef.points)) && Number(qDef.points) > 0) {
+      return Number(qDef.points);
+    }
+  }
+  
+  return 0;
+}
+
+export function resolveResponseScoreParts(
+  response?: any,
+  gradebookEntry?: any,
+  gradebookResponseEntry?: any,
+  qAssignment?: any,
+  questionDef?: any
+): { score: number; maxPoints: number } {
+  let score = 0;
+  if (response) {
+    if (typeof response.teacherOverrideScore === "number" && !isNaN(response.teacherOverrideScore)) {
+      score = response.teacherOverrideScore;
+    } else if (typeof response.score === "number" && !isNaN(response.score)) {
+      score = response.score;
+    }
+  } else if (gradebookResponseEntry && typeof gradebookResponseEntry.score === "number" && !isNaN(gradebookResponseEntry.score)) {
+    score = gradebookResponseEntry.score;
+  }
+  
+  let maxPoints = 0;
+  if (response && typeof response.maxPoints === "number" && response.maxPoints > 0) {
+    maxPoints = response.maxPoints;
+  } else if (gradebookResponseEntry && typeof gradebookResponseEntry.maxScore === "number" && gradebookResponseEntry.maxScore > 0) {
+    maxPoints = gradebookResponseEntry.maxScore;
+  } else if (qAssignment?.selectedQuestion && typeof qAssignment.selectedQuestion.points === "number" && qAssignment.selectedQuestion.points > 0) {
+    maxPoints = qAssignment.selectedQuestion.points;
+  } else if (questionDef) {
+    if (Array.isArray(questionDef.rubricCategories) && questionDef.rubricCategories.length > 0) {
+      maxPoints = questionDef.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+    } else if (typeof questionDef.points === "number" && questionDef.points > 0) {
+      maxPoints = questionDef.points;
+    } else if (typeof questionDef.points === "string" && !isNaN(Number(questionDef.points))) {
+      maxPoints = Number(questionDef.points);
+    }
+  }
+  
+  return { score, maxPoints };
+}
+
+export function resolveAttemptScoreParts(
+  attempt: any,
+  responses: any[],
+  gradebookEntries: any[],
+  gradebookResponseEntries: any[],
+  qAssignments: any[],
+  blocks: any[]
+): { score: number; maxPoints: number } {
+  const attemptId = attempt.id;
+  const lessonId = attempt.lessonId;
+  
+  // Find gradebookEntry for this attempt
+  const gEntry = (gradebookEntries || []).find((e: any) => e.attemptId === attemptId || (e.studentId === attempt.studentId && e.lessonId === lessonId));
+  
+  // 1. Calculate Score
+  const attemptResponses = (responses || []).filter((r: any) => r.attemptId === attemptId);
+  let totalScore = 0;
+  
+  attemptResponses.forEach((res: any) => {
+    const block = (blocks || []).find((b: any) => b.id === res.blockId);
+    let checkpoint = null;
+    if (res.checkpointId && block && Array.isArray(block.videoCheckpoints)) {
+      checkpoint = block.videoCheckpoints.find((c: any) => c.id === res.checkpointId);
+    }
+    
+    if (isAssessmentResponse(res, block, checkpoint)) {
+      const gRespEntry = (gradebookResponseEntries || []).find((gre: any) => gre.responseId === res.id);
+      const qAsg = (qAssignments || []).find((qa: any) => qa.attemptId === attemptId && qa.blockId === res.blockId && (res.checkpointId ? qa.checkpointId === res.checkpointId : true));
+      let qDef = checkpoint ? findCheckpointQuestionDef(checkpoint, res) : findQuestionDef(block, res);
+      
+      const parts = resolveResponseScoreParts(res, gEntry, gRespEntry, qAsg, qDef);
+      totalScore += parts.score;
+    }
+  });
+  
+  // 2. Calculate Max Points
+  let maxPoints = 0;
+  if (gEntry && typeof gEntry.maxPoints === "number" && gEntry.maxPoints > 0) {
+    maxPoints = gEntry.maxPoints;
+  }
+  
+  if (maxPoints === 0) {
+    const attemptAsgs = (qAssignments || []).filter((qa: any) => qa.attemptId === attemptId);
+    let assignedMax = 0;
+    
+    attemptAsgs.forEach((qa: any) => {
+      const block = (blocks || []).find((b: any) => b.id === qa.blockId);
+      let checkpoint = null;
+      if (qa.checkpointId && block && Array.isArray(block.videoCheckpoints)) {
+        checkpoint = block.videoCheckpoints.find((c: any) => c.id === qa.checkpointId);
+      }
+      
+      const isPractice = checkpoint ? !!checkpoint.isPractice : (block ? !!block.isPractice : false);
+      if (!isPractice) {
+        const matchingRes = attemptResponses.find((r: any) => r.blockId === qa.blockId && (qa.checkpointId ? r.checkpointId === qa.checkpointId : !r.checkpointId));
+        let qDef = qa.selectedQuestion || (checkpoint ? findCheckpointQuestionDef(checkpoint, matchingRes) : findQuestionDef(block, matchingRes));
+        const gRespEntry = matchingRes ? (gradebookResponseEntries || []).find((gre: any) => gre.responseId === matchingRes.id) : null;
+        
+        const parts = resolveResponseScoreParts(matchingRes, gEntry, gRespEntry, qa, qDef);
+        assignedMax += parts.maxPoints;
+      }
+    });
+    
+    maxPoints = assignedMax;
+  }
+  
+  if (maxPoints === 0) {
+    const lessonBlocks = (blocks || []).filter((b: any) => b.lessonId === lessonId);
+    let fallbackMax = 0;
+    lessonBlocks.forEach((b: any) => {
+      let subTotal = 0;
+      if (b.type === "question" && !b.isPractice) {
+        if (b.singleQuestion) {
+          let pts = Number(b.singleQuestion.points) || 0;
+          if (pts === 0 && Array.isArray(b.singleQuestion.rubricCategories)) {
+            pts = b.singleQuestion.rubricCategories.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+          }
+          subTotal += pts;
+        } else if (b.questionPool) {
+          let perQ = Number(b.questionPool.questions?.[0]?.points) || 0;
+          if (perQ === 0 && Array.isArray(b.questionPool.questions?.[0]?.rubricCategories)) {
+            perQ = b.questionPool.questions[0].rubricCategories.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+          }
+          subTotal += perQ * (b.questionPool.numToSelect || 1);
+        }
+      }
+      if (b.type === "video" && Array.isArray(b.videoCheckpoints)) {
+        b.videoCheckpoints.forEach((cp: any) => {
+          if (!cp.isPractice) {
+            const cpQ = cp.question || cp.questions?.[0];
+            if (cpQ) {
+              let pts = Number(cpQ.points) || 0;
+              if (pts === 0 && Array.isArray(cpQ.rubricCategories)) {
+                pts = cpQ.rubricCategories.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+              }
+              subTotal += pts;
+            }
+          }
+        });
+      }
+      fallbackMax += subTotal;
+    });
+    
+    maxPoints = fallbackMax;
+  }
+  
+  return { score: totalScore, maxPoints };
 }
