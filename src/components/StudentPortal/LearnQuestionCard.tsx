@@ -311,6 +311,31 @@ function SubmittedState({
     ? {}
     : { initial: { opacity: 0, y: 6 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.3 } };
 
+  // We add a rotating status for the active scoring feel, placed at the top level to respect Rules of Hooks
+  const [scoringPlaqueIdx, setScoringPlaqueIdx] = useState(0);
+  const scoringStates = [
+    "Checking your explanation",
+    "Comparing your answer to the success criteria",
+    "Preparing feedback",
+    "Almost ready"
+  ];
+
+  useEffect(() => {
+    // Only run interval if we are in an active scoring state to avoid background overhead
+    const isActiveScoring = !isMc && isPractice && (
+      saGradingState === "scoring" || 
+      saGradingState === "pending_ai" || 
+      saGradingState === "submitting" || 
+      saGradingState === "submitted"
+    );
+    if (!isActiveScoring) return;
+
+    const interval = setInterval(() => {
+      setScoringPlaqueIdx(prev => (prev + 1) % scoringStates.length);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isMc, isPractice, saGradingState, scoringStates.length]);
+
   // Assessment: a single calm, neutral confirmation. No correctness, no score, no feedback.
   if (!isPractice) {
     return (
@@ -348,7 +373,7 @@ function SubmittedState({
               "rounded-2xl border p-4 text-sm leading-relaxed",
               mcFeedback.correct
                 ? "bg-emerald-50 border-emerald-200 text-emerald-900"
-                : "bg-amber-50 border-amber-200 text-amber-900",
+                 : "bg-amber-50 border-amber-200 text-amber-900",
             )}
           >
             <RichContentRenderer content={mcFeedback.desc} />
@@ -361,22 +386,6 @@ function SubmittedState({
   // ==== Practice SA States ====
 
   if (saGradingState === "scoring" || saGradingState === "pending_ai" || saGradingState === "submitting" || saGradingState === "submitted") {
-    // We add a rotating status for the active scoring feel
-    const [scoringPlaqueIdx, setScoringPlaqueIdx] = useState(0);
-    const scoringStates = [
-      "Checking your explanation",
-      "Comparing your answer to the success criteria",
-      "Preparing feedback",
-      "Almost ready"
-    ];
-
-    useEffect(() => {
-      const interval = setInterval(() => {
-        setScoringPlaqueIdx(prev => (prev + 1) % scoringStates.length);
-      }, 3000);
-      return () => clearInterval(interval);
-    }, [scoringStates.length]);
-
     return (
       <motion.div {...enter} className="space-y-2">
          <div className="flex items-center gap-2.5 text-sm font-medium text-indigo-700">

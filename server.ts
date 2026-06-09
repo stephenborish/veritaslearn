@@ -4261,9 +4261,11 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
 
     if (priorResponse) {
       if (!isMC) {
-        // SA questions are single-submission
-        fail(res, "FORBIDDEN", "This question has already been submitted.");
-        return;
+        // SA questions are single-submission unless they are practice questions
+        if (!isPracticeQuestion) {
+          fail(res, "FORBIDDEN", "This question has already been submitted.");
+          return;
+        }
       } else {
         const priorAttemptsCount = priorResponse.attemptsCount ? Number(priorResponse.attemptsCount) : 1;
         const isCompleted = priorResponse.isComplete === true;
@@ -5036,8 +5038,40 @@ app.post("/api/attempts/:id/draft", requireAuth, async (req, res) => {
     (r: any) => r.attemptId === id && r.questionId === questionId
   );
   if (alreadySubmitted) {
-    res.status(403).json({ error: "This question has already been submitted. Cannot save drafts for it." });
-    return;
+    // Resolve block to check if this is a practice question.
+    // If it is a practice question, we allow resubmitting and draft saving.
+    const assignment = (db.questionAssignments || []).find(
+      (asg: any) => asg.attemptId === id && asg.questionId === questionId
+    );
+    let isPracticeQuestion = false;
+    if (assignment) {
+      const blockId = assignment.blockId;
+      const checkpointId = assignment.checkpointId;
+      const attempt = db.attempts[attemptIdx];
+      let block: any = null;
+      if (attempt.lessonVersionId) {
+        const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
+        const resolved = resolveQuestionFromVersion(version, blockId, checkpointId, questionId);
+        if (resolved) {
+          block = resolved.block;
+        }
+      }
+      if (!block) {
+        block = db.blocks.find((b: any) => b.id === blockId);
+      }
+      if (block) {
+        let checkpoint: any = null;
+        if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+          checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+        }
+        isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
+      }
+    }
+
+    if (!isPracticeQuestion) {
+      res.status(403).json({ error: "This question has already been submitted. Cannot save drafts for it." });
+      return;
+    }
   }
 
   if (!db.attempts[attemptIdx].draftResponses) {

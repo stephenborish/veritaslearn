@@ -273,7 +273,7 @@ export default function LandingPage({ onLoginSuccess }: LandingPageProps) {
                         if (errorText) setErrorText("");
                       }}
                       onKeyDown={(e) => e.key === "Enter" && !loading && handleNewStudentSignIn()}
-                      placeholder="e.g. APBIO26"
+                      placeholder="e.g. MATH32"
                       className="w-full bg-slate-100/65 border border-slate-200/60 rounded-lg px-4 py-3.5 text-slate-800 font-mono font-bold uppercase tracking-widest focus:outline-none focus:border-emerald-600 focus:bg-white text-sm placeholder:normal-case placeholder:tracking-normal placeholder:font-normal placeholder:text-slate-400 transition-colors"
                       disabled={loading}
                       autoComplete="off"
