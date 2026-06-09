@@ -7,7 +7,6 @@ import {
   ShieldAlert, Activity, Filter, ChevronRight, MessageSquare,
   Bot, AlertTriangle, PlayCircle, LogOut, Maximize, MousePointerClick, Info
 } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useTimelineAlignment } from "./useTimelineAlignment";
 
@@ -74,6 +73,17 @@ interface GradebookProps {
   lessonVersions?: any[];
   initialAssignmentId?: string | null;
   onSelectedAssignmentChange?: (assignmentId: string | null) => void;
+  onOpenDossier?: (
+    studentId: string,
+    lessonId: string,
+    nav?: {
+      entries: { studentId: string; lessonId: string; label?: string }[];
+      index: number;
+      label?: string;
+      initialSection?: string;
+      initialStepId?: string;
+    }
+  ) => void;
 }
 
 export default function TimelineGradebook({
@@ -90,7 +100,8 @@ export default function TimelineGradebook({
   onRefresh,
   lessonVersions = [],
   initialAssignmentId = null,
-  onSelectedAssignmentChange
+  onSelectedAssignmentChange,
+  onOpenDossier
 }: GradebookProps) {
   const [showPreviewAttempts, setShowPreviewAttempts] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
@@ -118,8 +129,7 @@ export default function TimelineGradebook({
 
   const selectedAssignment = assignmentOptions.find(a => a.id === selectedAssignmentId);
   const selectedLessonId = selectedAssignment?.lessonId;
-
-  const [selectedCell, setSelectedCell] = useState<{ studentId: string; stepId: string } | null>(null);
+  const selectedLesson = lessons.find(l => l.id === selectedLessonId);
 
   // Mock student for preview
   let displayStudents = [...students];
@@ -200,23 +210,6 @@ export default function TimelineGradebook({
     }
   };
 
-  const getSignalIcon = (severity: string) => {
-    if (severity === 'high') return <AlertTriangle className="w-4 h-4 text-rose-500" />;
-    if (severity === 'medium') return <ShieldAlert className="w-4 h-4 text-amber-500" />;
-    return <AlertCircle className="w-4 h-4 text-blue-500" />;
-  };
-
-  const getSignalLabel = (type: string) => {
-    if (type.includes('guard_marker') || type.includes('refusal_phrase') || type.includes('hidden_assessment')) return "AI Guard marker appeared in response";
-    if (type.includes('fullscreen_exit')) return "Exited fullscreen";
-    if (type.includes('visibility_hidden') || type.includes('blur') || type.includes('visibilitychange') || type.includes('tab_change') || type.includes('focus_lost')) return "Switched tabs";
-    if (type.includes('video_seek')) return "Video seek attempt blocked";
-    if (type.includes('copy')) return "Copied assessment text";
-    if (type.includes('paste')) return "Pasted text";
-    if (type.includes('multiple_monitors')) return "Multiple monitors detected";
-    return "Activity recorded";
-  };
-
   const renderConciseSummary = (row: any) => {
     if (!row.summary?.integrity) return null;
     const parts = [];
@@ -233,13 +226,6 @@ export default function TimelineGradebook({
     if (parts.length === 0) return null;
     return <div className="text-[10px] text-slate-500 mt-1.5">{parts.join(', ')}</div>;
   };
-
-  // Render Drawer
-  const activeDrawerRow = selectedCell ? timelineData.find(r => r.student.id === selectedCell.studentId) : null;
-  const activeDrawerStepIdx = selectedCell ? timelineSteps.findIndex(s => s.id === selectedCell.stepId) : -1;
-  const activeDrawerStepData = activeDrawerRow && activeDrawerStepIdx >= 0 ? activeDrawerRow.steps[activeDrawerStepIdx] : null;
-  const activeDrawerStepDef = activeDrawerStepIdx >= 0 ? timelineSteps[activeDrawerStepIdx] : null;
-  const activeClassStats = activeDrawerStepDef ? classComparison[activeDrawerStepDef.id] : null;
 
   return (
     <div className="space-y-4">
@@ -470,7 +456,21 @@ export default function TimelineGradebook({
                           <td 
                              key={idx} 
                              className="py-2 px-3 border-r border-slate-100 cursor-pointer hover:bg-slate-100/50 transition relative group/cell"
-                             onClick={() => setSelectedCell({ studentId: row.student.id, stepId: timelineSteps[idx].id })}
+                             onClick={() => {
+                               const navEntries = timelineData.map(r => ({
+                                 studentId: r.student.id,
+                                 lessonId: selectedLessonId || "",
+                                 label: r.student.name || r.student.email || r.student.id,
+                               }));
+                               const navIndex = timelineData.findIndex(r => r.student.id === row.student.id);
+                               onOpenDossier?.(row.student.id, selectedLessonId || "", {
+                                 entries: navEntries,
+                                 index: navIndex,
+                                 label: `Gradebook - ${selectedAssignment?.lessonTitle || selectedLesson?.title || "Lesson"}`,
+                                 initialSection: "timeline",
+                                 initialStepId: timelineSteps[idx].id,
+                               });
+                             }}
                              title={cellTitle}
                           >
                              <div className="flex flex-col gap-1.5">
@@ -526,310 +526,6 @@ export default function TimelineGradebook({
           </div>
         </div>
       )}
-
-      {/* Detail Drawer Modal */}
-      <AnimatePresence>
-        {selectedCell && activeDrawerRow && activeDrawerStepData && activeDrawerStepDef && (
-          <div className="fixed inset-0 z-50 flex justify-end">
-             <motion.div 
-               initial={{ opacity: 0}} 
-               animate={{opacity: 1}} 
-               exit={{opacity: 0}} 
-               className="absolute inset-0 bg-slate-900/10 backdrop-blur-sm cursor-pointer" 
-               onClick={() => setSelectedCell(null)} 
-             />
-             <motion.div 
-               initial={{ x: '100%', opacity: 0 }} 
-               animate={{ x: 0, opacity: 1 }} 
-               exit={{ x: '100%', opacity: 0}} 
-               transition={{ type: 'spring', damping: 25, stiffness: 200 }} 
-               className="relative w-full max-w-xl bg-white h-full shadow-2xl flex flex-col border-l border-slate-200 z-10"
-             >
-                {/* Header */}
-                <div className="flex items-center justify-between p-5 border-b border-slate-100 bg-slate-50/50">
-                   <div>
-                     <div className="text-[10px] uppercase font-bold tracking-widest text-slate-500 mb-1">
-                        Timeline Step {activeDrawerStepDef.index}
-                     </div>
-                     <h3 className="text-lg font-bold text-slate-800">{activeDrawerRow.student.name}</h3>
-                     <div className="text-xs text-slate-500 mt-1 truncate max-w-md">{selectedAssignment?.lessonTitle} • {activeDrawerStepDef.title}</div>
-                   </div>
-                   <button 
-                     onClick={() => setSelectedCell(null)}
-                     className="p-2 hover:bg-slate-200 rounded-full transition-colors"
-                   >
-                     <X className="w-5 h-5 text-slate-500" />
-                   </button>
-                </div>
-                
-                {/* Scrollable Body */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/30 custom-scrollbar pb-24">
-                   
-                   {/* Overview Card */}
-                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                      <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
-                         <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">Status</span>
-                         <span className={`text-xs font-bold px-2 py-1 rounded border ${getColorClasses(activeDrawerStepData.color)}`}>{activeDrawerStepData.label}</span>
-                      </div>
-                      
-                      {activeDrawerStepData.score !== null && (
-                        <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
-                           <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">Score</span>
-                           <span className="text-lg font-mono font-bold text-slate-800">{safeScore(activeDrawerStepData.score, activeDrawerStepData.maxScore)}</span>
-                        </div>
-                      )}
-                      
-                      {activeClassStats && activeClassStats.avgScore !== null && (
-                        <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
-                           <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">Class Avg</span>
-                           <span className="text-lg font-mono font-bold text-slate-600">{safeScore(Math.round(activeClassStats.avgScore * 10)/10, activeDrawerStepData.maxScore)}</span>
-                        </div>
-                      )}
-                      
-                      {activeDrawerStepData.attempt?.lastActiveAt && (
-                         <div className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm flex flex-col items-center justify-center text-center">
-                           <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">Activity</span>
-                           <span className="text-xs font-medium text-slate-700 flex items-center gap-1"><Clock className="w-3 h-3 text-slate-400" /> Recorded</span>
-                        </div>
-                      )}
-                   </div>
-                   {(activeDrawerStepData.response || activeDrawerStepData.draftText) && (
-                     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                        <div className="bg-slate-50 border-b border-slate-100 px-4 py-3 flex items-center gap-2">
-                           <FileText className="w-4 h-4 text-slate-500" />
-                           <h4 className="text-sm font-bold text-slate-700">
-                             {activeDrawerStepData.response ? "Student response" : "Student Draft (Unsubmitted)"}
-                           </h4>
-                           {!activeDrawerStepData.response && (
-                             <span className="ml-auto text-[10px] bg-amber-50 text-amber-700 border border-amber-200 font-bold px-1.5 py-0.5 rounded uppercase tracking-wider">
-                               Draft
-                             </span>
-                           )}
-                        </div>
-                        <div className="p-4">
-                           {activeDrawerStepDef.block?.singleQuestion?.stem || activeDrawerStepDef.checkpoint?.question?.stem ? (
-                             <div className="prose prose-sm prose-slate max-w-none text-slate-600 mb-4 bg-slate-50 p-3 rounded-md border border-slate-100">
-                                <strong>Prompt:</strong> <div className="inline-block align-top ml-1"><RichContentRenderer content={activeDrawerStepDef.block?.singleQuestion?.stem || activeDrawerStepDef.checkpoint?.question?.stem} /></div>
-                             </div>
-                           ) : null}
-                           
-                           <div className="text-slate-800 font-medium whitespace-pre-wrap">
-                              {activeDrawerStepData.response ? (
-                                activeDrawerStepData.response.type === "mc" ? (
-                                   <div className="flex flex-col gap-1">
-                                     <div className="flex items-center gap-1.5 flex-wrap">
-                                       <span className="text-[#64748B] font-medium text-xs">Selected Answer:</span>
-                                       <span className="text-slate-900 font-extrabold text-xs">
-                                         {resolveMultipleChoiceText(activeDrawerStepDef.block, activeDrawerStepData.response.responseValue) || activeDrawerStepData.response.responseText || "Selected choice unavailable"}
-                                       </span>
-                                     </div>
-                                     <span className="text-[10px] font-mono text-slate-400 font-semibold leading-none mt-1">
-                                       Choice ID: {activeDrawerStepData.response.responseValue}
-                                     </span>
-                                   </div>
-                                ) : (
-                                   <div className="font-sans leading-relaxed text-slate-800 text-sm">
-                                     {activeDrawerStepData.response.responseValue || <span className="text-slate-400 italic font-mono">(Empty response provided)</span>}
-                                   </div>
-                                )
-                              ) : (
-                                <div className="font-sans leading-relaxed text-slate-800 text-sm">
-                                  {activeDrawerStepData.draftText || <span className="text-slate-400 italic font-mono">(Empty draft response)</span>}
-                                </div>
-                              )}
-                           </div>
-                        </div>
-                     </div>
-                   )}
-
-                   {/* Video Progress Section */}
-                   {activeDrawerStepDef.type === 'video' && activeDrawerStepData.attempt && (
-                     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                        <div className="bg-slate-50 border-b border-slate-100 px-4 py-3 flex items-center gap-2">
-                           <PlayCircle className="w-4 h-4 text-slate-500" />
-                           <h4 className="text-sm font-bold text-slate-700">Video Activity</h4>
-                        </div>
-                        <div className="p-4 flex items-center gap-4">
-                           <div className="flex-1">
-                             <div className="flex justify-between text-xs font-semibold text-slate-600 mb-1.5">
-                               <span>Watched Progress</span>
-                               <span>{Math.round(activeDrawerStepData.attempt.furthestVideoTimestamps?.[activeDrawerStepDef.blockId] || 0)}s / {activeDrawerStepDef.block?.duration || 0}s</span>
-                             </div>
-                             <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden w-full">
-                               <div 
-                                  className="h-full bg-emerald-400 rounded-full" 
-                                  style={{ width: `${Math.min(100, ((activeDrawerStepData.attempt.furthestVideoTimestamps?.[activeDrawerStepDef.blockId] || 0) / (activeDrawerStepDef.block?.duration || 1)) * 100)}%` }}
-                               />
-                             </div>
-                           </div>
-                        </div>
-                     </div>
-                   )}
-
-                   {/* Feedback & Review Section */}
-                   {activeDrawerStepData.response?.aiGrading && (
-                     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                        <div className="bg-purple-50 border-b border-purple-100 px-4 py-3 flex items-center gap-2">
-                           <Bot className="w-4 h-4 text-purple-600" />
-                           <h4 className="text-sm font-bold text-purple-900">AI Review Context</h4>
-                           <span className="ml-auto text-[10px] font-bold uppercase tracking-widest text-purple-600 bg-purple-100 px-2 py-0.5 rounded">Teacher Only</span>
-                        </div>
-                        <div className="p-4 space-y-3">
-                           <div className="text-sm text-slate-700">
-                             <strong>AI Score Proposal: </strong> 
-                             <span className="font-mono">{activeDrawerStepData.response.aiGrading.score}/{activeDrawerStepData.maxScore}</span>
-                           </div>
-                           <div className="text-sm text-slate-600 bg-purple-50/50 p-3 rounded-md border border-purple-100 italic">
-                             {activeDrawerStepData.response.aiGrading.feedback || "No explanation provided."}
-                           </div>
-                           {activeDrawerStepData.response.aiGrading.status === 'success' && activeDrawerStepData.status === 'needs_teacher_review' && (
-                              <button className="text-xs font-bold bg-white border border-slate-200 shadow-sm text-slate-600 hover:text-indigo-600 hover:border-indigo-200 px-3 py-1.5 rounded transition w-full">
-                                Approve AI Classification
-                              </button>
-                           )}
-                        </div>
-                     </div>
-                   )}
-
-                   {/* Integrity Attention Markers & Signal Clusters */}
-                   {activeDrawerStepData.markers && activeDrawerStepData.markers.length > 0 && (
-                     <div className="space-y-4">
-                       {activeDrawerStepData.markers.map((marker: any, mIdx: number) => {
-                         const colorMap = {
-                           high: { text: "text-red-900 bg-red-50 border-red-200 shadow-red-100", headerBg: "bg-red-100/50 border-red-200" },
-                           moderate: { text: "text-amber-900 bg-amber-50 border-amber-200 shadow-amber-100", headerBg: "bg-amber-100/50 border-amber-200" },
-                           low: { text: "text-slate-800 bg-slate-50 border-slate-200 shadow-slate-100", headerBg: "bg-slate-200/50 border-slate-200" },
-                           info: { text: "text-slate-800 bg-slate-50 border-slate-200 shadow-slate-100", headerBg: "bg-slate-200/50 border-slate-200" },
-                           none: { text: "text-slate-800 bg-slate-50 border-slate-200 shadow-slate-100", headerBg: "bg-slate-200/50 border-slate-200" }
-                         };
-                         const currentStyles = colorMap[marker.level as keyof typeof colorMap] || colorMap.low;
-                         const isAi = marker.type === "ai_agent";
-                         
-                         return (
-                           <div key={marker.id || mIdx} className={`border rounded-xl overflow-hidden shadow-sm ${currentStyles.text}`}>
-                             <div className={`px-4 py-3 flex items-center gap-2 border-b ${currentStyles.headerBg}`}>
-                               {isAi ? (
-                                 <Bot className="w-4 h-4 text-red-500 animate-pulse" />
-                               ) : marker.level === "high" ? (
-                                 <AlertTriangle className="w-4 h-4 text-rose-500" />
-                               ) : marker.level === "moderate" ? (
-                                 <AlertCircle className="w-4 h-4 text-amber-500" />
-                               ) : (
-                                 <ShieldAlert className="w-4 h-4 text-slate-500" />
-                               )}
-                               <h4 className="text-sm font-bold">
-                                 {isAi ? "Signals of AI Agent Use" : marker.label}
-                               </h4>
-                               <span className="ml-auto text-[10px] font-bold uppercase tracking-widest bg-white border px-2 py-0.5 rounded shadow-sm">
-                                 {isAi ? "AI Agent Use" : marker.shortLabel || marker.level}
-                               </span>
-                             </div>
-                             <div className="p-4 space-y-2 bg-white/50">
-                               <div className="text-sm font-semibold">{marker.reason}</div>
-                               {marker.suggestedAction && (
-                                 <div className="text-xs text-slate-600 bg-white/80 p-2.5 rounded border border-slate-100 mt-2">
-                                   <strong>Teacher Guidance:</strong> {marker.suggestedAction}
-                                 </div>
-                               )}
-                               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 mt-2 pt-2 border-t border-slate-100/65">
-                                 {marker.evidenceStrength && (
-                                   <span>
-                                     <strong>Evidence:</strong> <span className="capitalize">{marker.evidenceStrength}</span>
-                                   </span>
-                                 )}
-                                 {marker.dataCompleteness && (
-                                   <span>
-                                     <strong>Pacing Completeness:</strong> <span className="capitalize">{marker.dataCompleteness}</span>
-                                   </span>
-                                 )}
-                                 {marker.count && (
-                                   <span>
-                                     <strong>Events:</strong> {marker.count}
-                                   </span>
-                                 )}
-                               </div>
-                             </div>
-                           </div>
-                         );
-                       })}
-                     </div>
-                   )}
-
-                   {/* Collapsible Raw Activity Records */}
-                   {activeDrawerStepData.signals && activeDrawerStepData.signals.length > 0 && (
-                     <details className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm group">
-                       <summary className="bg-slate-50 px-4 py-3 flex items-center gap-2 cursor-pointer font-bold text-sm text-slate-700 hover:bg-slate-100/70 select-none transition-colors">
-                         <Activity className="w-4 h-4 text-slate-500" />
-                         <span>Raw Activity Records ({activeDrawerStepData.signals.length})</span>
-                         <ChevronRight className="w-4 h-4 text-slate-400 ml-auto transition-transform group-open:rotate-90" />
-                       </summary>
-                       <div className="p-4 space-y-3 bg-slate-50/20 border-t border-slate-100">
-                           <p className="text-xs text-slate-500 mb-2">
-                             <Info className="w-3.5 h-3.5 inline-block mr-1 text-slate-400 align-text-bottom" />
-                             Review the raw timing and event timestamps recorded during this specific step.
-                           </p>
-                           {activeDrawerStepData.signals.map((sig: any, sIdx: number) => (
-                              <div key={sIdx} className="flex gap-3 bg-white p-3 rounded-md border border-slate-100 shadow-sm text-xs">
-                                 <div className="mt-0.5 shrink-0">
-                                   {sig.type.includes('clipboard') || sig.type.includes('paste') ? <FileText className="w-3.5 h-3.5 text-slate-400" /> :
-                                    sig.type.includes('visibility') || sig.type.includes('fullscreen') ? <Maximize className="w-3.5 h-3.5 text-slate-400" /> :
-                                    sig.type.includes('guard_marker') ? <Bot className="w-3.5 h-3.5 text-rose-500" /> :
-                                    <MousePointerClick className="w-3.5 h-3.5 text-slate-400" />}
-                                 </div>
-                                 <div className="flex-1 min-w-0">
-                                   <div className="font-bold text-slate-700">{getSignalLabel(sig.type)}</div>
-                                   <div className="text-slate-500 mt-0.5 break-words">{sig.details || "No additional context."}</div>
-                                   <div className="text-[10px] font-mono text-slate-400 mt-1.5 uppercase tracking-wide">
-                                     {sig.timestamp && !isNaN(new Date(sig.timestamp).getTime())
-                                       ? `Recorded ${new Date(sig.timestamp).toLocaleDateString([], { month: "short", day: "numeric" })}, ${new Date(sig.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                                       : "Time unavailable"}
-                                   </div>
-                                 </div>
-                              </div>
-                           ))}
-                       </div>
-                     </details>
-                   )}
-
-                   {/* Class Comparison Section */}
-                   {activeClassStats && (
-                     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                        <div className="bg-slate-50 border-b border-slate-100 px-4 py-3 flex items-center gap-2">
-                           <LayoutList className="w-4 h-4 text-slate-500" />
-                           <h4 className="text-sm font-bold text-slate-700">Class Comparison</h4>
-                        </div>
-                        <div className="p-4 grid grid-cols-2 gap-4">
-                           <div>
-                              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Status Distribution</div>
-                              <div className="text-sm text-slate-700">{activeClassStats.submitted} of {displayStudents.filter(s => !s.isPreview).length} students submitted</div>
-                           </div>
-                           <div>
-                              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Needs Review</div>
-                              <div className="text-sm text-slate-700">{activeClassStats.needsGrading} students pending grading</div>
-                           </div>
-                           <div>
-                              <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Integrity Activity</div>
-                              <div className="text-sm text-slate-700">{activeClassStats.signalsCount} students with signals</div>
-                           </div>
-                           {(activeDrawerStepData.score !== null && activeClassStats.avgScore !== null) && (
-                              <div>
-                                 <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1">Relative Standing</div>
-                                 <div className="text-sm text-slate-700">
-                                    {activeDrawerStepData.score > activeClassStats.avgScore + (activeDrawerStepData.maxScore * 0.1) ? "Above class average" :
-                                     activeDrawerStepData.score < activeClassStats.avgScore - (activeDrawerStepData.maxScore * 0.1) ? "Below class average" :
-                                     "Near class average"}
-                                 </div>
-                              </div>
-                           )}
-                        </div>
-                     </div>
-                   )}
-                   
-                </div>
-             </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

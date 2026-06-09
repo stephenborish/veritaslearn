@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { RichContentRenderer, getPlainText } from "../RichContent/RichContentRenderer";
 import {
   AlertTriangle,
@@ -809,15 +809,80 @@ export default function StudentDossierModal({
 
   // Question/step-to-question navigation within the current lesson. We track the
   // focused step locally and scroll the responses list to its anchor.
-  const orderedSteps = lessonBlocks.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const orderedSteps = useMemo(() => {
+    return lessonBlocks.slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }, [lessonBlocks]);
+
+  // Generate all timeline steps including video checkpoints to match TimelineGradebook's structure
+  const allTimelineSteps = useMemo(() => {
+    const steps: { id: string; blockId: string; type: string; title: string }[] = [];
+    orderedSteps.forEach((b) => {
+      steps.push({
+        id: b.id,
+        blockId: b.id,
+        type: b.type,
+        title: b.title || (b.type === 'video' ? 'Video Block' : b.type === 'question' ? 'Question' : 'Reading'),
+      });
+      if (b.type === "video" && b.videoCheckpoints) {
+        const sortedCPs = [...b.videoCheckpoints].sort(
+          (c1: any, c2: any) => (c1.timestamp ?? c1.timeSeconds ?? 0) - (c2.timestamp ?? c2.timeSeconds ?? 0)
+        );
+        sortedCPs.forEach((cp: any, idx) => {
+          steps.push({
+            id: cp.id,
+            blockId: b.id,
+            type: "checkpoint",
+            title: cp.title || `Checkpoint (${idx + 1})`,
+          });
+        });
+      }
+    });
+    return steps;
+  }, [orderedSteps]);
+
+  // Find parent block ID for any stepId (direct block.id or child cp.id)
+  const findBlockIdForStepId = (stepId: string | null) => {
+    if (!stepId) return null;
+    const directBlock = orderedSteps.find((b) => b.id === stepId);
+    if (directBlock) return directBlock.id;
+
+    for (const b of orderedSteps) {
+      if (b.type === "video" && b.videoCheckpoints) {
+        const matchingCp = b.videoCheckpoints.find((cp: any) => cp.id === stepId);
+        if (matchingCp) return b.id;
+      }
+    }
+    return null;
+  };
+
   const [activeStepId, setActiveStepId] = useState<string | null>(initialStepId || null);
-  const activeStepIndex = activeStepId ? orderedSteps.findIndex((b) => b.id === activeStepId) : -1;
+
+  const activeBlockId = useMemo(() => {
+    return findBlockIdForStepId(activeStepId);
+  }, [activeStepId, orderedSteps]);
+
+  const activeStepIndex = useMemo(() => {
+    if (!activeStepId) return -1;
+    return allTimelineSteps.findIndex((s) => s.id === activeStepId);
+  }, [activeStepId, allTimelineSteps]);
 
   const scrollToStep = (stepId: string) => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    const el = container.querySelector(`[data-step-anchor="${stepId}"]`) as HTMLElement | null;
+
+    // Try scrolling directly to the precise step
+    let el = container.querySelector(`[data-step-anchor="${stepId}"]`) as HTMLElement | null;
+
+    // Fallback to parent block's container if a checkpoint element isn't directly on the screen
+    if (!el) {
+      const parentBlockId = findBlockIdForStepId(stepId);
+      if (parentBlockId) {
+        el = container.querySelector(`[data-step-anchor="${parentBlockId}"]`) as HTMLElement | null;
+      }
+    }
+
     if (!el) return;
+
     let node: HTMLElement | null = el;
     let top = 0;
     while (node && node !== container) {
@@ -828,10 +893,9 @@ export default function StudentDossierModal({
   };
 
   const goToStep = (idx: number) => {
-    if (idx < 0 || idx >= orderedSteps.length) return;
-    const stepId = orderedSteps[idx].id;
+    if (idx < 0 || idx >= allTimelineSteps.length) return;
+    const stepId = allTimelineSteps[idx].id;
     setActiveStepId(stepId);
-    scrollToStep(stepId);
   };
 
   useEffect(() => {
@@ -863,8 +927,9 @@ export default function StudentDossierModal({
     }
   };
 
+  // Scroll to specified section if provided and NO initialStepId is requested (step deep-link takes priority)
   useEffect(() => {
-    if (initialSection) {
+    if (initialSection && !initialStepId) {
       let targetRef = null;
       if (initialSection === "timeline") targetRef = timelineRef;
       else if (initialSection === "responses") targetRef = responsesRef;
@@ -880,15 +945,22 @@ export default function StudentDossierModal({
       }, 350);
       return () => clearTimeout(timer);
     }
-  }, [initialSection]);
+  }, [initialSection, initialStepId]);
 
-  // Deep-link to a specific step/question (Gradebook cell / Review Queue item).
+  // Sync core state with deep link when initialStepId changes
   useEffect(() => {
-    if (!initialStepId) return;
-    setActiveStepId(initialStepId);
-    const timer = setTimeout(() => scrollToStep(initialStepId), 380);
-    return () => clearTimeout(timer);
-  }, [initialStepId, studentId]);
+    if (initialStepId) {
+      setActiveStepId(initialStepId);
+    }
+  }, [initialStepId]);
+
+  // Scroll to active step on mount, step selection change, or student change
+  useEffect(() => {
+    if (activeStepId) {
+      const timer = setTimeout(() => scrollToStep(activeStepId), 250);
+      return () => clearTimeout(timer);
+    }
+  }, [activeStepId, studentId]);
 
   // All recorded student activities for this student and this attempt
   const sActivities = studentActivities
@@ -1242,12 +1314,15 @@ export default function StudentDossierModal({
           </button>
 
           {/* Step / question navigation for the current student */}
-          {orderedSteps.length > 0 && (
-            <div className="flex items-center gap-1.5 ml-auto">
+          {allTimelineSteps.length > 0 && (
+            <div className="flex items-center gap-1.5 ml-auto text-slate-850">
+              <span className="hidden md:inline text-[10.5px] font-bold uppercase tracking-wider text-slate-400 mr-1">
+                Step navigator
+              </span>
               <button
                 type="button"
-                onClick={() => goToStep(activeStepIndex < 0 ? 0 : activeStepIndex - 1)}
-                disabled={activeStepIndex === 0}
+                onClick={() => goToStep(activeStepIndex <= 0 ? 0 : activeStepIndex - 1)}
+                disabled={activeStepIndex <= 0}
                 className="p-1 rounded-md border border-slate-200 text-slate-500 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
                 aria-label="Previous step"
                 title="Previous step"
@@ -1263,16 +1338,19 @@ export default function StudentDossierModal({
                 <option value="" disabled>
                   Go to step…
                 </option>
-                {orderedSteps.map((b, i) => (
-                  <option key={b.id} value={i}>
-                    Step {i + 1} of {orderedSteps.length}: {safeText(b.title, "Step")}
-                  </option>
-                ))}
+                {allTimelineSteps.map((s, i) => {
+                  const prefix = s.type === "checkpoint" ? "Check" : "Step";
+                  return (
+                    <option key={s.id} value={i}>
+                      {prefix} {i + 1} of {allTimelineSteps.length}: {s.title}
+                    </option>
+                  );
+                })}
               </select>
               <button
                 type="button"
                 onClick={() => goToStep(activeStepIndex < 0 ? 0 : activeStepIndex + 1)}
-                disabled={activeStepIndex === orderedSteps.length - 1}
+                disabled={activeStepIndex < 0 || activeStepIndex === allTimelineSteps.length - 1}
                 className="p-1 rounded-md border border-slate-200 text-slate-500 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
                 aria-label="Next step"
                 title="Next step"
@@ -1926,8 +2004,18 @@ export default function StudentDossierModal({
 
                 const activeSeconds = attempt.blockTimeSpent?.[block.id] || 0;
 
+                const isBlockActive = activeBlockId === block.id;
+
                 return (
-                  <div key={block.id} data-step-anchor={block.id} className="bg-white border border-slate-200 p-5 rounded-lg shadow-sm space-y-4 scroll-mt-2 target:ring-2 target:ring-indigo-300">
+                  <div
+                    key={block.id}
+                    data-step-anchor={block.id}
+                    className={`p-5 rounded-lg shadow-sm space-y-4 scroll-mt-2 transition-all duration-350 ${
+                      isBlockActive
+                        ? "bg-indigo-50/15 border-2 border-indigo-500 ring-2 ring-indigo-300 ring-offset-1"
+                        : "bg-white border border-slate-200 hover:border-slate-300"
+                    }`}
+                  >
                     {/* Block header */}
                     <div className="flex justify-between items-center border-b border-slate-100 pb-2">
                       <div className="text-xs font-bold text-slate-700 flex items-center gap-1.5 flex-wrap">
@@ -2473,10 +2561,17 @@ export default function StudentDossierModal({
                           const qBlock = getSnapshotBlock(block.id) || block;
                           const qCp = qBlock?.videoCheckpoints?.find((c: any) => c.id === cp.id) || cp;
 
+                          const isCpActive = activeStepId === cp.id;
+
                           return (
                             <div
                               key={cp.id}
-                              className="border border-slate-200 rounded-lg p-3.5 bg-slate-50 text-xs space-y-3"
+                              data-step-anchor={cp.id}
+                              className={`rounded-lg p-3.5 text-xs space-y-3 transition-all duration-350 scroll-mt-2 ${
+                                isCpActive
+                                  ? "bg-indigo-50/15 border-2 border-indigo-500 ring-2 ring-indigo-300 ring-offset-1"
+                                  : "bg-slate-50 border border-slate-200"
+                              }`}
                             >
                               <div className="flex justify-between items-center text-[10px] bg-white p-2 border border-slate-200 rounded font-semibold text-slate-700">
                                 <span className="font-bold">{cp.title || "Checkpoint"}</span>

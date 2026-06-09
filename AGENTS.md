@@ -1580,6 +1580,30 @@ Future-agent warning:
 Current status:
 
 ```text
+Date: 2026-06-09
+Agent: DeepMind Coding Agent (Antigravity System)
+Task: Replace timeline cell detail drawer with global Lesson Tracking / StudentDossierModal with step-level and checkpoint-level deep-linking, visual highlight, and step navigation.
+
+WHAT CHANGED:
+
+1. src/components/TeacherDashboard/TimelineGradebook.tsx:
+   - Eliminated the redundant right-side timeline drawer.
+   - Deepened integration with onOpenDossier to pass studentId, lessonId, and deep-linking context including initialSection: "responses" and initialStepId.
+
+2. src/components/TeacherDashboard/StudentDossierModal.tsx:
+   - Implemented `allTimelineSteps` compiling blocks and sorted video checkpoints.
+   - Refactored index navigation and goToStep selector.
+   - Updated scrollToStep with parent block fallback resolving block.id vs. cp.id alignment.
+   - Styled elegant active step border, shadow, ring, and active background highlights.
+
+VERIFICATION RESULTS:
+   - TSC type check successful (lint_applet passed).
+   - Production bundle compiled correctly (compile_applet passed).
+```
+
+Previous status:
+
+```text
 Date: 2026-06-03
 Agent: Claude Code (Sonnet 4.6)
 Task: Immutable lesson versioning, assignment-date enforcement, multi-teacher ownership
@@ -5255,3 +5279,11 @@ environment (no browser/Firebase server).
    - **What this indicates**: Clear and balanced diagnostic context explaining standard triggers (e.g. clicked outside the window, pressed background keys).
    - **Recommended Action**: Actionable pedagogical recommendations for follow-up scaffolding.
 5. **Quality Assurance & Verification:** Ran both `lint_applet` and `compile_applet` to confirm overall syntax, code safety, and successful compilation with zero type errors. All elements conform beautifully to the student-teacher trust guidelines.
+
+### Gradebook Timeline Cell Overhaul — Unified Student Dossier Integration (2026-06-09)
+
+1. **Cell Click Redirection to Global Dossier:** Replaced the local, custom right-side details drawer inside `TimelineGradebook.tsx` with a clean transition into the global, full-featured `StudentDossierModal`.
+2. **Deep-Linked Focus on Selected block:** Clicks on active timeline grid cell coordinates now correctly deep-link directly to that specific lesson step within the dossier modal's timeline layout by setting `initialStepId` state.
+3. **Preserved Student Navigation Context:** Enabled standard student-to-student switching buttons inside the dossier modal by passing down the complete sorted array of rows as `navEntries`, matching the current sorter/alignment filters of the Gradebook dashboard.
+4. **Clean Code & Light Footprint:** Removed the old 300+ line redundant AnimatePresence modal drawer block and several idle imports and unused helper functions from `TimelineGradebook.tsx`.
+5. **Quality Assurance:** Ran `lint_applet` and `compile_applet` successfully to verify zero typescript type mismatch regressions or formatting errors. The overhaul builds beautifully.

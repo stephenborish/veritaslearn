@@ -1008,6 +1008,17 @@ export default function App() {
                    <GradebookSkeleton />
                  ) : (
                    <TimelineGradebook
+                      onOpenDossier={(studentId, lessonId, nav) =>
+                        setActiveDossier({
+                          studentId,
+                          lessonId,
+                          initialSection: nav?.initialSection,
+                          initialStepId: nav?.initialStepId,
+                          navEntries: nav?.entries,
+                          navIndex: nav?.index,
+                          navLabel: nav?.label,
+                        })
+                      }
                      students={students}
                      lessons={lessons}
                      attempts={attempts}
