@@ -116,7 +116,7 @@ function MatrixCell({
           {showIntegrity && !aiAgent && (
             <ShieldAlert className={`w-3 h-3 ${integrityColors.text}`} aria-label="Review suggested" />
           )}
-          {aiAgent && <Bot className="w-3 h-3 text-rose-600" aria-label="Signals of AI Agent Use" />}
+          {aiAgent && <Bot className="w-3 h-3 text-rose-600" aria-label="AI detected" />}
         </span>
       </div>
     </button>
@@ -357,7 +357,7 @@ export default function CourseProgress({
                                     {reliabilityLabel(row.reliability)}
                                   </span>
                                   {row.aiAgentSignalCount > 0 && (
-                                    <Bot className="w-3 h-3 text-rose-600" aria-label="Signals of AI Agent Use" />
+                                    <Bot className="w-3 h-3 text-rose-600" aria-label="AI detected" />
                                   )}
                                 </div>
                               </button>
@@ -403,8 +403,8 @@ export default function CourseProgress({
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-slate-500">
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Needs grading</span>
             <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" /> Feedback not released</span>
-            <span className="flex items-center gap-1"><ShieldAlert className="w-3 h-3 text-amber-600" /> Review suggested</span>
-            <span className="flex items-center gap-1"><Bot className="w-3 h-3 text-rose-600" /> Signals of AI Agent Use</span>
+            <span className="flex items-center gap-1"><ShieldAlert className="w-3 h-3 text-amber-600" /> Repeated</span>
+            <span className="flex items-center gap-1"><Bot className="w-3 h-3 text-rose-600" /> AI detected</span>
             <span className="text-slate-400">Click any cell to open the Student Dossier · click an assignment header for the detailed Gradebook</span>
           </div>
         </>

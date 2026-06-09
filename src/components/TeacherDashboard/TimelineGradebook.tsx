@@ -207,12 +207,31 @@ export default function TimelineGradebook({
   };
 
   const getSignalLabel = (type: string) => {
-    if (type.includes('guard_marker') || type.includes('refusal_phrase')) return "Possible AI agent use";
+    if (type.includes('guard_marker') || type.includes('refusal_phrase') || type.includes('hidden_assessment')) return "AI Guard marker appeared in response";
     if (type.includes('fullscreen_exit')) return "Exited fullscreen";
-    if (type.includes('visibility_hidden')) return "Left assessment page";
-    if (type.includes('video_seek')) return "Skipped ahead in video";
-    if (type.includes('copy') || type.includes('paste')) return "Copied or pasted text";
-    return "Activity needs review";
+    if (type.includes('visibility_hidden') || type.includes('blur') || type.includes('visibilitychange') || type.includes('tab_change') || type.includes('focus_lost')) return "Switched tabs";
+    if (type.includes('video_seek')) return "Video seek attempt blocked";
+    if (type.includes('copy')) return "Copied assessment text";
+    if (type.includes('paste')) return "Pasted text";
+    if (type.includes('multiple_monitors')) return "Multiple monitors detected";
+    return "Activity recorded";
+  };
+
+  const renderConciseSummary = (row: any) => {
+    if (!row.summary?.integrity) return null;
+    const parts = [];
+    if (row.summary.integrity.fullscreenSignalCount > 0) parts.push(`Fullscreen exits: ${row.summary.integrity.fullscreenSignalCount}`);
+    if (row.summary.integrity.focusSignalCount > 0) parts.push(`Tab switches: ${row.summary.integrity.focusSignalCount}`);
+    const pasteCount = row.overallSignals?.filter((s: any) => s.eventType?.includes('paste')).length || 0;
+    if (pasteCount > 0) parts.push(`Paste attempts: ${pasteCount}`);
+    const copyCount = row.overallSignals?.filter((s: any) => s.eventType?.includes('copy')).length || 0;
+    if (copyCount > 0) parts.push(`Copy attempts: ${copyCount}`);
+    if (row.summary.integrity.aiAgentSignalCount > 0) parts.push(`AI markers: ${row.summary.integrity.aiAgentSignalCount}`);
+    const multiMonitor = row.overallSignals?.some((s: any) => s.eventType === 'multiple_monitors');
+    if (multiMonitor) parts.push(`Multiple monitors detected`);
+
+    if (parts.length === 0) return null;
+    return <div className="text-[10px] text-slate-500 mt-1.5">{parts.join(', ')}</div>;
   };
 
   // Render Drawer
@@ -380,24 +399,25 @@ export default function TimelineGradebook({
                                   >
                                     {row.summary?.integrity?.aiAgentSignalCount > 0 ? (
                                       <>
-                                        <Bot className="w-3 h-3 shrink-0" /> Signals of AI Agent Use
+                                        <Bot className="w-3 h-3 shrink-0" /> AI detected
                                       </>
                                     ) : row.overallSeverity === 'high' ? (
                                       <>
-                                        <AlertTriangle className="w-3 h-3 shrink-0" /> High attention
+                                        <AlertTriangle className="w-3 h-3 shrink-0" /> Action needed
                                       </>
                                     ) : row.overallSeverity === 'moderate' ? (
                                       <>
-                                        <AlertCircle className="w-3 h-3 shrink-0" /> Review suggested
+                                        <AlertCircle className="w-3 h-3 shrink-0" /> Repeated
                                       </>
                                     ) : (
                                       <>
-                                        <ShieldAlert className="w-3 h-3 shrink-0" /> Low attention
+                                        <ShieldAlert className="w-3 h-3 shrink-0" /> Recorded
                                       </>
                                     )}
                                   </span>
                                 )}
                               </div>
+                              {renderConciseSummary(row)}
                            </div>
                            
                            {/* Small circular completion indicator */}

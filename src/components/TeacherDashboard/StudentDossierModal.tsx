@@ -1666,26 +1666,11 @@ export default function StudentDossierModal({
                       ))}
                     </ul>
                   ) : (
-                    <p className="text-[11px] text-slate-500">No review-worthy patterns. This summary supports your judgment and never changes a score.</p>
+                    <p className="text-[11px] text-slate-500">No review-worthy patterns.</p>
                   )}
-                  <p className="text-[10px] text-slate-400 leading-relaxed">
-                    {integritySummary.groupedSignalCount} signal {integritySummary.groupedSignalCount === 1 ? "cluster" : "clusters"} from {integritySummary.totalSignals} activity {integritySummary.totalSignals === 1 ? "record" : "records"}. Summaries support teacher review and preserve uncertainty.
-                  </p>
                 </div>
               );
             })()}
-
-            {aiGuardSignals > 0 && (
-              <div className="text-xs bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 space-y-1">
-                <p className="font-semibold text-amber-900">Signals of AI agent use</p>
-                <p className="text-amber-800 leading-relaxed">
-                  This answer included content that may indicate a browser AI tool assisted with the response.
-                </p>
-                <p className="text-amber-700 leading-relaxed">
-                  This is not automatic proof of a violation. Review the answer, timing, and other signals before making a decision. Grades are never changed automatically.
-                </p>
-              </div>
-            )}
 
             {sSignals.length === 0 ? (
               <div className="py-4 text-xs font-bold text-emerald-800 bg-emerald-50 rounded-lg px-4 flex items-center gap-2 border border-emerald-200">
@@ -1866,55 +1851,18 @@ export default function StudentDossierModal({
                               <div className="space-y-1">
                                 {/* Event Name & Timestamp */}
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span 
-                                    className={`text-[11px] font-bold ${event.colorClasses.text} flex items-center gap-1.5`}
-                                    title={event.details?.tooltip}
-                                  >
+                                  <span className={`text-[11px] font-bold ${event.colorClasses.text} flex items-center gap-1.5`}>
                                     {event.label}
-                                    {event.details?.tooltip && (
-                                      <span className="cursor-help text-slate-400 group-hover:text-slate-600 text-[10px]" title={event.details.tooltip}>
-                                        [ℹ]
-                                      </span>
-                                    )}
                                   </span>
                                   <span className="text-[9px] text-slate-400 font-mono">
                                     {eventDateStr}
                                   </span>
                                 </div>
 
-                                {/* Submitter Block Link */}
-                                {event.blockTitle && (
-                                  <div className="text-[10.5px] font-medium text-slate-500 font-sans mt-1">
-                                    Location:{" "}
-                                    <span className="text-slate-800 bg-white/70 border border-slate-100 px-1.5 py-0.5 rounded font-semibold">
-                                      {event.blockStep !== undefined ? `Step ${event.blockStep}: ` : ""}
-                                      {event.blockTitle}
-                                    </span>
-                                  </div>
-                                )}
-
                                 {/* Main Description */}
                                 <p className="text-slate-600 font-sans mt-1.5 text-[11px] leading-relaxed">
-                                  {event.description}
+                                  {event.label} &middot; {event.blockStep !== undefined ? `Step ${event.blockStep}: ` : ""} {event.blockTitle || "Lesson"}
                                 </p>
-
-                                {/* Integrity Signal Specific Actionable Detail Panels */}
-                                {isSign && !isRev && event.details && (
-                                  <div className="mt-2.5 pt-2 border-t border-slate-200/50 space-y-2">
-                                    <div className="space-y-0.5">
-                                      <span className="font-bold text-slate-500 block text-[9.5px] uppercase tracking-wider">What this indicates:</span>
-                                      <p className="text-slate-600 leading-relaxed font-sans font-normal text-[10.5px]">
-                                        {event.details.indicates}
-                                      </p>
-                                    </div>
-                                    <div className="pt-2 border-t border-slate-200/30 text-[10.5px] text-indigo-700 italic font-medium font-sans flex items-start gap-1">
-                                      <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" /> 
-                                      <span>
-                                        <strong className="not-italic text-indigo-800">Academic Integrity Insight:</strong> {event.details.actionSuggestion}
-                                      </span>
-                                    </div>
-                                  </div>
-                                )}
                               </div>
 
                               {/* Actions (e.g. Dismiss Flag) */}

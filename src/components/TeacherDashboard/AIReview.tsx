@@ -439,23 +439,25 @@ export default function AIReview({
 
   const formatEventType = (t: string): string => {
     const labels: Record<string, string> = {
-      fullscreen_exit: "Fullscreen exited",
-      fullscreen_enter: "Fullscreen entered",
-      visibility_hidden: "Visibility hidden",
-      visibility_visible: "Visibility visible",
-      tab_change: "Tab/window changed",
-      blur: "Tab/window changed",
-      focus_lost: "Tab/window changed",
-      window_blur: "Tab/window changed",
-      ai_agent_detected: "Possible AI agent use",
-      ai_agent_use: "Possible AI agent use",
+      fullscreen_exit: "Exited fullscreen",
+      fullscreen_enter: "Entered fullscreen",
+      visibility_hidden: "Switched tabs",
+      visibility_visible: "Tab returned",
+      tab_change: "Switched tabs",
+      blur: "Switched tabs",
+      focus_lost: "Switched tabs",
+      window_blur: "Switched tabs",
+      ai_agent_detected: "AI Guard marker appeared in submitted response",
+      ai_agent_use: "AI Guard marker appeared in submitted response",
+      possible_ai_agent_use: "AI Guard marker appeared in submitted response",
       lockout: "Attempt blocked",
       focus_lockout: "Attempt blocked",
       lockout_override: "Block removed by teacher",
-      copy: "Copy detected",
-      paste: "Paste detected",
-      right_click: "Right-click detected",
+      copy: "Copied assessment text",
+      paste: "Pasted text",
+      right_click: "Right-clicked in assessment",
       devtools_open: "Developer tools opened",
+      multiple_monitors: "Multiple monitors detected",
     };
     return labels[t] ?? t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   };
@@ -980,7 +982,7 @@ export default function AIReview({
                                   : "Teacher Attention Recommended (Unusual Pacing Pattern)"}
                               </h4>
                               <p className="text-xs leading-relaxed text-slate-600 font-sans">
-                                This student-friendly activity record represents focus shifts and timeline timestamps rather than formal surveillance. Use it to check if the student needs scaffolding before school starts.
+                                Review the activity timeline and focus shifts during the assignment.
                               </p>
                               {item.reason && (
                                 <div className="text-xs font-mono font-bold mt-2 bg-white/70 px-2 py-1.5 rounded border border-slate-100 max-w-lg">
@@ -1013,29 +1015,13 @@ export default function AIReview({
                                     return (
                                       <div key={sidx} className="p-2.5 bg-white border border-slate-200 rounded-lg shadow-sm font-sans space-y-1.5 text-xs">
                                         <div className="flex justify-between items-center flex-wrap gap-2">
-                                          <span 
-                                            className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider bg-amber-50 text-amber-800 border-amber-200 cursor-help"
-                                            title={detailsCtx.tooltip}
-                                          >
-                                            {detailsCtx.label} [ℹ]
+                                          <span className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider bg-amber-50 text-amber-800 border-amber-200">
+                                            {detailsCtx.label}
                                           </span>
-                                          <span className="text-[9px] text-slate-400 font-mono">
-                                            {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : ""}
-                                          </span>
-                                        </div>
-
-                                        <div className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wider font-mono">
-                                          PAIRED ACTIVITY: <span className="text-slate-800 font-medium normal-case bg-slate-100 px-1.5 py-0.5 rounded font-sans font-bold">{blockLabel}</span>
                                         </div>
 
                                         <p className="text-[11px] text-slate-600 leading-normal">
-                                          <span className="font-semibold text-slate-650">Recorded:</span> {sig.metadata?.message || detailsCtx.records}
-                                        </p>
-                                        <p className="text-[10px] text-slate-500 leading-normal border-t border-slate-150 pt-1.5 font-normal">
-                                          <span className="font-semibold text-slate-450">Indicates:</span> {detailsCtx.indicates}
-                                        </p>
-                                        <p className="text-[9.5px] text-indigo-700 italic border-t border-slate-100 pt-1 flex items-center gap-1">
-                                          <span className="font-bold">Advice:</span> {detailsCtx.actionSuggestion}
+                                          {detailsCtx.label} &middot; {blockLabel} &middot; {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : ""}
                                         </p>
                                       </div>
                                     );

@@ -283,7 +283,7 @@ export function deriveCourseProgressSummary(input: CourseProgressInput): CourseP
   }
   if (studentsWithAiAgentSignals > 0) {
     headlines.push(
-      `${studentsWithAiAgentSignals} student${studentsWithAiAgentSignals === 1 ? " has" : "s have"} Signals of AI Agent Use`
+      `${studentsWithAiAgentSignals} student${studentsWithAiAgentSignals === 1 ? " has" : "s have"} AI detected`
     );
   }
 
@@ -352,7 +352,7 @@ const TYPE_LABEL: Record<ReviewQueueItemType, string> = {
   awaiting_teacher_review: "Awaiting teacher review",
   feedback_ready: "Feedback ready to release",
   integrity_cluster: "Integrity signals",
-  ai_agent: "Signals of AI Agent Use",
+  ai_agent: "AI detected",
   stuck: "Student may be stuck",
 };
 
@@ -392,7 +392,7 @@ export function deriveReviewQueueItems(summaries: StudentAssignmentSummary[]): R
         questionId: cluster.questionId,
         responseId: cluster.responseId,
         reason: cluster.reason,
-        attentionLabel: "Signals of AI Agent Use",
+        attentionLabel: "AI detected",
         evidenceStrength: s.integrity.evidenceStrength,
       });
     }
@@ -408,7 +408,7 @@ export function deriveReviewQueueItems(summaries: StudentAssignmentSummary[]): R
         questionId: cluster.questionId,
         responseId: cluster.responseId,
         reason: cluster.reason,
-        attentionLabel: cluster.attentionLevel === "high" ? "High attention" : "Review suggested",
+        attentionLabel: cluster.attentionLevel === "high" ? "Action needed" : "Repeated",
         evidenceStrength: s.integrity.evidenceStrength,
       });
     }

@@ -141,23 +141,34 @@ interface SignalKind {
 
 const SIGNAL_KINDS: Record<string, SignalKind> = {
   // --- Browser AI Guard direct hits — strongest academic-reliability evidence ---
-  ai_guard_marker_in_answer: { category: "ai_agent", weight: 12, isAiAgent: true, label: "Browser AI Guard marker in answer" },
-  hidden_assessment_text_in_answer: { category: "ai_agent", weight: 12, isAiAgent: true, label: "Assessment content detected in answer" },
-  ai_guard_refusal_phrase_in_answer: { category: "ai_agent", weight: 11, isAiAgent: true, label: "AI refusal phrase in answer" },
-  possible_ai_agent_use: { category: "ai_agent", weight: 9, isAiAgent: true, label: "Possible AI agent use" },
+  ai_guard_marker_in_answer: { category: "ai_agent", weight: 12, isAiAgent: true, label: "AI Guard marker appeared in response" },
+  hidden_assessment_text_in_answer: { category: "ai_agent", weight: 12, isAiAgent: true, label: "Hidden assessment text appeared in response" },
+  ai_guard_refusal_phrase_in_answer: { category: "ai_agent", weight: 11, isAiAgent: true, label: "AI-generated refusal appeared in response" },
+  possible_ai_agent_use: { category: "ai_agent", weight: 9, isAiAgent: true, label: "AI Guard marker appeared in response" },
   // --- Response controls ---
-  paste_blocked: { category: "copy_paste", weight: 3, isAiAgent: false, label: "Paste attempt blocked" },
-  copy_blocked: { category: "copy_paste", weight: 2, isAiAgent: false, label: "Copy attempt blocked" },
+  paste_blocked: { category: "copy_paste", weight: 3, isAiAgent: false, label: "Paste blocked" },
+  paste: { category: "copy_paste", weight: 3, isAiAgent: false, label: "Pasted text" },
+  copy_blocked: { category: "copy_paste", weight: 2, isAiAgent: false, label: "Copy blocked" },
+  copy: { category: "copy_paste", weight: 2, isAiAgent: false, label: "Copied assessment text" },
   // --- Focus / visibility ---
-  blur_focus_lost: { category: "focus", weight: 1, isAiAgent: false, label: "Focus lost" },
-  visibilitychange: { category: "focus", weight: 1, isAiAgent: false, label: "Tab or window changed" },
+  blur_focus_lost: { category: "focus", weight: 1, isAiAgent: false, label: "Assessment window lost focus" },
+  blur: { category: "focus", weight: 1, isAiAgent: false, label: "Assessment window lost focus" },
+  window_blur: { category: "focus", weight: 1, isAiAgent: false, label: "Assessment window lost focus" },
+  focus_lost: { category: "focus", weight: 1, isAiAgent: false, label: "Assessment window lost focus" },
+  visibilitychange: { category: "focus", weight: 1, isAiAgent: false, label: "Switched tabs" },
+  tab_change: { category: "focus", weight: 1, isAiAgent: false, label: "Switched tabs" },
+  visibility_hidden: { category: "focus", weight: 1, isAiAgent: false, label: "Switched tabs" },
   // --- Fullscreen ---
-  fullscreen_exit: { category: "fullscreen", weight: 1.5, isAiAgent: false, label: "Fullscreen exited" },
-  fullscreen_exited: { category: "fullscreen", weight: 1.5, isAiAgent: false, label: "Fullscreen exited" },
+  fullscreen_exit: { category: "fullscreen", weight: 1.5, isAiAgent: false, label: "Exited fullscreen" },
+  fullscreen_exited: { category: "fullscreen", weight: 1.5, isAiAgent: false, label: "Exited fullscreen" },
   // --- Navigation ---
-  rapid_navigation: { category: "navigation", weight: 2, isAiAgent: false, label: "Fast navigation detected" },
+  rapid_navigation: { category: "navigation", weight: 2, isAiAgent: false, label: "Rapid navigation" },
   seek_attempt_blocked: { category: "navigation", weight: 1, isAiAgent: false, label: "Video seek attempt blocked" },
   context_menu_blocked: { category: "navigation", weight: 0.5, isAiAgent: false, label: "Right-click blocked" },
+  right_click: { category: "navigation", weight: 0.5, isAiAgent: false, label: "Right-click blocked" },
+  // --- Multiple Monitors ---
+  multiple_monitors: { category: "other", weight: 1, isAiAgent: false, label: "Multiple monitors detected" },
+  screen_details_unavailable: { category: "other", weight: 0, isAiAgent: false, label: "Screen details unavailable" },
   // --- Status only (not an integrity concern) ---
   checkpoint_triggered: { category: "other", weight: 0, isAiAgent: false, label: "Checkpoint reached" },
 };
@@ -198,25 +209,19 @@ export function maxAttention(a: IntegrityAttentionLevel, b: IntegrityAttentionLe
 
 function clusterReason(category: IntegritySignalCategory, count: number, isAiAgent: boolean): string {
   if (isAiAgent) {
-    return count > 1
-      ? `${count} Browser AI Guard signals appeared in submitted work — review may be useful.`
-      : `A Browser AI Guard signal appeared in submitted work — review may be useful.`;
+    return 'AI detected';
   }
   switch (category) {
     case "focus":
-      return count > 2
-        ? `Repeated focus changes (${count}) were recorded during the assignment.`
-        : `${count === 1 ? "A focus change was" : `${count} focus changes were`} recorded.`;
+      return count > 2 ? `Repeated` : `Recorded`;
     case "fullscreen":
-      return count > 2
-        ? `Repeated fullscreen exits (${count}) were recorded.`
-        : `${count === 1 ? "One fullscreen exit was" : `${count} fullscreen exits were`} recorded.`;
+      return count > 2 ? `Repeated` : `Recorded`;
     case "copy_paste":
-      return `${count} copy/paste ${count === 1 ? "event was" : "events were"} recorded in a protected field.`;
+      return `Blocked`;
     case "navigation":
-      return `${count} navigation ${count === 1 ? "event was" : "events were"} recorded.`;
+      return `Recorded`;
     default:
-      return `${count} activity ${count === 1 ? "record" : "records"} available.`;
+      return `Recorded`;
   }
 }
 
@@ -442,8 +447,8 @@ export function buildIntegrityMarkers(
       id: `marker-${cluster.id}`,
       type: isAi ? "ai_agent" : "integrity",
       level: CLUSTER_LEVEL_TO_MARKER[cluster.attentionLevel],
-      label: isAi ? "Signals of AI Agent Use" : cluster.label,
-      shortLabel: isAi ? "AI Agent" : cluster.attentionLevel === "high" ? "High attention" : cluster.attentionLevel === "moderate" ? "Review suggested" : "Low attention",
+      label: cluster.label,
+      shortLabel: isAi ? "AI detected" : cluster.attentionLevel === "high" ? "Action needed" : cluster.attentionLevel === "moderate" ? "Repeated" : "Recorded",
       reason: cluster.reason,
       studentId: ctx.studentId,
       courseId: ctx.courseId,
@@ -481,10 +486,10 @@ export function reliabilityLabel(r: ResponseReliability): string {
 
 export function attentionLabel(level: IntegrityAttentionLevel): string {
   switch (level) {
-    case "none": return "No concern";
-    case "low": return "Low attention";
-    case "moderate": return "Review suggested";
-    case "high": return "High attention";
+    case "none": return "Recorded";
+    case "low": return "Recorded";
+    case "moderate": return "Repeated";
+    case "high": return "Action needed";
   }
 }
 
@@ -551,13 +556,7 @@ export function getDetailedSignalContext(signal: any, blocks: any[]): DetailedSi
     }
   }
 
-  const activityName = isAssessment ? "assessment" : "practice/learning";
-
-  let label = "Activity logged";
-  let tooltip = "Ambient activity log in the student lesson flow.";
-  let records = "Session activity record.";
-  let indicates = "Ambient student interaction logged in the lesson telemetry queue.";
-  let actionSuggestion = "Use to reconstruct their lesson path and study context.";
+  let label = "Activity recorded";
 
   switch (eventType) {
     case "blur_focus_lost":
@@ -567,80 +566,30 @@ export function getDetailedSignalContext(signal: any, blocks: any[]): DetailedSi
     case "tab_change":
     case "focus_lost":
     case "window_blur":
-      if (isAssessment) {
-        label = "Browser tab focus lost during assessment";
-        tooltip = "The student left the assessment workspace, minimizing full focus during a graded question or checkpoint. Teachers should check this to assess active focus integrity.";
-      } else if (activityType === "video") {
-        label = "Browser tab focus lost during instructional video";
-        tooltip = "The student clicked away, opened a new tab, or minimized the window while the required video lesson was active. This suggests split attention during instruction.";
-      } else if (activityType === "reading") {
-        label = "Browser tab focus lost during reading assignment";
-        tooltip = "The student switched tabs or minimized the reading content. Useful for tracking actual reading duration and cognitive engagement.";
-      } else {
-        label = "Browser tab focus lost during lesson practice";
-        tooltip = "The student clicked away during practice tasks, showing potential distraction but no grade-altering impact.";
-      }
-      records = `Active window focus change detected during ${activityType} (student switched browser tabs, minimized active window, or clicked another application).`;
-      indicates = `The student clicked away from the VERITAS player interface during ${isAssessment ? "a graded assessment" : "a learning activity"}. While common, frequent loss of focus during assessments can indicate searching for answers or side-task distractions.`;
-      actionSuggestion = "Look closely at the student's active writing duration inside this step, and read written responses to verify if thoughts match their typical voice and tone.";
+      label = "Assessment window lost focus";
       break;
 
     case "fullscreen_exit":
     case "fullscreen_exited":
-      if (isAssessment) {
-        label = "Locked fullscreen mode exited during assessment";
-        tooltip = "The student exited the full-screen view while actively answering a graded assessment or checkpoint. Highly relevant for tracking proctored task integrity.";
-      } else {
-        label = "Locked fullscreen mode exited during lesson";
-        tooltip = "The student minimized or left full-screen view during general video or reading steps. Minimizes strict compliance but does not directly impact assessment reliability.";
-      }
-      records = "Left the dedicated full-screen learning window.";
-      indicates = `The student deliberately minimized the application window or exited full-screen mode, which is requested to maintain a clean, distraction-free environment for ${isAssessment ? "graded questions" : "study material"}.`;
-      actionSuggestion = "Verify if multiple exits occurred. Check whether the student completed the lesson steps in a reasonable timeframe or appeared to use external references.";
+      label = "Exited fullscreen";
       break;
 
     case "paste_blocked":
     case "paste":
-      if (isAssessment) {
-        label = "Copy/Paste detected from external source during assessment";
-        tooltip = "The student attempted to copy text from another browser tab or document and paste it directly into a graded answer field. Copy-pasting assessments is a strong signal for external resource usage.";
-      } else {
-        label = "Copy/Paste detected from external source during practice";
-        tooltip = "The student pasted text into a practice or checkpoint writing field. While less strict, it indicates the student used pre-written or external notes rather than real-time typing.";
-      }
-      records = `A paste attempt into a protected ${isAssessment ? "graded short-answer" : "practice"} answer field was intercepted and blocked.`;
-      indicates = "The student copied text from outside the lesson workspace and attempted to insert it as a direct answer, bypassing the required writing retrieval process.";
-      actionSuggestion = "Review the written text in the Dossier (flagged red). Look for formal vocabulary shifts, unusual punctuation formats, or AI-like response architectures.";
+      label = "Pasted text";
       break;
 
     case "copy_blocked":
     case "copy":
-      if (isAssessment) {
-        label = "Copy attempt blocked on assessment prompt";
-        tooltip = "The student highlighted text from a graded assessment question and tried to copy it. This is typically done to paste prompts into translate engines or AI portals.";
-      } else {
-        label = "Copy attempt blocked on lesson content";
-        tooltip = "An attempt to copy reading paragraphs, video text, or instructions was blocked by the student player.";
-      }
-      records = `An attempt to copy secure ${isAssessment ? "assessment question" : "lesson instruction"} text fields was blocked.`;
-      indicates = "The student tried to copy text from the browser viewport, which is common when attempting to feed questions into AI chat engines or translator tools.";
-      actionSuggestion = "Cross-reference response speed and note if the student spent unusually short time on this block before submitting a complete answer.";
+      label = "Copied assessment text";
       break;
 
     case "rapid_navigation":
-      label = "Rapid slide/step skipping (insufficient reading time)";
-      tooltip = "The student clicked 'Next' or 'Continue' almost immediately (under 5s), spending virtually no active time reading the required materials.";
-      records = "Unusually fast progression through materials before advancing.";
-      indicates = "The student is rushing or skimming through slides, checklists, or reading sections without digesting the summer preparation details.";
-      actionSuggestion = "View their total active lesson time. Suggest resetting progress if key readings show high skipping rates before school begins.";
+      label = "Rapid navigation";
       break;
 
     case "seek_attempt_blocked":
-      label = "Video scrubbing/fast-forward attempt blocked";
-      tooltip = "The student tried to fast-forward past un-watched teaching chapters. The player successfully blocked this and rewound them to their furthest watched point.";
-      records = "The player blocked a seek event to skip required video content.";
-      indicates = "The student tried to scrub past instructional chapters to bypass watching. The player successfully countered this, guarding learning completion.";
-      actionSuggestion = "Ensure the video shows high completed watch percentages, validating that the student has received the prerequisite instruction.";
+      label = "Video seek attempt blocked";
       break;
 
     case "possible_ai_agent_use":
@@ -649,29 +598,33 @@ export function getDetailedSignalContext(signal: any, blocks: any[]): DetailedSi
     case "hidden_assessment_text_in_answer":
     case "ai_agent_detected":
     case "ai_agent_use":
-      label = "External language generator heuristics detected (AI Use)";
-      tooltip = "Plagiarism checkers or browser AI guard engines detected structured AI signatures, refusal phrases, or hidden metadata inside the student response.";
-      records = "Direct signature or chatbot output structures detected in writing.";
-      indicates = "Strong heuristics that an AI engine (like ChatGPT, Claude, or browser chatbot extensions) generated or heavily assisted with writing this answer.";
-      actionSuggestion = "Interview the student. AI-generated text has perfect grammar with minimal depth or contains characteristic conversational structures.";
+      label = "AI Guard marker appeared in submitted response";
+      break;
+
+    case "multiple_monitors":
+      label = "Multiple monitors detected";
+      break;
+
+    case "screen_details_unavailable":
+      label = "Screen details unavailable";
+      break;
+
+    case "screen_details_denied":
+      label = "Screen details permission denied";
       break;
 
     case "context_menu_blocked":
     case "right_click":
-      label = "Right-click context menu blocked";
-      tooltip = "The student attempted to right-click in the lesson viewer. Right-clicking is blocked to prevent inspection of element source codes or easy external search prompts.";
-      records = "Right-click context menu was intercepted and blocked.";
-      indicates = "The browser prevented opening secondary browser context overlays during lesson study.";
-      actionSuggestion = "No correction generally needed; indicates standard lock-down constraint enforcement.";
+      label = "Right-clicked in assessment";
       break;
   }
 
   return {
     label,
-    tooltip,
-    records,
-    indicates,
-    actionSuggestion,
+    tooltip: "",
+    records: label,
+    indicates: "",
+    actionSuggestion: "",
     isAssessment,
     activityType
   };

@@ -4434,10 +4434,10 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         db.securitySignals.push({
           id: 'sig_' + Math.random().toString(36).substring(2, 9),
           ...signalBase,
-          eventType: 'possible_ai_agent_use',
+          eventType: 'hidden_assessment_text_in_answer',
           metadata: {
             ...signalBase.metadata,
-            message: 'Possible AI agent use detected. Hidden assessment text was found in the submitted answer. This is not automatic proof of a violation — review the answer, timing, and writing history before making a decision.',
+            message: 'Hidden assessment text appeared in response',
           },
         });
 
@@ -4447,7 +4447,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           db.attempts[attemptIdx].securityReviewRequired = true;
           db.attempts[attemptIdx].securityReviewAt = now;
           db.attempts[attemptIdx].securityReviewReason =
-            'Possible AI agent use: hidden assessment text found in submitted answer.';
+            'Hidden assessment text appeared in response';
         }
 
         // Produce a redacted version for AI grading — strips guard text so the grader

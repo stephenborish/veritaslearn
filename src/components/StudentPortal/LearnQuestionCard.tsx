@@ -116,8 +116,8 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
 
   const canSubmit = isMc ? !!selectedChoiceId : !!(saValue && saValue.trim());
 
-  // Practice correctness for the *selected* MC choice (never reveals the key).
-  const selectedCorrect = isPractice && mcFeedback ? mcFeedback.correct : undefined;
+  // Practice correctness for the *selected* MC choice (never reveals the key unless explicitly released).
+  const selectedCorrect = mcFeedback?.correct;
 
   return (
     <motion.section

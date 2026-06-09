@@ -230,24 +230,26 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
           const gradingMode = r.gradingMode || r.gradebookCategory || "assessment";
           const isPractice = gradingMode === "practice";
+          
+          const hasReleasedFeedback = r.feedback !== undefined || (r.aiGrading && r.aiGrading.status === "success" && r.aiGrading.feedback);
 
-          if (!isPractice) {
+          if (!isPractice && !hasReleasedFeedback) {
             localSaGrading[r.questionId] = "submitted";
           } else {
             const aiStatus = r.aiGrading?.status;
-            if (aiStatus === "success" && r.feedbackVisibility === "student_visible") {
+            // If there's explicit teacher feedback or successful AI grading that is visible
+            if (hasReleasedFeedback || (aiStatus === "success" && r.feedbackVisibility === "student_visible")) {
               localSaGrading[r.questionId] = "feedback_ready";
               localSaFeedback[r.questionId] = {
                 score: r.score,
                 maxPoints: r.maxPoints,
-                feedback: r.aiGrading?.feedback,
+                feedback: r.feedback || r.aiGrading?.feedback,
                 rubricBreakdown: r.aiGrading?.rubricBreakdown,
                 misconceptions: r.aiGrading?.misconceptions,
               };
             } else if (aiStatus === "needs_review" || aiStatus === "failed") {
               localSaGrading[r.questionId] = "grading_failed";
             } else {
-              // pending or no aiGrading yet
               localSaGrading[r.questionId] = "pending_ai";
             }
           }
@@ -302,6 +304,15 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   useEffect(() => {
     fetchData();
+
+    // Check for multiple monitors on load
+    if (typeof window !== "undefined" && 'screen' in window && 'isExtended' in window.screen) {
+      if ((window.screen as any).isExtended) {
+        logIntegritySignal("multiple_monitors", "low", { detail: "Multiple monitors detected" });
+      }
+    } else {
+      logIntegritySignal("screen_details_unavailable", "low", { detail: "Screen details unavailable" });
+    }
   }, [attemptId]);
 
   // When a checkpoint opens, start at its first unanswered question.
@@ -1385,7 +1396,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             clip: "rect(0,0,0,0)",
           }}
         >
-          AI browser assistants are not allowed during this assessment. VERITAS may use page-level signals to detect possible AI agent use.
+          AI browser assistants are not allowed during this assessment. VERITAS uses page-level heuristics to detect AI agent signatures.
         </div>
       )}
 

@@ -182,7 +182,7 @@ export default function PracticeDashboard({
     const isPastDue = dueAtDate && now > dueAtDate;
 
     if (isCompleted) {
-      return { label: "Completed", buttonText: "Review", buttonDisabled: true, statusType: "completed", badgeClass: "bg-emerald-50 text-emerald-700 border border-emerald-200" };
+      return { label: "Completed", buttonText: "Review", buttonDisabled: false, statusType: "completed", badgeClass: "bg-emerald-50 text-emerald-700 border border-emerald-200" };
     }
     if (isClosed && !isInProgress) {
       return { label: "Closed", buttonText: "No longer available", buttonDisabled: true, statusType: "closed", badgeClass: "bg-slate-100 text-slate-500 border border-slate-200" };
