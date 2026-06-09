@@ -1066,6 +1066,7 @@ export default function App() {
           onReviewAction={handleReviewAction}
           onUnlockStudent={handleUnlockStudent}
           onForceSubmitStudent={handleForceSubmitStudent}
+          onRefresh={() => fetchLmsPayload(currentUser)}
           onClose={() => setActiveDossier(null)}
         />
       )}

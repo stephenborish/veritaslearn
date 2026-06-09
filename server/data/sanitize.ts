@@ -42,8 +42,8 @@ export function migrateQuestionDefinition(q: any): any {
   const out: any = { ...q };
 
   if (Array.isArray(out.choices)) {
-    const migratedChoices = out.choices.map((c: any) =>
-      isChoiceObject(c) ? { id: c.id, text: c.text } : { id: genId("choice"), text: c }
+    const migratedChoices = out.choices.map((c: any, index: number) =>
+      isChoiceObject(c) ? { id: c.id, text: c.text } : { id: "choice_legacy_" + index, text: c }
     );
     out.choices = migratedChoices;
 
@@ -107,8 +107,8 @@ export function sanitizeQuestionForStudent(q: any, optionalChoiceOrder?: any[]):
 
   const sourceChoices = optionalChoiceOrder || q.choices;
   if (Array.isArray(sourceChoices)) {
-    safe.choices = sourceChoices.map((c: any) =>
-      isChoiceObject(c) ? { id: c.id, text: c.text } : { id: genId("choice"), text: c }
+    safe.choices = sourceChoices.map((c: any, index: number) =>
+      isChoiceObject(c) ? { id: c.id, text: c.text } : { id: "choice_legacy_" + index, text: c }
     );
   }
   return safe;

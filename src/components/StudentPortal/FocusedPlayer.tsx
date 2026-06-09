@@ -387,6 +387,14 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       timestampToSend = Math.floor(duration);
     }
 
+    // Snapshot the accumulated engagement times before yielding execution,
+    // and reset the refs immediately to avoid double-reporting or race conditions
+    // with overlapping/concurrent flush calls.
+    const activeReported = activeTimeRef.current;
+    const inactiveReported = inactiveTimeRef.current;
+    activeTimeRef.current = 0;
+    inactiveTimeRef.current = 0;
+
     try {
       const authHeader = await getAuthHeader();
       const resp = await fetch(`/api/attempts/${attemptId}/progress`, {
@@ -395,15 +403,13 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         body: JSON.stringify({
           blockId: block.id,
           timestamp: timestampToSend,
-          activeTime: activeTimeRef.current,
-          inactiveTime: inactiveTimeRef.current,
+          activeTime: activeReported,
+          inactiveTime: inactiveReported,
           playbackRate: currentSpeed,
         }),
       });
       
       const data = await resp.json();
-      activeTimeRef.current = 0;
-      inactiveTimeRef.current = 0;
 
       if (data.success && data.furthestMaxTimestamp !== undefined) {
         updateFurthestMaxTimestamp(data.furthestMaxTimestamp);
@@ -429,6 +435,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         isTeacherLockedRef.current = true;
       }
     } catch (e) {
+      // Restore on failure to keep integrity spent tracking correct
+      activeTimeRef.current += activeReported;
+      inactiveTimeRef.current += inactiveReported;
       console.error("Failed to flush video progress:", e);
     }
   };
@@ -773,6 +782,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     setIsNavigating(true);
 
     try {
+      if (activeBlock?.type === "video") {
+        await flushVideoProgress();
+      }
       const authHeader = await getAuthHeader();
       const resp = await fetch(`/api/attempts/${attemptId}/block`, {
         method: "POST",
@@ -1120,7 +1132,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const duration = block.duration ?? block.videoDuration;
       if (restrictSeeking && duration) {
         const requiredSeconds = duration * 0.9;
-        const furthestWatch = attemptData?.furthestVideoTimestamps?.[block.id] || 0;
+        const furthestWatch = Math.max(
+          attemptData?.furthestVideoTimestamps?.[block.id] || 0,
+          (block.id === activeBlock?.id) ? furthestMaxTimestampRef.current : 0
+        );
         if (furthestWatch < requiredSeconds) {
           isThisBlockComplete = false;
         }
@@ -1156,7 +1171,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         const duration = precBlock.duration ?? precBlock.videoDuration;
         if (restrictSeeking && duration) {
           const requiredSeconds = duration * 0.9;
-          const furthestWatch = attemptData?.furthestVideoTimestamps?.[precBlock.id] || 0;
+          const furthestWatch = Math.max(
+            attemptData?.furthestVideoTimestamps?.[precBlock.id] || 0,
+            (precBlock.id === activeBlock?.id) ? furthestMaxTimestampRef.current : 0
+          );
           if (furthestWatch < requiredSeconds) {
             precComplete = false;
           }
@@ -1263,7 +1281,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       const duration = activeBlock.duration ?? activeBlock.videoDuration;
       if (restrictSeeking && duration) {
         const requiredSeconds = duration * 0.9;
-        const furthestWatch = attemptData?.furthestVideoTimestamps?.[activeBlock.id] || 0;
+        const furthestWatch = Math.max(
+          attemptData?.furthestVideoTimestamps?.[activeBlock.id] || 0,
+          furthestMaxTimestampRef.current
+        );
         if (furthestWatch < requiredSeconds) {
           return "Finish the video to continue.";
         }
@@ -1943,7 +1964,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                   saGradingState={resolveSaState(q.id, cpIsPractice, isSubmitted)}
                                   saFeedback={saFeedback[q.id]}
                                   attemptsState={mcAttemptsState[q.id]}
-                                  correctChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
+                                  rightChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
                                 />
                               </motion.div>
                             </AnimatePresence>
@@ -2054,7 +2075,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                         saGradingState={resolveSaState(q.id, isPracticeBlock, isSubmitted)}
                         saFeedback={saFeedback[q.id]}
                         attemptsState={mcAttemptsState[q.id]}
-                        correctChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
+                        rightChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
                       />
                     </div>
                   );

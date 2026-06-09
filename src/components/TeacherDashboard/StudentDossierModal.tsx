@@ -27,6 +27,7 @@ import {
   reliabilityLabel,
   attentionLabel,
   attentionColorClasses,
+  getSignalDetailedExplanation,
 } from "../../lib/integritySignals";
 import { safeText } from "../../lib/dataIntegrity";
 
@@ -66,6 +67,7 @@ interface StudentDossierModalProps {
   onReviewAction?: (action: 'approve' | 'mark-reviewed' | 'release-feedback' | 'grade', responseId: string, payload?: any) => Promise<void>;
   onUnlockStudent?: (attemptId: string) => void;
   onForceSubmitStudent?: (attemptId: string) => Promise<void>;
+  onRefresh?: () => void;
 }
 
 function formatVideoTime(seconds: number): string {
@@ -562,6 +564,7 @@ export default function StudentDossierModal({
   onReviewAction,
   onUnlockStudent,
   onForceSubmitStudent,
+  onRefresh,
 }: StudentDossierModalProps) {
   const [overrideScores, setOverrideScores] = useState<{ [id: string]: number }>({});
   const [overrideNotes, setOverrideNotes] = useState<{ [id: string]: string }>({});
@@ -724,6 +727,7 @@ export default function StudentDossierModal({
     assignmentId: attempt?.assignmentId || null,
     lessonId: lesson.id,
     lessonVersionId: attempt?.lessonVersionId || null,
+    excludeDismissed: true,
   });
 
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
@@ -997,11 +1001,54 @@ export default function StudentDossierModal({
     }
   };
 
-  const handleToggleSignal = (sigId: string) => {
-    const updated = new Set(reviewedSignals);
-    if (updated.has(sigId)) updated.delete(sigId);
-    else updated.add(sigId);
-    setReviewedSignals(updated);
+  const [togglingDoneSig, setTogglingDoneSig] = useState<string | null>(null);
+  const [clearingAll, setClearingAll] = useState(false);
+
+  const handleToggleSignal = async (sigId: string) => {
+    const token = localStorage.getItem("idToken");
+    if (!token) return;
+    setTogglingDoneSig(sigId);
+    try {
+      const res = await fetch(`/api/integrity-signals/${sigId}/toggle-dismiss`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      if (res.ok && onRefresh) {
+        onRefresh();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTogglingDoneSig(null);
+    }
+  };
+
+  const handleDismissAllSignals = async () => {
+    if (!attempt || !onRefresh) return;
+    const token = localStorage.getItem("idToken");
+    if (!token) return;
+    if (!window.confirm("Are you sure you want to dismiss all integrity events for this student attempt? This will resolve and clear all focus alerts for review.")) return;
+
+    setClearingAll(true);
+    try {
+      const res = await fetch(`/api/attempts/${attempt.id}/dismiss-all-signals`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        }
+      });
+      if (res.ok) {
+        onRefresh();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setClearingAll(false);
+    }
   };
 
   const renderFormattedDate = (rawStr: string | null | undefined) => {
@@ -1658,68 +1705,116 @@ export default function StudentDossierModal({
                 No activity signals recorded.
               </div>
             ) : (
-              <details className="group">
-                <summary className="text-[11px] font-bold text-slate-500 cursor-pointer select-none py-1.5 hover:text-slate-700 list-none flex items-center gap-1.5">
-                  <ChevronRight className="w-3.5 h-3.5 transition-transform group-open:rotate-90" />
-                  Raw activity records ({sSignals.length})
-                </summary>
-                <div className="mt-2 border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-52 overflow-y-auto">
-                {sSignals.map((signal) => {
-                  const isReviewed = reviewedSignals.has(signal.id);
+              <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/20">
+                <div className="flex justify-between items-center py-1 border-b border-slate-250/50 mb-3">
+                  <h5 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5 select-none">
+                    <Activity className="w-4 h-4 text-indigo-600" />
+                    Focus Event & Activity Timeline ({sSignals.length})
+                  </h5>
+                  {sSignals.some((s) => !s.dismissedAt) && (
+                    <button
+                      type="button"
+                      onClick={handleDismissAllSignals}
+                      disabled={clearingAll}
+                      className="text-[9px] font-mono font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 px-2 py-1 rounded border border-amber-200 transition select-none flex items-center gap-1 cursor-pointer"
+                    >
+                      {clearingAll ? "Clearing..." : "Dismiss All Flags"}
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                {sSignals.slice().reverse().map((signal) => {
+                  const isReviewed = !!signal.dismissedAt;
+                  const matchingBlock = lessonBlocks.find((b) => b.id === signal.blockId);
+                  const blockIdx = matchingBlock ? lessonBlocks.indexOf(matchingBlock) : -1;
+                  const blockLabel = blockIdx !== -1
+                    ? `Step ${blockIdx + 1}: ${matchingBlock.title || "Untitled Block"}`
+                    : "General Student Navigation Session";
+
+                  const details = getSignalDetailedExplanation(signal.eventType);
+
                   return (
                     <div
                       key={signal.id}
-                      className={`p-3 text-xs flex justify-between items-center gap-4 transition-all duration-200 ${
+                      className={`p-3 text-xs flex flex-col gap-2 rounded-lg border transition-all duration-200 ${
                         isReviewed
-                          ? "bg-emerald-50/30 opacity-60 text-slate-400 border-l-4 border-emerald-400"
-                          : "hover:bg-slate-50 bg-white"
+                          ? "bg-slate-50/50 opacity-60 text-slate-400 border-l-4 border-slate-300 border-slate-200"
+                          : "bg-white border-slate-200 border-l-4 border-l-indigo-500 shadow-sm"
                       }`}
                     >
-                      <div className="space-y-1 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span
-                            className={`text-[9px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider ${
+                      <div className="flex justify-between items-start gap-4">
+                        <div className="space-y-1 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span
+                              className={`text-[9.5px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider ${
+                                isReviewed
+                                  ? "bg-slate-100 text-slate-400 border-slate-200"
+                                  : signal.eventType?.includes("ai_guard") || signal.eventType?.includes("possible_ai")
+                                  ? "bg-red-50 text-red-700 border-red-200 animate-pulse"
+                                  : "bg-amber-50 text-amber-800 border-amber-200"
+                              }`}
+                            >
+                              {signalEventLabel(signal.eventType)}
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-mono">
+                              {renderFormattedDate(signal.timestamp)}
+                            </span>
+                            {signal.videoTimestamp != null && (
+                              <span className="text-[9px] font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-500">
+                                Video: {formatVideoTime(signal.videoTimestamp)}
+                              </span>
+                            )}
+                          </div>
+                          
+                          {/* Paired Specific Academic Activity Name */}
+                          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono mt-1.5">
+                            PAIRED STUDENT ACTIVITY: <span className="text-slate-800 uppercase bg-slate-100/80 px-1.5 py-0.5 rounded font-bold font-sans">{blockLabel}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleSignal(signal.id)}
+                            disabled={togglingDoneSig === signal.id}
+                            className={`text-[9px] font-mono font-bold px-2 py-1 rounded transition border cursor-pointer select-none ${
                               isReviewed
-                                ? "bg-slate-100 text-slate-400 border-slate-200"
-                                : signal.severity === "high"
-                                ? "bg-red-50 text-red-700 border-red-200"
-                                : "bg-amber-50 text-amber-800 border-amber-200"
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                                : "bg-white text-slate-600 border-slate-250 hover:bg-slate-50 hover:text-slate-800"
                             }`}
                           >
-                            {signalEventLabel(signal.eventType)}
-                          </span>
-                          <span className="text-[9px] text-slate-400 font-mono">
-                            {renderFormattedDate(signal.timestamp)}
-                          </span>
+                            {togglingDoneSig === signal.id
+                              ? "Saving..."
+                              : isReviewed
+                              ? "Resolved (Restore)"
+                              : "Dismiss Flag"}
+                          </button>
                         </div>
-                        <p className={`font-sans ${isReviewed ? "text-slate-400" : "text-slate-600 font-medium"}`}>
-                          {signal.metadata?.message || "Recorded during lesson"}
-                        </p>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        {signal.videoTimestamp != null && (
-                          <span className="text-[9px] font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-500">
-                            {formatVideoTime(signal.videoTimestamp)}
-                          </span>
+                      {/* Content Section: Records / Indicates details to maximize Pointed Context */}
+                      <div className="mt-1 bg-slate-50/80 p-2.5 rounded border border-slate-150 space-y-1.5 text-[11px] leading-relaxed">
+                        <div>
+                          <span className="font-bold text-slate-600 font-sans">Recorded Signal:</span>{" "}
+                          <span className="text-slate-800 font-sans">{signal.metadata?.message || details.records}</span>
+                        </div>
+                        {!isReviewed && (
+                          <>
+                            <div>
+                              <span className="font-bold text-slate-500 font-sans">What this indicates:</span>{" "}
+                              <p className="text-slate-600 font-sans mt-0.5 font-normal">{details.indicates}</p>
+                            </div>
+                            <div className="pt-1.5 border-t border-slate-200/60 text-[10px] text-indigo-700 italic font-medium font-sans flex items-center gap-1">
+                              <Info className="w-3.5 h-3.5 text-indigo-500 shrink-0" /> Academic support advice: {details.actionSuggestion}
+                            </div>
+                          </>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSignal(signal.id)}
-                          className={`text-[9px] font-mono font-bold px-2 py-1 rounded transition border cursor-pointer select-none ${
-                            isReviewed
-                              ? "bg-emerald-100 text-emerald-700 border-emerald-200"
-                              : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-                          }`}
-                        >
-                          {isReviewed ? "Checked" : "Mark checked"}
-                        </button>
                       </div>
                     </div>
                   );
                 })}
                 </div>
-              </details>
+              </div>
             )}
           </div>
 

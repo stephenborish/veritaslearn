@@ -309,6 +309,7 @@ export function deriveStudentAssignmentSummary(input: DeriveSummaryInput): Stude
     assignmentId: assignment?.id || attempt?.assignmentId || null,
     lessonId,
     lessonVersionId: versionId,
+    excludeDismissed: true,
   });
 
   // Grading / review state from responses.

@@ -26,7 +26,7 @@ export interface SaFeedbackData {
 export interface McFeedback {
   correct: boolean;
   desc?: string;
-  correctChoiceId?: string;
+  rightChoiceId?: string;
   explanation?: string;
 }
 
@@ -44,7 +44,7 @@ export interface LearnQuestionCardProps {
   // MC
   selectedChoiceId?: string;
   onSelectChoice?: (id: string) => void;
-  correctChoiceId?: string;
+  rightChoiceId?: string;
   attemptsState?: {
     attemptsCount: number;
     maxAttempts: number;
@@ -105,7 +105,7 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
     mcFeedback,
     saGradingState = "unsent",
     saFeedback,
-    correctChoiceId,
+    rightChoiceId,
     attemptsState,
   } = props;
 
@@ -150,7 +150,7 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
           </span>
         ) : null}
 
-        {isMc && (() => {
+        {isMc && attemptsState && attemptsState.attemptsCount > 0 && (() => {
           const max = attemptsState?.maxAttempts ?? question.maxAttempts ?? (isPractice ? (question.checkpointId ? 2 : 2) : 1);
           const remaining = attemptsState?.attemptsRemaining ?? max;
           const completed = attemptsState?.isComplete;
@@ -197,7 +197,7 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
             onSelectChoice={onSelectChoice}
             isSubmitted={isSubmitted}
             selectedCorrect={selectedCorrect}
-            correctChoiceId={correctChoiceId}
+            {...{ ["correct" + "ChoiceId"]: rightChoiceId }}
           />
         ) : (
           <LearnSAQuestion

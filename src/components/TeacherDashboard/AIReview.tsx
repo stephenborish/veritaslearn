@@ -31,6 +31,7 @@ import {
   type ReviewQueueItem,
   type ReviewQueueItemType,
 } from "../../lib/courseProgress";
+import { getSignalDetailedExplanation } from "../../lib/integritySignals";
 
 // Review queue status categories
 type ReviewStatus =
@@ -140,6 +141,29 @@ export default function AIReview({
   onRefresh,
 }: AIReviewProps) {
   const [activeFilter, setActiveFilter] = useState<ReviewFilter>("all");
+  const [dismissingAttemptId, setDismissingAttemptId] = useState<string | null>(null);
+
+  const handleDismissAttemptSignals = async (attemptId: string) => {
+    if (!idToken || !attemptId) return;
+    setDismissingAttemptId(attemptId);
+    try {
+      const res = await fetch(`/api/attempts/${attemptId}/dismiss-all-signals`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+          "Content-Type": "application/json"
+        }
+      });
+      if (res.ok) {
+        if (onRefresh) onRefresh();
+        loadQueue();
+      }
+    } catch (e) {
+      console.error("Failed to dismiss attempt signals in review queue flow", e);
+    } finally {
+      setDismissingAttemptId(null);
+    }
+  };
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loadingQueue, setLoadingQueue] = useState(false);
@@ -970,24 +994,46 @@ export default function AIReview({
                             {/* Left: Signals List */}
                             <div className="md:col-span-8 space-y-3">
                               <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-widest font-mono">Student Focus & Event Timeline</span>
-                              <div className="border border-slate-200 rounded overflow-hidden bg-white max-h-60 overflow-y-auto shadow-sm">
+                              <div className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50/30 max-h-80 overflow-y-auto shadow-inner space-y-2.5 p-3">
                                 {studentSignals.length === 0 ? (
-                                  <p className="p-4 text-xs text-slate-400 italic font-sans text-center">No focus events logged for this attempt index.</p>
+                                  <p className="p-4 text-xs text-slate-400 italic font-sans text-center bg-white border border-slate-100 rounded-lg font-sans">No focus events logged for this attempt.</p>
                                 ) : (
-                                  <div className="divide-y divide-slate-100 font-mono text-[10px] text-slate-600">
-                                    {studentSignals.map((sig, sidx) => (
-                                      <div key={sidx} className="p-2 flex justify-between hover:bg-slate-50 transition items-center">
-                                        <div className="flex gap-2 items-center">
-                                          <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                                          <span className="font-bold text-slate-700 font-sans">{formatEventType(sig.eventType)}</span>
-                                          {sig.detail && <span className="text-slate-400">({sig.detail})</span>}
+                                  studentSignals.slice().reverse().map((sig, sidx) => {
+                                    const matchingBlock = blocks.find((b) => b.id === sig.blockId);
+                                    const lessonBlocks = blocks
+                                      .filter((b) => b.lessonId === item.lessonId)
+                                      .sort((a, b) => (a.order || 0) - (b.order || 0));
+                                    const blockIdx = matchingBlock ? lessonBlocks.indexOf(matchingBlock) : -1;
+                                    const blockLabel = blockIdx !== -1
+                                      ? `Step ${blockIdx + 1}: ${matchingBlock.title || "Untitled Block"}`
+                                      : "General Navigation Session";
+
+                                    const details = getSignalDetailedExplanation(sig.eventType);
+
+                                    return (
+                                      <div key={sidx} className="p-2.5 bg-white border border-slate-200 rounded-lg shadow-sm font-sans space-y-1.5 text-xs">
+                                        <div className="flex justify-between items-center flex-wrap gap-2">
+                                          <span className="text-[10px] uppercase font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider bg-amber-50 text-amber-800 border-amber-200">
+                                            {formatEventType(sig.eventType)}
+                                          </span>
+                                          <span className="text-[9px] text-slate-400 font-mono">
+                                            {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : ""}
+                                          </span>
                                         </div>
-                                        <span className="text-slate-400 font-mono">
-                                          {sig.timestamp ? new Date(sig.timestamp).toLocaleTimeString() : ""}
-                                        </span>
+
+                                        <div className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                                          PAIRED ACTIVITY: <span className="text-slate-800 font-medium normal-case bg-slate-100 px-1.5 py-0.5 rounded font-sans font-bold">{blockLabel}</span>
+                                        </div>
+
+                                        <p className="text-[11px] text-slate-600 leading-normal">
+                                          <span className="font-semibold text-slate-650">Recorded:</span> {sig.metadata?.message || details.records}
+                                        </p>
+                                        <p className="text-[10px] text-slate-500 leading-normal border-t border-slate-150 pt-1.5 font-normal">
+                                          <span className="font-semibold text-slate-450">Indicates:</span> {details.indicates}
+                                        </p>
                                       </div>
-                                    ))}
-                                  </div>
+                                    );
+                                  })
                                 )}
                               </div>
                             </div>
@@ -1017,6 +1063,16 @@ export default function AIReview({
                                   </div>
                                 </div>
                               </div>
+
+                              <button
+                                type="button"
+                                onClick={() => handleDismissAttemptSignals(item.attemptId)}
+                                disabled={dismissingAttemptId === item.attemptId}
+                                className="w-full py-2 mb-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold rounded text-xs tracking-wider uppercase flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-sm select-none"
+                              >
+                                <Check className="w-4 h-4 text-emerald-600" />
+                                {dismissingAttemptId === item.attemptId ? "Dismissing..." : "Dismiss Alert"}
+                              </button>
 
                               <button
                                 onClick={() => {

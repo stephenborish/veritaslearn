@@ -187,6 +187,7 @@ export interface DeriveIntegrityOptions {
   assignmentId?: string | null;
   lessonId?: string | null;
   lessonVersionId?: string | null;
+  excludeDismissed?: boolean;
 }
 
 const ATTENTION_RANK: Record<IntegrityAttentionLevel, number> = { none: 0, low: 1, moderate: 2, high: 3 };
@@ -228,7 +229,10 @@ export function deriveIntegritySignalSummary(
   rawSignals: any[],
   options: DeriveIntegrityOptions = {}
 ): IntegritySignalSummary {
-  const signals = Array.isArray(rawSignals) ? rawSignals : [];
+  const signals = (Array.isArray(rawSignals) ? rawSignals : []).filter((s) => {
+    if (options.excludeDismissed && s.dismissedAt) return false;
+    return true;
+  });
 
   const empty: IntegritySignalSummary = {
     totalSignals: 0,
@@ -495,5 +499,63 @@ export function attentionColorClasses(level: IntegrityAttentionLevel): { text: s
       return { text: "text-slate-600", bg: "bg-slate-50", border: "border-slate-200", dot: "bg-slate-400" };
     default:
       return { text: "text-emerald-700", bg: "bg-emerald-50", border: "border-emerald-200", dot: "bg-emerald-500" };
+  }
+}
+
+export function getSignalDetailedExplanation(eventType: string): { records: string; indicates: string; actionSuggestion: string } {
+  switch (eventType) {
+    case "blur_focus_lost":
+    case "visibilitychange":
+      return {
+        records: "Active window focus change (student switched browser tabs, minimized active window, or clicked another application).",
+        indicates: "The student clicked away from the VERITAS player interface. This is extremely common when checking background assignments, seeking outside references, or navigating distraction apps.",
+        actionSuggestion: "Review the active writing time inside blocks and corresponding short answer responses to check if the text matches the student's natural tone."
+      };
+    case "fullscreen_exit":
+    case "fullscreen_exited":
+      return {
+        records: "Left the secure full-screen learning window.",
+        indicates: "The student deliberately minimized or exited full-screen mode, which is required under locked study policies to encourage single-tasking.",
+        actionSuggestion: "If exited multiple times, check if the student felt overwhelmed, experienced technical glitches, or felt a need to switch screens."
+      };
+    case "paste_blocked":
+      return {
+        records: "A paste attempt into a protected short-answer or checkpoint answer field was intercepted.",
+        indicates: "The student copied text from outside the platform and tried to paste it directly as their response, bypassing direct retrieval writing.",
+        actionSuggestion: "Analyze the written response. Look for sudden vocabulary shifts, perfect structures, or formatting artifacts typical of copied reference texts."
+      };
+    case "copy_blocked":
+      return {
+        records: "An attempt to copy lesson prompt text fields was intercepted.",
+        indicates: "The student highlighted and tried to copy prompt text, which is frequently done to paste into translator engines, search bars, or AI assistants.",
+        actionSuggestion: "Focus on whether response times were unusually brief. No penalty is typically justified unless paired with copied-replies."
+      };
+    case "rapid_navigation":
+      return {
+        records: "Unusually fast progression (under 5 seconds) through materials before clicking 'next' or 'continue'.",
+        indicates: "The student is skimming or entirely skipping requested readings, images, and videos without deep interaction.",
+        actionSuggestion: "Examine active study time records to see if the student possesses the pre-requisite reading readiness before the fall course starts."
+      };
+    case "seek_attempt_blocked":
+      return {
+        records: "The player blocked a request to fast-forward past required instruction chapters.",
+        indicates: "The student attempted to scroll past core video lessons. The player automatically seeking back to the furthest watched point successfully guarded content delivery.",
+        actionSuggestion: "Ensure their final attempt shows full watch completion (reaches 90%+ duration thresholds) to confirm core readiness."
+      };
+    case "ai_guard_marker_in_answer":
+    case "hidden_assessment_text_in_answer":
+    case "ai_guard_refusal_phrase_in_answer":
+    case "possible_ai_agent_use":
+      return {
+        records: "Plagiarism analysis signatures or typical AI chatbot refusal statements detected in short-answer response fields.",
+        indicates: "Strong signals of external writing software (such as browser chatbot extensions) generating or editing elements of the submitted assignment.",
+        actionSuggestion: "Mandatorily cross-examine the text with the student before school begins. AI-grading will flag these items automatically for teacher inspection."
+      };
+    default:
+      return {
+        records: "Session activity record.",
+        indicates: "Ambient student browsing interaction logged in the telemetry queue.",
+        actionSuggestion: "Use to reconstruct their timeline of study context."
+      };
   }
 }

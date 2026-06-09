@@ -189,6 +189,14 @@ function normalizeDb(db: any): any {
   delete db.assignments;
   // Normalize embedded questions to stable choice ids / correctChoiceId.
   db.blocks = db.blocks.map((b: any) => migrateBlock(b));
+  if (Array.isArray(db.lessonVersions)) {
+    db.lessonVersions = db.lessonVersions.map((v: any) => {
+      if (v && Array.isArray(v.blocksSnapshot)) {
+        v.blocksSnapshot = v.blocksSnapshot.map((b: any) => migrateBlock(b));
+      }
+      return v;
+    });
+  }
   return db;
 }
 
@@ -1206,6 +1214,19 @@ function asPlainText(v: any): string {
     }
   }
   return String(v);
+}
+
+function getAiModel(): string {
+  const model = process.env.AI_GRADING_MODEL;
+  if (!model) return "gemini-3.5-flash";
+  const deprecatedMap: Record<string, string> = {
+    "gemini-2.0-flash": "gemini-3.5-flash",
+    "gemini-1.5-flash": "gemini-3.5-flash",
+    "gemini-2.0-pro": "gemini-3.1-pro-preview",
+    "gemini-1.5-pro": "gemini-3.1-pro-preview",
+    "gemini-pro": "gemini-3.1-pro-preview",
+  };
+  return deprecatedMap[model] || model;
 }
 
 // Stable, dependency-free hash for AIGradingRecord.inputHash (audit/dedupe aid).
@@ -4443,7 +4464,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       id: "aigr_" + Math.random().toString(36).substring(2, 9),
       responseId: newResponse.id,
       provider: "google",
-      model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+      model: getAiModel(),
       promptVersion: "2.0",
       rubricSnapshot: originalQuestion.rubricCategories || [],
       guidanceSnapshot,
@@ -4477,7 +4498,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
       try {
         const ai = getAI();
         const response = await ai.models.generateContent({
-          model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+          model: getAiModel(),
           contents: promptContent,
           config: {
             systemInstruction:
@@ -4892,6 +4913,52 @@ app.post("/api/integrity-signals", requireAuth, async (req, res) => {
   res.json({ success: true, lockState, securityReviewRequired });
 });
 
+// Teacher: Toggle persistent dismissal of an individual integrity signal
+app.post("/api/integrity-signals/:id/toggle-dismiss", requireTeacher, async (req, res) => {
+  const { id } = req.params;
+  const db = readDb();
+  if (!db.securitySignals) {
+    db.securitySignals = [];
+  }
+  const signalIdx = db.securitySignals.findIndex((s: any) => s.id === id);
+  if (signalIdx === -1) {
+    res.status(404).json({ error: "Signal not found" });
+    return;
+  }
+  const signal = db.securitySignals[signalIdx];
+  signal.dismissedAt = signal.dismissedAt ? null : new Date().toISOString();
+  try {
+    await commitDb(db);
+  } catch (err) {
+    sendAppError(res, err);
+    return;
+  }
+  res.json({ success: true, signal });
+});
+
+// Teacher: Persistently dismiss ALL integrity signals for a given attempt ID in bulk
+app.post("/api/attempts/:attemptId/dismiss-all-signals", requireTeacher, async (req, res) => {
+  const { attemptId } = req.params;
+  const db = readDb();
+  if (!db.securitySignals) {
+    db.securitySignals = [];
+  }
+  let count = 0;
+  db.securitySignals.forEach((s: any) => {
+    if (s.attemptId === attemptId && !s.dismissedAt) {
+      s.dismissedAt = new Date().toISOString();
+      count++;
+    }
+  });
+  try {
+    await commitDb(db);
+  } catch (err) {
+    sendAppError(res, err);
+    return;
+  }
+  res.json({ success: true, count });
+});
+
 // Save SA draft response (server-side autosave without submitting).
 // Stores draftResponses[questionId] on the attempt so the student can resume
 // from any device without losing progress. localStorage is still used as a fallback.
@@ -5147,7 +5214,7 @@ app.post("/api/attempts/:id/force-submit", requireTeacher, async (req, res) => {
               id: "aigr_" + Math.random().toString(36).substring(2, 9),
               responseId: newResponse.id,
               provider: "google",
-              model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+              model: getAiModel(),
               promptVersion: "2.0",
               rubricSnapshot: originalQuestion.rubricCategories || [],
               guidanceSnapshot,
@@ -5168,7 +5235,7 @@ app.post("/api/attempts/:id/force-submit", requireTeacher, async (req, res) => {
               try {
                 const ai = getAI();
                 const response = await ai.models.generateContent({
-                  model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+                  model: getAiModel(),
                   contents: promptContent,
                   config: {
                     systemInstruction:
@@ -5270,10 +5337,304 @@ app.post("/api/attempts/:id/force-submit", requireTeacher, async (req, res) => {
                   }
                   await commitDb(backDb);
                 }
-              } catch (aiErr) {
+              } catch (aiErr: any) {
                 console.error("VERITAS Learn - Async force AI grading failed:", aiErr);
+                const freshDb = readDb();
+                const rulesCheck = checkLowEffortRules(draftText);
+                const isLowEffort = rulesCheck.lowEffort;
+                const errorRationale = isLowEffort
+                  ? `AI grading failed during force submit, but response was flagged as low-effort: ${rulesCheck.reason}`
+                  : "AI grading failed to complete during force submit. Response queued for manual review.";
+
+                const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === newResponse.id);
+                if (freshGradIdx !== -1) {
+                  freshDb.aiGradingRecords[freshGradIdx] = {
+                    ...freshDb.aiGradingRecords[freshGradIdx],
+                    parsedScore: 0,
+                    feedback: "",
+                    rationale: errorRationale,
+                    teacherNotes: `AI grading error (force-submit): ${aiErr instanceof Error ? aiErr.message : String(aiErr)}`,
+                    misconceptions: [],
+                    needsTeacherReview: true,
+                    confidence: 0,
+                    status: "failed",
+                    errorMessage: aiErr instanceof Error ? aiErr.message : String(aiErr),
+                    rubricBreakdown: {},
+                    gradedAt: new Date().toISOString()
+                  };
+                }
+
+                const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === newResponse.id);
+                if (freshRespIdx !== -1) {
+                  if (isLowEffort) {
+                    freshDb.responses[freshRespIdx].score = 0;
+                    freshDb.responses[freshRespIdx].pointsEarned = 0;
+                    freshDb.responses[freshRespIdx].isLowEffort = true;
+                    freshDb.responses[freshRespIdx].lowEffortReason = rulesCheck.reason;
+                  }
+                  
+                  const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
+                  if (freshAttempt) {
+                    upsertResponseGradebookEntry(
+                      freshDb.responses[freshRespIdx],
+                      freshAttempt,
+                      "needs_teacher_review",
+                      "ai_short_answer",
+                      errorRationale,
+                      freshDb
+                    );
+                  }
+                }
+                recalculateAttemptScore(id, freshDb);
+                await commitDb(freshDb);
               }
             })();
+          }
+        }
+      } else {
+        // Handle ALREADY submitted:
+        // If a teacher forces completion, we want to make sure we also trigger AI grading on any ALREADY submitted responses
+        // that are still pending or don't have a successful AI grade.
+        const existingResponse = (db.responses || []).find(
+          (r: any) =>
+            r.attemptId === id &&
+            r.blockId === blockId &&
+            r.questionId === questionId &&
+            (checkpointId ? r.checkpointId === checkpointId : !r.checkpointId)
+        );
+
+        if (existingResponse && existingResponse.type === "sa") {
+          let block: any = null;
+          let checkpoint: any = null;
+          let rawOriginal: any = null;
+
+          if (attempt.lessonVersionId) {
+            const version = (db.lessonVersions || []).find((v: any) => v.id === attempt.lessonVersionId);
+            const resolved = resolveQuestionFromVersion(version, blockId, checkpointId, questionId);
+            if (resolved) {
+              block = resolved.block;
+              rawOriginal = resolved.rawOriginal;
+              if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+                checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+              }
+            }
+          }
+
+          if (!block) {
+            block = db.blocks.find((b: any) => b.id === blockId);
+            if (block) {
+              if (checkpointId && Array.isArray(block.videoCheckpoints)) {
+                checkpoint = block.videoCheckpoints.find((c: any) => c.id === checkpointId);
+                if (checkpoint) rawOriginal = (checkpoint.questions || []).find((q: any) => q.id === questionId);
+              } else {
+                rawOriginal =
+                  block.singleQuestion ||
+                  (block.questionPool && block.questionPool.questions.find((q: any) => q.id === questionId));
+              }
+            }
+          }
+
+          if (block && rawOriginal) {
+            const originalQuestion = migrateQuestionDefinition(rawOriginal);
+            const maxPoints = Number(originalQuestion.points) || 0;
+            const guidanceSnapshot = {
+              modelAnswer: originalQuestion.modelAnswer,
+              answerKey: originalQuestion.answerKey,
+              aiScoringGuidance: originalQuestion.aiScoringGuidance
+            };
+
+            const gradingRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === existingResponse.id);
+            const needsActiveGrading = !gradingRecord || gradingRecord.status === "pending" || gradingRecord.status === "failed";
+
+            if (needsActiveGrading) {
+              const responseVal = existingResponse.responseValue;
+              const textForGrading = typeof responseVal === 'string' ? responseVal : String(responseVal || '');
+              const promptContent = buildShortAnswerPrompt(lesson, originalQuestion, textForGrading, maxPoints);
+
+              if (!gradingRecord) {
+                db.aiGradingRecords.push({
+                  id: "aigr_" + Math.random().toString(36).substring(2, 9),
+                  responseId: existingResponse.id,
+                  provider: "google",
+                  model: getAiModel(),
+                  promptVersion: "2.0",
+                  rubricSnapshot: originalQuestion.rubricCategories || [],
+                  guidanceSnapshot,
+                  inputHash: simpleHash(promptContent),
+                  parsedScore: 0,
+                  confidence: 0,
+                  rationale: "Contacting Veritas AI assessor layer...",
+                  rubricBreakdown: {},
+                  status: "pending",
+                  gradedAt: new Date().toISOString()
+                });
+              } else {
+                gradingRecord.status = "pending";
+                gradingRecord.model = getAiModel();
+                gradingRecord.gradedAt = new Date().toISOString();
+              }
+
+              upsertResponseGradebookEntry(existingResponse, attempt, "pending_ai", "ai_short_answer", undefined, db);
+
+              (async () => {
+                try {
+                  const ai = getAI();
+                  const response = await ai.models.generateContent({
+                    model: getAiModel(),
+                    contents: promptContent,
+                    config: {
+                      systemInstruction:
+                        "You are Veritas AI, an academic grading assistant. Output strictly valid JSON matching the provided schema. Never include model answers, answer keys, or teacher-only scoring guidance in the student-facing feedback field.",
+                      responseMimeType: "application/json",
+                      responseSchema: {
+                        type: Type.OBJECT,
+                        properties: {
+                          score: { type: Type.NUMBER, description: "Total points earned, clamped to 0..maxScore." },
+                          maxScore: { type: Type.NUMBER, description: "Maximum possible points (equals question max points)." },
+                          feedback: { type: Type.STRING, description: "Student-visible explanation: what was correct, what was missing. Must NOT reproduce the model answer, answer key, or teacher-only guidance." },
+                          rationale: { type: Type.STRING, description: "Teacher-facing justification grounded in the rubric. May reference internal guidance." },
+                          rubricBreakdown: {
+                            type: Type.ARRAY,
+                            description: "Per-rubric-category scores and feedback.",
+                            items: {
+                              type: Type.OBJECT,
+                              properties: {
+                                category: { type: Type.STRING },
+                                score: { type: Type.NUMBER },
+                                maxScore: { type: Type.NUMBER },
+                                feedback: { type: Type.STRING }
+                              },
+                              required: ["category", "score", "feedback"]
+                            }
+                          },
+                          misconceptions: {
+                            type: Type.ARRAY,
+                            description: "Specific misconceptions identified in the response. Empty array if none.",
+                            items: { type: Type.STRING }
+                          },
+                          confidence: { type: Type.NUMBER, description: "0.0..1.0 grading confidence." },
+                          needsTeacherReview: { type: Type.BOOLEAN, description: "True if confidence < 0.75, the answer is ambiguous, or human judgment is needed." },
+                          teacherNotes: { type: Type.STRING, description: "Internal teacher-only notes about grading edge cases or concerns." },
+                          lowEffort: { type: Type.BOOLEAN, description: "True if the response is gibberish, a keyboard smash, extremely short, or makes no genuine academic attempt." }
+                        },
+                        required: ["score", "maxScore", "feedback", "rubricBreakdown", "misconceptions", "confidence", "needsTeacherReview", "teacherNotes", "lowEffort"]
+                      }
+                    }
+                  });
+
+                  const rawJsonText = (response.text || "").trim();
+                  const geminiResult = parseAiGradingJson(rawJsonText);
+
+                  const rubricObject: any = {};
+                  if (Array.isArray(geminiResult.rubricBreakdown)) {
+                    geminiResult.rubricBreakdown.forEach((item: any) => {
+                      if (item && typeof item.category === "string") {
+                        rubricObject[item.category] = {
+                          score: Number(item.score) || 0,
+                          maxScore: item.maxScore !== undefined ? Number(item.maxScore) : undefined,
+                          feedback: item.feedback || ""
+                        };
+                      }
+                    });
+                  }
+
+                  const rulesCheck = checkLowEffortRules(responseVal);
+                  const isLowEffort = rulesCheck.lowEffort || !!geminiResult.lowEffort;
+
+                  const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
+                  const confidence = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.confidence) || 0, 1));
+                  const aiNeedsReview = !!geminiResult.needsTeacherReview;
+                  const finalStatus = isLowEffort || confidence < 0.75 || aiNeedsReview ? "needs_review" : "success";
+
+                  const studentFeedback = isLowEffort
+                    ? "Your response did not meet the minimum length or structure requirements for grading. Please resubmit with a complete written answer."
+                    : (geminiResult.feedback || "");
+
+                  const backDb = readDb();
+                  const respIdx = backDb.responses.findIndex((r: any) => r.id === existingResponse.id);
+                  if (respIdx !== -1) {
+                    backDb.responses[respIdx].aiGrading = {
+                      score: clampedScore,
+                      confidence,
+                      status: finalStatus,
+                      feedback: studentFeedback,
+                      rationale: geminiResult.rationale || "",
+                      rubricBreakdown: rubricObject,
+                      misconceptions: geminiResult.misconceptions || [],
+                      teacherNotes: geminiResult.teacherNotes || "",
+                      lowEffort: isLowEffort,
+                      lowEffortReason: isLowEffort ? "AI and rule checks flagged response as extremely low-effort." : null,
+                      gradedAt: new Date().toISOString()
+                    };
+
+                    if (finalStatus === "success" && !isLowEffort) {
+                      backDb.responses[respIdx].score = clampedScore;
+                      backDb.responses[respIdx].pointsEarned = clampedScore;
+                    } else {
+                      backDb.responses[respIdx].score = 0;
+                      backDb.responses[respIdx].pointsEarned = 0;
+                    }
+
+                    const curAttempt = backDb.attempts.find((a: any) => a.id === id);
+                    if (curAttempt) {
+                      upsertResponseGradebookEntry(backDb.responses[respIdx], curAttempt, finalStatus === "success" && !isLowEffort ? "ai_scored" : "needs_teacher_review", "ai_short_answer", undefined, backDb);
+                      recalculateAttemptScore(id, backDb);
+                    }
+                    await commitDb(backDb);
+                  }
+                } catch (aiErr: any) {
+                  console.error("VERITAS Learn - Async force AI grading failed (for existing response):", aiErr);
+                  const freshDb = readDb();
+                  const rulesCheck = checkLowEffortRules(responseVal);
+                  const isLowEffort = rulesCheck.lowEffort;
+                  const errorRationale = isLowEffort
+                    ? `AI grading failed during force submit, but response was flagged as low-effort: ${rulesCheck.reason}`
+                    : "AI grading failed to complete during force submit. Response queued for manual review.";
+
+                  const freshGradIdx = freshDb.aiGradingRecords.findIndex((g: any) => g.responseId === existingResponse.id);
+                  if (freshGradIdx !== -1) {
+                    freshDb.aiGradingRecords[freshGradIdx] = {
+                      ...freshDb.aiGradingRecords[freshGradIdx],
+                      parsedScore: 0,
+                      feedback: "",
+                      rationale: errorRationale,
+                      teacherNotes: `AI grading error (force-submit): ${aiErr instanceof Error ? aiErr.message : String(aiErr)}`,
+                      misconceptions: [],
+                      needsTeacherReview: true,
+                      confidence: 0,
+                      status: "failed",
+                      errorMessage: aiErr instanceof Error ? aiErr.message : String(aiErr),
+                      rubricBreakdown: {},
+                      gradedAt: new Date().toISOString()
+                    };
+                  }
+
+                  const freshRespIdx = freshDb.responses.findIndex((r: any) => r.id === existingResponse.id);
+                  if (freshRespIdx !== -1) {
+                    if (isLowEffort) {
+                      freshDb.responses[freshRespIdx].score = 0;
+                      freshDb.responses[freshRespIdx].pointsEarned = 0;
+                      freshDb.responses[freshRespIdx].isLowEffort = true;
+                      freshDb.responses[freshRespIdx].lowEffortReason = rulesCheck.reason;
+                    }
+
+                    const freshAttempt = freshDb.attempts.find((a: any) => a.id === id);
+                    if (freshAttempt) {
+                      upsertResponseGradebookEntry(
+                        freshDb.responses[freshRespIdx],
+                        freshAttempt,
+                        "needs_teacher_review",
+                        "ai_short_answer",
+                        errorRationale,
+                        freshDb
+                      );
+                    }
+                  }
+                  recalculateAttemptScore(id, freshDb);
+                  await commitDb(freshDb);
+                }
+              })();
+            }
           }
         }
       }
@@ -6015,7 +6376,7 @@ app.post("/api/ai-review/:responseId/grade", requireTeacher, async (req, res) =>
       id: aigrId,
       responseId: response.id,
       provider: "google",
-      model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+      model: getAiModel(),
       promptVersion: "2.0",
       rubricSnapshot: originalQuestion.rubricCategories || [],
       guidanceSnapshot,
@@ -6043,7 +6404,7 @@ app.post("/api/ai-review/:responseId/grade", requireTeacher, async (req, res) =>
     try {
       const ai = getAI();
       const aiResponse = await ai.models.generateContent({
-        model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+        model: getAiModel(),
         contents: promptContent,
         config: {
           systemInstruction:
@@ -6165,7 +6526,7 @@ app.post("/api/ai-review/:responseId/grade", requireTeacher, async (req, res) =>
             id: aigrId,
             responseId: response.id,
             provider: "google",
-            model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+            model: getAiModel(),
             promptVersion: "2.0",
             rubricSnapshot: originalQuestion.rubricCategories || [],
             guidanceSnapshot,
@@ -6670,7 +7031,7 @@ async function generateRubricWithSchemaAndRetry(
   systemInstruction: string,
   isRevision: boolean = false
 ): Promise<{ result: any; warnings: string[] }> {
-  const model = process.env.AI_GRADING_MODEL || "gemini-3.5-flash";
+  const model = getAiModel();
   const ai = getAI();
   const schema = getRubricResponseSchema();
 
@@ -6953,7 +7314,7 @@ async function startServer() {
           id: "aigr_" + Math.random().toString(36).substring(2, 9),
           responseId: r.id,
           provider: "google",
-          model: process.env.AI_GRADING_MODEL || "gemini-3.5-flash",
+          model: getAiModel(),
           promptVersion: "1.0",
           rubricSnapshot: [],
           inputHash: "",
