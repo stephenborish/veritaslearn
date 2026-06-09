@@ -20,6 +20,8 @@ import {
   type ReadinessSeverity,
   calculateEstimatedLessonMinutes,
   formatEstimatedTime,
+  getLessonTileStatus,
+  getAssignmentStatus,
 } from "./builderWorkflow";
 
 function uid(prefix: string): string {
@@ -1151,9 +1153,9 @@ export default function LessonsBuilder({
     e.preventDefault();
     setAsgError("");
     if (!asgLessonId) { setAsgError("Please select a lesson plan to assign."); return; }
-    if (!asgCourseId.trim()) { setAsgError("Please select a course."); return; }
-    if (new Date(asgOpensAt) >= new Date(asgDueAt)) { setAsgError("Opening date must be before due date."); return; }
-    if (new Date(asgDueAt) > new Date(asgClosesAt)) { setAsgError("Due date must be on or before closing date."); return; }
+    if (!asgCourseId.trim()) { setAsgError("Choose a course before assigning this lesson."); return; }
+    if (new Date(asgOpensAt) >= new Date(asgDueAt)) { setAsgError("Available starting must be before the due date."); return; }
+    if (new Date(asgDueAt) > new Date(asgClosesAt)) { setAsgError("Due date must be on or before submissions close."); return; }
     if (onSaveAssignment) {
       const selectedCourse = courses.find((c: any) => c.id === asgCourseId.trim());
       const selectedLessonObj = lessons.find((l: any) => l.id === asgLessonId);
@@ -1184,6 +1186,9 @@ export default function LessonsBuilder({
       setAsgLessonId("");
       setAsgCourseId("");
       setAsgSection("");
+      setAsgOpensAt(getDefaultOpenDate());
+      setAsgDueAt(getDefaultDueDate());
+      setAsgClosesAt(getDefaultCloseDate());
       setAsgIntegrityPolicy(buildDefaultPolicy("open"));
     }
   };
@@ -1440,9 +1445,19 @@ export default function LessonsBuilder({
                         <div className="flex justify-between items-start gap-4">
                           <h3 className="text-base font-bold text-slate-900 tracking-tight text-left">{lesson.title || "Untitled lesson"}</h3>
                           <div className="flex flex-col items-end gap-1 shrink-0">
-                            <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${lesson.isPublished ? (lessonAsgs.length > 0 ? "bg-indigo-50 text-indigo-700 border-indigo-200" : "bg-emerald-50 text-emerald-700 border-emerald-200") : "bg-slate-100 text-slate-500 border-slate-200"}`}>
-                              {lesson.isPublished ? (lessonAsgs.length > 0 ? "Assigned" : "Published") : "Draft"}
-                            </span>
+                            {(() => {
+                              const tileStatus = getLessonTileStatus(lesson.isPublished, lessonAsgs, new Date());
+                              let tileStatusTheme = "bg-slate-100 text-slate-500 border-slate-200";
+                              if (tileStatus === "Ready to assign") tileStatusTheme = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                              else if (tileStatus === "Scheduled") tileStatusTheme = "bg-blue-50 text-blue-700 border-blue-200";
+                              else if (tileStatus === "Active") tileStatusTheme = "bg-emerald-50 text-emerald-700 border-emerald-200";
+                              
+                              return (
+                                <span className={`text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${tileStatusTheme}`}>
+                                  {tileStatus}
+                                </span>
+                              )
+                            })()}
                           </div>
                         </div>
 
@@ -1481,10 +1496,13 @@ export default function LessonsBuilder({
                                 const opens = asg.opensAt || "";
                                 const closes = asg.closesAt || "";
                                 const courseName = (courses.find((c: any) => c.id === asg.courseId)?.name) || asg.courseId;
-                                let badge = null;
-                                if (now < opens) badge = <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Scheduled</span>;
-                                else if (now <= closes) badge = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase animate-pulse">● Open</span>;
-                                else badge = <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Closed</span>;
+                                const badge = (() => {
+                                  const status = getAssignmentStatus(asg, new Date());
+                                  if (status === "Scheduled") return <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Scheduled</span>;
+                                  if (status === "Ended") return <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Ended</span>;
+                                  if (status === "Active · Past due") return <span className="bg-amber-50 text-amber-700 border border-amber-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Active · Past due</span>;
+                                  return <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Active</span>;
+                                })();
                                 return (
                                   <div key={asg.id} className="bg-slate-50 border border-slate-200 p-2 rounded flex justify-between items-center gap-2 text-[11px]">
                                     <span className="font-semibold text-slate-700">{courseName}{asg.section ? ` · ${asg.section}` : ""}</span>
@@ -1535,6 +1553,7 @@ export default function LessonsBuilder({
               lessons={lessons}
               courses={courses}
               assignments={assignments}
+              attempts={attempts}
               showAssignmentForm={showAssignmentForm}
               setShowAssignmentForm={setShowAssignmentForm}
               asgLessonId={asgLessonId}
@@ -1919,15 +1938,15 @@ export default function LessonsBuilder({
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-[11px]">
                       <div>
-                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Opens</span>
+                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Available starting</span>
                         <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.opensAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Due</span>
-                        <span className="font-semibold text-slate-900">{new Date(savedAssignmentConfirm.dueAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Due by</span>
+                        <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.dueAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
                       </div>
                       <div>
-                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Closes</span>
+                        <span className="text-slate-400 block text-[9px] uppercase font-bold">Submissions close</span>
                         <span className="font-semibold text-slate-800">{new Date(savedAssignmentConfirm.closesAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
                       </div>
                     </div>
@@ -2537,10 +2556,13 @@ export default function LessonsBuilder({
                             const asgAttempts = (attempts || []).filter((a: any) => a.assignmentId === asg.id && !a.isPreviewAttempt);
                             const hasStarted = asgAttempts.length > 0;
 
-                            let sBadge = null;
-                            if (now < opens) sBadge = <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Scheduled</span>;
-                            else if (now <= closes) sBadge = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Open</span>;
-                            else sBadge = <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Closed</span>;
+                            const sBadge = (() => {
+                              const status = getAssignmentStatus(asg, new Date());
+                              if (status === "Scheduled") return <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Scheduled</span>;
+                              if (status === "Ended") return <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Ended</span>;
+                              if (status === "Active · Past due") return <span className="bg-amber-50 text-amber-700 border border-amber-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Active · Past due</span>;
+                              return <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-1.5 py-0.5 rounded text-[8px] uppercase">Active</span>;
+                            })();
 
                             return (
                               <div key={asg.id} className="p-3 flex justify-between items-center gap-4 text-xs">
@@ -2607,9 +2629,9 @@ export default function LessonsBuilder({
                       e.preventDefault();
                       setAsgError("");
                       if (!asgLessonId) { setAsgError("Invalid lesson ID."); return; }
-                      if (!asgCourseId) { setAsgError("Please select a course."); return; }
-                      if (new Date(asgOpensAt) >= new Date(asgDueAt)) { setAsgError("Open date must occur before the due date."); return; }
-                      if (new Date(asgDueAt) > new Date(asgClosesAt)) { setAsgError("Due date must be on or before close date."); return; }
+                      if (!asgCourseId) { setAsgError("Choose a course before assigning this lesson."); return; }
+                      if (new Date(asgOpensAt) >= new Date(asgDueAt)) { setAsgError("Available starting must be before the due date."); return; }
+                      if (new Date(asgDueAt) > new Date(asgClosesAt)) { setAsgError("Due date must be on or before submissions close."); return; }
 
                       try {
                         const selectedC = courses.find((c: any) => c.id === asgCourseId);
@@ -2645,6 +2667,9 @@ export default function LessonsBuilder({
                           setEditingAssignmentId(null);
                           setAsgCourseId("");
                           setAsgSection("");
+                          setAsgOpensAt(getDefaultOpenDate());
+                          setAsgDueAt(getDefaultDueDate());
+                          setAsgClosesAt(getDefaultCloseDate());
                           setAsgIntegrityPolicy(buildDefaultPolicy("open"));
                         }
                       } catch (err: any) {
@@ -2717,10 +2742,11 @@ export default function LessonsBuilder({
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             {/* Opens At */}
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Opens At *</label>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Available starting *</label>
+                              <p className="text-[10px] text-slate-400 mb-2 leading-tight">Students can see and start the lesson after this time.</p>
                               <input
                                 type="datetime-local"
                                 value={asgOpensAt}
@@ -2733,7 +2759,8 @@ export default function LessonsBuilder({
 
                             {/* Due At */}
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Due At *</label>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Due by *</label>
+                              <p className="text-[10px] text-slate-400 mb-2 leading-tight">The expected completion deadline. Work after this time is late if submissions are still allowed.</p>
                               <input
                                 type="datetime-local"
                                 value={asgDueAt}
@@ -2745,7 +2772,8 @@ export default function LessonsBuilder({
 
                             {/* Closes At */}
                             <div>
-                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Closes At *</label>
+                              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Submissions close *</label>
+                              <p className="text-[10px] text-slate-400 mb-2 leading-tight">Students cannot start or submit after this time.</p>
                               <input
                                 type="datetime-local"
                                 value={asgClosesAt}
@@ -2762,7 +2790,7 @@ export default function LessonsBuilder({
                               <div className="space-y-2">
                                 <span className="text-xs font-bold text-slate-700 block">Learning Conditions</span>
                                 <div className="bg-slate-100 border border-slate-200 rounded-lg p-3 text-slate-600 leading-relaxed text-[11px]">
-                                  Preset: <strong className="capitalize text-slate-800">{asgIntegrityPolicy?.preset || "Open"}</strong>
+                                  Preset: <strong className="capitalize text-slate-800">{asgIntegrityPolicy?.preset === "open" ? "Flexible" : (asgIntegrityPolicy?.preset || "Flexible")}</strong>
                                   <p className="mt-1">
                                     Learning conditions like seeking restrictions, fullscreen focus checks, and choice shuffling cannot be adjusted once attempts are in progress.
                                   </p>
@@ -3470,7 +3498,7 @@ function BlockEditor({
 
 // ---- Assignments Tab (extracted to reduce canvas complexity) ----
 function AssignmentsTab({
-  lessons, courses, assignments, showAssignmentForm, setShowAssignmentForm,
+  lessons, courses, assignments, attempts, showAssignmentForm, setShowAssignmentForm,
   asgLessonId, setAsgLessonId, asgCourseId, setAsgCourseId,
   asgSection, setAsgSection, asgOpensAt, setAsgOpensAt,
   asgDueAt, setAsgDueAt, asgClosesAt, setAsgClosesAt,
@@ -3550,15 +3578,15 @@ function AssignmentsTab({
             </div>
 
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Opens *</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Available starting *</label>
               <input type="datetime-local" value={asgOpensAt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgOpensAt(e.target.value)} className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400" required />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Due *</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Due by *</label>
               <input type="datetime-local" value={asgDueAt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgDueAt(e.target.value)} className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400" required />
             </div>
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Closes *</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">Submissions close *</label>
               <input type="datetime-local" value={asgClosesAt} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAsgClosesAt(e.target.value)} className="w-full bg-white border border-slate-200 text-slate-800 rounded px-3 py-2 text-xs focus:outline-none focus:border-slate-400" required />
             </div>
           </div>
@@ -3592,34 +3620,56 @@ function AssignmentsTab({
                 <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                   <th className="p-3">Course</th>
                   <th className="p-3">Lesson</th>
-                  <th className="p-3">Opens</th>
-                  <th className="p-3">Due</th>
-                  <th className="p-3">Closes</th>
+                  <th className="p-3">Available starting</th>
+                  <th className="p-3">Due by</th>
+                  <th className="p-3">Submissions close</th>
                   <th className="p-3 text-center">Status</th>
                   <th className="p-3 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-slate-700">
                 {assignments.map((asg: any) => {
-                  const now = new Date().toISOString();
-                  const opens = asg.opensAt || "";
-                  const closes = asg.closesAt || "";
+                  const now = new Date();
+                  const opens = new Date(asg.opensAt || "");
+                  const due = new Date(asg.dueAt || "");
+                  const closes = new Date(asg.closesAt || "");
                   const courseName = (courses.find((c: any) => c.id === asg.courseId)?.name) || asg.courseId;
-                  let statusNode = null;
-                  if (now < opens) statusNode = <span className="bg-blue-50 text-blue-700 border border-blue-100 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Scheduled</span>;
-                  else if (now <= closes) statusNode = <span className="bg-green-50 text-green-700 border border-green-100 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Open</span>;
-                  else statusNode = <span className="bg-slate-100 text-slate-500 border border-slate-200 font-bold px-2 py-0.5 rounded text-[9px] uppercase">Closed</span>;
+                  
+                  let statusText = "Active";
+                  let colorClass = "bg-green-50 text-green-700 border-green-100";
+                  
+                  if (now < opens) {
+                    statusText = "Scheduled";
+                    colorClass = "bg-blue-50 text-blue-700 border-blue-100";
+                  } else if (now > closes) {
+                    statusText = "Ended";
+                    colorClass = "bg-slate-100 text-slate-500 border-slate-200";
+                  } else if (now > due) {
+                    statusText = "Active · Past due";
+                    colorClass = "bg-amber-50 text-amber-700 border-amber-200";
+                  }
+
+                  const statusNode = <span className={`border font-bold px-2 py-0.5 rounded text-[9px] uppercase ${colorClass}`}>{statusText}</span>;
+
                   return (
                     <tr key={asg.id} className="hover:bg-slate-50/50">
                       <td className="p-3"><span className="font-bold text-slate-800">{courseName}</span>{asg.section && <span className="text-slate-400 ml-1.5">· {asg.section}</span>}</td>
                       <td className="p-3 font-semibold text-slate-800">{asg.lessonTitle || "Untitled lesson"}</td>
-                      <td className="p-3 text-[11px] text-slate-500">{new Date(opens).toLocaleString()}</td>
-                      <td className="p-3 text-[11px] text-slate-500 font-semibold">{new Date(asg.dueAt).toLocaleString()}</td>
-                      <td className="p-3 text-[11px] text-slate-500">{new Date(closes).toLocaleString()}</td>
+                      <td className="p-3 text-[11px] text-slate-500">{opens.toLocaleString()}</td>
+                      <td className="p-3 text-[11px] text-slate-500 font-semibold">{due.toLocaleString()}</td>
+                      <td className="p-3 text-[11px] text-slate-500">{closes.toLocaleString()}</td>
                       <td className="p-3 text-center">{statusNode}</td>
                       <td className="p-3 text-right">
-                        <button type="button" onClick={() => { if (window.confirm("Remove this assignment? Students will lose access.")) onDeleteAssignment && onDeleteAssignment(asg.id); }} className="text-red-600 hover:text-red-800 font-bold uppercase text-[9px] tracking-widest px-2.5 py-1 rounded hover:bg-red-50 transition cursor-pointer">
-                          Remove
+                        <button type="button" onClick={() => { 
+                          const hasStarted = (attempts || []).some((a: any) => a.assignmentId === asg.id && !a.isPreviewAttempt);
+                          const confirmText = hasStarted
+                            ? "Students have already started this assignment. Removing it may hide progress and reports. Continue?"
+                            : "Remove this assignment? Students will lose access.";
+                          if (window.confirm(confirmText)) {
+                            onDeleteAssignment && onDeleteAssignment(asg.id); 
+                          }
+                        }} className="text-red-600 hover:text-red-800 font-bold uppercase text-[9px] tracking-widest px-2.5 py-1 rounded hover:bg-red-50 transition cursor-pointer">
+                          Remove assignment
                         </button>
                       </td>
                     </tr>

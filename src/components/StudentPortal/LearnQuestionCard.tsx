@@ -1,6 +1,7 @@
+import React, { useState, useEffect } from "react";
 import type { JSX } from "react";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
-import { Check, RefreshCw, Sparkles, BookOpen, ClipboardCheck } from "lucide-react";
+import { Check, RefreshCw, Sparkles, BookOpen, ClipboardCheck, AlertTriangle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 import { LearnMCQuestion } from "./LearnMCQuestion";
@@ -8,11 +9,19 @@ import { LearnSAQuestion, type AutosaveState } from "./LearnSAQuestion";
 
 export type QuestionMode = "practice" | "assessment";
 export type SaGradingState =
-  | "unsent"
+  | "draft"
+  | "saving"
+  | "saved"
   | "submitting"
+  | "scoring"
+  | "feedback_ready"
+  | "needs_teacher_review"
+  | "feedback_delayed"
+  | "feedback_failed"
+  | "revision_open"
+  | "unsent"
   | "submitted"
   | "pending_ai"
-  | "feedback_ready"
   | "grading_failed";
 
 export interface SaFeedbackData {
@@ -62,6 +71,8 @@ export interface LearnQuestionCardProps {
   isSubmitted?: boolean;
   isSaving?: boolean;
   onSubmit?: () => void;
+  onRevise?: () => void;
+  onContinue?: () => void;
 
   // Feedback (practice only)
   mcFeedback?: McFeedback;
@@ -102,8 +113,10 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
     isSubmitted,
     isSaving,
     onSubmit,
+    onRevise,
+    onContinue,
     mcFeedback,
-    saGradingState = "unsent",
+    saGradingState = "draft",
     saFeedback,
     rightChoiceId,
     attemptsState,
@@ -205,6 +218,7 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
             onChange={onSaChange}
             isSubmitted={isSubmitted}
             autosaveState={autosaveState}
+            isPractice={isPractice}
           />
         )}
       </div>
@@ -241,7 +255,7 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
                   <RefreshCw className="w-4 h-4 animate-spin" /> Submitting…
                 </>
               ) : (
-                "Submit"
+                isPractice ? "Submit for feedback" : "Submit"
               )}
             </button>
           </div>
@@ -254,6 +268,8 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
             saFeedback={saFeedback}
             maxPoints={question.points || 0}
             reduceMotion={!!reduceMotion}
+            onRevise={onRevise}
+            onContinue={onContinue}
           />
         )}
       </div>
@@ -270,6 +286,8 @@ function SubmittedState({
   saFeedback,
   maxPoints,
   reduceMotion,
+  onRevise,
+  onContinue,
 }: {
   isMc: boolean;
   isPractice: boolean;
@@ -278,6 +296,8 @@ function SubmittedState({
   saFeedback?: SaFeedbackData;
   maxPoints: number;
   reduceMotion: boolean;
+  onRevise?: () => void;
+  onContinue?: () => void;
 }) {
   const enter = reduceMotion
     ? {}
@@ -330,56 +350,215 @@ function SubmittedState({
     );
   }
 
-  // Practice SA — pending / failed / ready
-  if (saGradingState === "pending_ai" || saGradingState === "submitting" || saGradingState === "submitted") {
+  // ==== Practice SA States ====
+
+  if (saGradingState === "scoring" || saGradingState === "pending_ai" || saGradingState === "submitting" || saGradingState === "submitted") {
+    // We add a rotating status for the active scoring feel
+    const [scoringPlaqueIdx, setScoringPlaqueIdx] = useState(0);
+    const scoringStates = [
+      "Checking your explanation",
+      "Comparing your answer to the success criteria",
+      "Preparing feedback",
+      "Almost ready"
+    ];
+
+    useEffect(() => {
+      const interval = setInterval(() => {
+        setScoringPlaqueIdx(prev => (prev + 1) % scoringStates.length);
+      }, 3000);
+      return () => clearInterval(interval);
+    }, [scoringStates.length]);
+
     return (
-      <motion.div {...enter} className="flex items-center gap-2.5 text-sm font-medium text-indigo-700">
-        <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
-        <span>Submitted. Feedback is being prepared.</span>
+      <motion.div {...enter} className="space-y-2">
+         <div className="flex items-center gap-2.5 text-sm font-medium text-indigo-700">
+           <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+           <span className="font-semibold tracking-tight text-[15px]">Reading your response…</span>
+         </div>
+         <p className="text-sm text-indigo-600/80 ml-6.5 transition-opacity duration-300">
+           {scoringStates[scoringPlaqueIdx]}
+         </p>
       </motion.div>
     );
   }
 
-  if (saGradingState === "grading_failed") {
+  if (saGradingState === "feedback_delayed") {
+    return (
+      <motion.div {...enter} className="space-y-4">
+        <div className="flex items-center gap-2.5 text-sm font-medium text-slate-700">
+          <SuccessBadge reduceMotion={reduceMotion} tone="neutral" />
+          <span>Your response is saved. Feedback is still being prepared.</span>
+        </div>
+        {onContinue && (
+          <button
+            type="button"
+            onClick={onContinue}
+            className="rounded-xl bg-indigo-50 px-4 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100 transition inline-flex"
+          >
+            Continue and check feedback later
+          </button>
+        )}
+      </motion.div>
+    );
+  }
+
+  if (saGradingState === "needs_teacher_review" || saGradingState === "grading_failed") {
     return (
       <motion.div {...enter} className="flex items-center gap-2.5 text-sm font-medium text-slate-700">
         <SuccessBadge reduceMotion={reduceMotion} tone="neutral" />
-        <span>Your response is saved. Feedback will appear here soon.</span>
+        <span>Your response was saved. Your teacher will review this response.</span>
       </motion.div>
     );
   }
 
-  if (saGradingState === "feedback_ready" && saFeedback) {
-    const score = saFeedback.score;
+  if (saGradingState === "feedback_ready" && saFeedback && saFeedback.score !== undefined) {
+    const { score, feedback, rubricBreakdown, misconceptions } = saFeedback;
+    const isPerfect = score === maxPoints;
+    const isTooShort = saFeedback.score === 0 && (!feedback || feedback.toLowerCase().includes("too short")); 
+
+    if (isTooShort) {
+       return (
+         <motion.div {...enter} className="space-y-4">
+           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+             <div className="space-y-1">
+               <div className="flex items-center gap-2 text-amber-700">
+                 <AlertTriangle className="w-5 h-5 shrink-0" />
+                 <span className="font-semibold">Add more detail</span>
+               </div>
+               <p className="text-[15px] font-serif text-slate-700 leading-relaxed mt-2">
+                 Your response is too short to score meaningfully. Add a complete explanation in your own words.
+               </p>
+             </div>
+           </div>
+           <div className="flex flex-wrap items-center gap-3 mt-4">
+             {onRevise && (
+               <button
+                 type="button"
+                 onClick={onRevise}
+                 className="rounded-xl px-5 py-2.5 bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition"
+               >
+                 Revise response
+               </button>
+             )}
+             {onContinue && (
+                <button
+                  type="button"
+                  onClick={onContinue}
+                  className="rounded-xl px-5 py-2.5 bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200 transition"
+                >
+                  Continue
+                </button>
+             )}
+           </div>
+         </motion.div>
+       );
+    }
+
+    const containerVariants = reduceMotion ? {} : {
+      hidden: { opacity: 0 },
+      show: {
+        opacity: 1,
+        transition: { staggerChildren: 0.15 }
+      }
+    };
+
+    const itemVariants = reduceMotion ? {} as any : {
+      hidden: { opacity: 0, y: 10 },
+      show: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" as const } }
+    };
+
     return (
-      <motion.div {...enter} className="space-y-3">
-        <div className="flex items-center gap-2.5 text-sm font-semibold text-emerald-700">
-          <SuccessBadge reduceMotion={reduceMotion} tone="success" />
-          <span>Feedback ready</span>
-          {score !== undefined && (
-            <span className="ml-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-bold text-emerald-800">
-              {score} / {maxPoints} pts
-            </span>
-          )}
-        </div>
-        {saFeedback.feedback && (
-          <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-4 text-sm leading-relaxed text-indigo-900">
-            <p className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-indigo-600">
-              <Sparkles className="w-3.5 h-3.5" /> Feedback
-            </p>
-            <p>{saFeedback.feedback}</p>
-          </div>
+      <motion.div
+        variants={containerVariants}
+        initial="hidden"
+        animate="show"
+        className="space-y-6"
+      >
+        {/* Header / Score */}
+        <motion.div variants={itemVariants} className="flex items-center justify-between">
+           <div className="flex flex-col">
+             <span className="font-semibold text-emerald-800 text-[15px]">
+                {isPerfect ? "Great work" : "Feedback ready"}
+             </span>
+             <div className="flex items-center gap-2 mt-1">
+               <span className="rounded-full bg-slate-100 border border-slate-200 px-3 py-1 text-sm font-bold text-slate-700 tabular-nums">
+                 {score} / {maxPoints} points
+               </span>
+             </div>
+           </div>
+        </motion.div>
+
+        {/* Written Feedback */}
+        {feedback && (
+          <motion.div variants={itemVariants} className="text-[15px] leading-relaxed text-slate-800 bg-emerald-50/50 p-4 rounded-xl border border-emerald-100 prose max-w-none">
+             <RichContentRenderer content={feedback} />
+          </motion.div>
         )}
-        {saFeedback.misconceptions && saFeedback.misconceptions.length > 0 && (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            <p className="mb-1 font-semibold">Areas to review</p>
-            <ul className="list-disc list-inside space-y-0.5">
-              {saFeedback.misconceptions.map((m, i) => (
+
+        {/* Misconceptions / To Improve */}
+        {misconceptions && misconceptions.length > 0 && (
+          <motion.div variants={itemVariants} className="space-y-2">
+            <h4 className="text-sm font-bold text-amber-900 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span> Improve this
+            </h4>
+            <ul className="text-[15px] text-amber-900 leading-relaxed list-disc list-inside space-y-1 ml-1">
+              {misconceptions.map((m, i) => (
                 <li key={i}>{m}</li>
               ))}
             </ul>
-          </div>
+          </motion.div>
         )}
+
+        {/* Rubric Criteria */}
+        {rubricBreakdown && Object.keys(rubricBreakdown).length > 0 && (
+          <motion.div variants={itemVariants} className="space-y-3">
+             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Success criteria</h4>
+             <ul className="space-y-2">
+                {Object.entries(rubricBreakdown).map(([category, rData]) => {
+                   const rScore = Number(rData.score) || 0;
+                   const rMax = Number(rData.maxScore) || 1;
+                   const resultText = rScore === rMax ? "Met" : rScore > 0 ? "Partial" : "Missing";
+                   const resultColor = rScore === rMax ? "text-emerald-700 bg-emerald-50 border-emerald-200" :
+                                      rScore > 0 ? "text-amber-700 bg-amber-50 border-amber-200" :
+                                      "text-slate-600 bg-slate-50 border-slate-200";
+
+                   return (
+                     <li key={category} className="flex sm:items-center sm:justify-between flex-col sm:flex-row gap-2 border-b border-slate-100 pb-2 last:border-0 last:pb-0">
+                       <span className="text-sm font-medium text-slate-700">{category}</span>
+                       <span className={cn("text-xs font-bold px-2 py-0.5 rounded border self-start sm:self-auto", resultColor)}>
+                         {resultText}
+                       </span>
+                     </li>
+                   );
+                })}
+             </ul>
+          </motion.div>
+        )}
+
+        {/* Action Buttons */}
+        <motion.div variants={itemVariants} className="flex flex-wrap items-center gap-3 pt-2">
+           {!isPerfect && onRevise && (
+             <button
+               type="button"
+               onClick={onRevise}
+               className="rounded-xl px-5 py-2.5 bg-indigo-600 text-white font-semibold hover:bg-indigo-700 transition"
+             >
+               Revise my answer
+             </button>
+           )}
+           <button
+              type="button"
+              onClick={onContinue}
+              className={cn(
+                "rounded-xl px-5 py-2.5 font-semibold transition",
+                isPerfect || !onRevise 
+                   ? "bg-indigo-600 text-white hover:bg-indigo-700" 
+                   : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+              )}
+           >
+              Continue
+           </button>
+        </motion.div>
       </motion.div>
     );
   }

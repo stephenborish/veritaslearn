@@ -25,7 +25,7 @@ interface Preset {
 const PRESETS: Preset[] = [
   {
     id: "open",
-    label: "Open",
+    label: "Flexible",
     description: "Students can move freely, resume anytime, and complete this with minimal monitoring.",
     color: "border-slate-300 text-slate-700",
     dials: {

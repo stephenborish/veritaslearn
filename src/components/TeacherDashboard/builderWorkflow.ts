@@ -217,3 +217,42 @@ export function formatEstimatedTime(res: EstimatedTimeResult): string {
   return `About ${floorM}–${ceilM} min`;
 }
 
+export type AssignmentDisplayStatus = "Draft" | "Ready to assign" | "Scheduled" | "Active" | "Active · Past due" | "Ended";
+
+export function getAssignmentStatus(
+  asg: { opensAt: string; dueAt: string; closesAt: string },
+  now: Date
+): AssignmentDisplayStatus {
+  const opens = new Date(asg.opensAt);
+  const due = new Date(asg.dueAt);
+  const closes = new Date(asg.closesAt);
+
+  if (now < opens) return "Scheduled";
+  if (now > closes) return "Ended";
+  if (now > due) return "Active · Past due";
+  return "Active";
+}
+
+export function getLessonTileStatus(
+  isPublished: boolean,
+  assignments: any[],
+  now: Date
+): AssignmentDisplayStatus {
+  if (!isPublished) return "Draft";
+  if (!assignments || assignments.length === 0) return "Ready to assign";
+
+  let hasActive = false;
+  let hasScheduled = false;
+
+  for (const asg of assignments) {
+    const s = getAssignmentStatus(asg, now);
+    if (s.startsWith("Active")) hasActive = true;
+    if (s === "Scheduled") hasScheduled = true;
+  }
+
+  if (hasActive) return "Active";
+  if (hasScheduled) return "Scheduled";
+  
+  return "Ended";
+}
+

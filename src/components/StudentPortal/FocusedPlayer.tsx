@@ -23,7 +23,7 @@ interface FocusedPlayerProps {
 
 type AutosaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type ViolationLevel = "none" | "low" | "medium";
-type SaGradingState = "unsent" | "submitting" | "submitted" | "pending_ai" | "feedback_ready" | "grading_failed";
+type SaGradingState = "unsent" | "submitting" | "submitted" | "pending_ai" | "scoring" | "feedback_delayed" | "feedback_ready" | "grading_failed" | "feedback_failed" | "needs_teacher_review" | "revision_open";
 
 interface SaFeedbackData {
   score?: number;
@@ -892,20 +892,26 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     persistDraftResponseRef.current = persistDraftResponse;
   }, [persistDraftResponse]);
 
-  // Poll for practice SA AI grading results every 8 seconds.
-  // Stops automatically when no "pending_ai" questions remain. Cleans up on unmount.
+  // Poll for practice SA AI grading results with intelligent backoff
   useEffect(() => {
     if (loading || !attemptId) return;
 
     let errorCount = 0;
+    let isCancelled = false;
+    let pollTimer: NodeJS.Timeout | null = null;
+    let elapsedMs = 0;
 
     const poll = async () => {
       const states = saGradingStateRef.current;
       const pendingIds = Object.entries(states)
-        .filter(([, s]) => s === "pending_ai")
+        .filter(([, s]) => s === "pending_ai" || s === "scoring" || s === "feedback_delayed")
         .map(([qId]) => qId);
 
-      if (pendingIds.length === 0) return;
+      if (pendingIds.length === 0) {
+        // Schedule next check loosely just in case states change
+        if (!isCancelled) pollTimer = setTimeout(poll, 2000);
+        return;
+      }
 
       try {
         const authHeader = await getAuthHeader();
@@ -914,10 +920,13 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         const data = await res.json();
         errorCount = 0;
 
+        let anyPending = false;
+
         (data.responses || []).forEach((r: any) => {
           if (!pendingIds.includes(r.questionId)) return;
           const aiStatus = r.aiGrading?.status;
-          if (aiStatus === "success") {
+          
+          if (aiStatus === "success" || aiStatus === "low_effort") {
             setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "feedback_ready" }));
             setSaFeedback((prev: any) => ({
               ...prev,
@@ -929,26 +938,47 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                 misconceptions: r.aiGrading?.misconceptions,
               },
             }));
-          } else if (aiStatus === "needs_review" || aiStatus === "failed") {
-            setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "grading_failed" }));
+          } else if (aiStatus === "needs_review") {
+            setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "needs_teacher_review" }));
+          } else if (aiStatus === "failed") {
+            setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "feedback_failed" }));
+          } else {
+             // Still pending. Check if delayed.
+             anyPending = true;
+             if (elapsedMs > 25000 && states[r.questionId] !== "feedback_delayed") {
+                setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "feedback_delayed" }));
+             }
           }
-          // "pending" — keep polling on next tick
         });
+
       } catch {
         errorCount++;
-        // After 5 consecutive errors, stop polling silently to avoid hammering a down server
         if (errorCount >= 5) {
           Object.keys(saGradingStateRef.current).forEach((qId) => {
-            if (saGradingStateRef.current[qId] === "pending_ai") {
-              setSaGradingState((prev: any) => ({ ...prev, [qId]: "grading_failed" }));
+            const st = saGradingStateRef.current[qId];
+            if (st === "pending_ai" || st === "scoring" || st === "feedback_delayed") {
+              setSaGradingState((prev: any) => ({ ...prev, [qId]: "feedback_failed" }));
             }
           });
         }
       }
+
+      if (!isCancelled) {
+         let nextInterval = 2000;
+         if (elapsedMs === 0) nextInterval = 1000;
+         else if (elapsedMs >= 20000) nextInterval = 8000;
+
+         elapsedMs += nextInterval;
+         pollTimer = setTimeout(poll, nextInterval);
+      }
     };
 
-    const pollInterval = setInterval(poll, 8000);
-    return () => clearInterval(pollInterval);
+    pollTimer = setTimeout(poll, 1000); // Start fast
+
+    return () => {
+      isCancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
   }, [loading, attemptId]);
 
   // Dedicated 15 seconds autosave interval for short-answer responses
@@ -1059,7 +1089,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         }
         setSaGradingState((prev: any) => ({
           ...prev,
-          [questionId]: isPracticeBlock ? "pending_ai" : "submitted",
+          [questionId]: isPracticeBlock ? "scoring" : "submitted",
         }));
       }
     } catch {
@@ -1067,6 +1097,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     } finally {
       setSavingResponse((prev: any) => ({ ...prev, [questionId]: false }));
     }
+  };
+
+  const handleReviseSa = (questionId: string) => {
+     setSaGradingState((prev: any) => ({ ...prev, [questionId]: "revision_open" }));
+     setSubmittedLocal((prev: any) => ({ ...prev, [questionId]: false }));
   };
 
   const handleCompleteLessonAttempt = async () => {
@@ -1976,12 +2011,27 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                   saFeedback={saFeedback[q.id]}
                                   attemptsState={mcAttemptsState[q.id]}
                                   rightChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
+                                  onRevise={(!isMc && cpIsPractice) ? () => handleReviseSa(q.id) : undefined}
+                                  onContinue={
+                                    (!isMc && cpIsPractice) 
+                                      ? (canAdvance ? () => setCheckpointStep((s) => Math.min(s + 1, total - 1)) : () => {
+                                          setActiveCheckpoint(null);
+                                          if (videoRef.current) {
+                                            videoRef.current.currentTime = checkpointResumeTimestampRef.current;
+                                            videoRef.current.play().catch(() => {});
+                                          } else if (youtubePlayerRef.current) {
+                                            youtubePlayerRef.current.seekTo(checkpointResumeTimestampRef.current);
+                                            youtubePlayerRef.current.play();
+                                          }
+                                        }) 
+                                      : undefined
+                                  }
                                 />
                               </motion.div>
                             </AnimatePresence>
 
                             {/* Panel actions */}
-                            {canAdvance && (
+                            {canAdvance && !(!isMc && cpIsPractice) && (
                               <div className="flex justify-end px-1">
                                 <button
                                   onClick={() => setCheckpointStep((s) => Math.min(s + 1, total - 1))}
@@ -1992,7 +2042,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                               </div>
                             )}
 
-                            {allSubmitted && (
+                            {allSubmitted && !(!isMc && cpIsPractice) && (
                               <motion.div
                                 initial={reduceMotion ? false : { opacity: 0, y: 6 }}
                                 animate={{ opacity: 1, y: 0 }}
@@ -2087,6 +2137,12 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                         saFeedback={saFeedback[q.id]}
                         attemptsState={mcAttemptsState[q.id]}
                         rightChoiceId={mcAttemptsState[q.id]?.isComplete ? feedbackState[q.id]?.correctChoiceId : undefined}
+                        onRevise={(!isMc && isPracticeBlock) ? () => handleReviseSa(q.id) : undefined}
+                        onContinue={
+                           (!isMc && isPracticeBlock) ? () => {
+                              document.getElementById("main-next-button")?.click();
+                           } : undefined
+                        }
                       />
                     </div>
                   );
@@ -2133,6 +2189,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
                     {!isLastBlock ? (
                       <button
+                        id="main-next-button"
                         onClick={async () => {
                           if (activeBlock?.type === "video") {
                             setNavigationError("Saving your progress…");
@@ -2161,6 +2218,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                       </button>
                     ) : (
                       <button
+                        id="main-next-button"
                         onClick={async () => {
                           if (activeBlock?.type === "video") {
                             setNavigationError("Saving your progress…");

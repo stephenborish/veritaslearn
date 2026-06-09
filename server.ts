@@ -3085,6 +3085,16 @@ app.post("/api/assignments", requireTeacher, async (req, res) => {
       return;
     }
 
+    if (new Date(opensAt) >= new Date(dueAt)) {
+      res.status(400).json({ error: "Available starting must be before the due date." });
+      return;
+    }
+
+    if (new Date(dueAt) > new Date(closesAt)) {
+      res.status(400).json({ error: "Due date must be on or before submissions close." });
+      return;
+    }
+
     // Validate that courseId refers to a real course (no free-text or unknown course ids)
     const course = db.courses.find((c: any) => c.id === courseId);
     if (!course) {
@@ -3241,10 +3251,15 @@ app.put("/api/assignments/:id", requireTeacher, async (req, res) => {
       }
 
       // Safe update of dueAt and closesAt
-      const newDueAt = dueAt ? new Date(dueAt) : new Date(assignment.dueAt);
-      const newClosesAt = closesAt ? new Date(closesAt) : new Date(assignment.closesAt);
-      if (newDueAt > newClosesAt) {
-        res.status(400).json({ error: "Due date must be on or before closing date." });
+      const newDueAt = dueAt || assignment.dueAt;
+      const newClosesAt = closesAt || assignment.closesAt;
+
+      if (new Date(assignment.opensAt) >= new Date(newDueAt)) {
+        res.status(400).json({ error: "Available starting must be before the due date." });
+        return;
+      }
+      if (new Date(newDueAt) > new Date(newClosesAt)) {
+        res.status(400).json({ error: "Due date must be on or before submissions close." });
         return;
       }
 
@@ -3252,6 +3267,19 @@ app.put("/api/assignments/:id", requireTeacher, async (req, res) => {
       if (closesAt) assignment.closesAt = closesAt;
     } else {
       // No student attempts started: allow modifying all fields
+      const newOpensAt = opensAt || assignment.opensAt;
+      const newDueAt = dueAt || assignment.dueAt;
+      const newClosesAt = closesAt || assignment.closesAt;
+
+      if (new Date(newOpensAt) >= new Date(newDueAt)) {
+        res.status(400).json({ error: "Available starting must be before the due date." });
+        return;
+      }
+      if (new Date(newDueAt) > new Date(newClosesAt)) {
+        res.status(400).json({ error: "Due date must be on or before submissions close." });
+        return;
+      }
+
       if (courseId) assignment.courseId = courseId;
       if (section !== undefined) assignment.section = section;
       if (opensAt) assignment.opensAt = opensAt;
@@ -4263,7 +4291,7 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
     );
 
     const gradingMode = isPracticeQuestion ? "practice" : "assessment";
-    const feedbackVisibility = isPracticeQuestion ? "student_visible" : "teacher_only";
+    const feedbackVisibility = isPracticeQuestion ? (isMC ? "student_visible" : "pending") : "teacher_only";
     const gradebookCategory = isPracticeQuestion ? "practice" : "assessment";
     const maxPointsValue = Number(originalQuestion.points) || 0;
 
@@ -4568,7 +4596,9 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
         const confidence = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.confidence) || 0, 1));
         const aiNeedsReview = !!geminiResult.needsTeacherReview;
-        const finalStatus = isLowEffort || confidence < 0.75 || aiNeedsReview ? "needs_review" : "success";
+        const finalStatus = isLowEffort 
+          ? (isPracticeQuestion ? "low_effort" : "needs_review") 
+          : (confidence < 0.75 || aiNeedsReview ? "needs_review" : "success");
 
         // Student-facing feedback must never expose internal guidance
         const studentFeedback = isLowEffort
@@ -4601,11 +4631,14 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
           freshDb.responses[freshRespIdx].isLowEffort = isLowEffort;
           if (lowEffortReason) freshDb.responses[freshRespIdx].lowEffortReason = lowEffortReason;
 
-          // For practice responses with a clean grade, release feedback to the student
-          if (!teacherAlreadyActed && isPracticeQuestion && finalStatus === "success") {
-            freshDb.responses[freshRespIdx].aiFeedbackReleasedAt = new Date().toISOString();
-            // feedbackVisibility is already "student_visible" from submission; ensure it stays set
-            freshDb.responses[freshRespIdx].feedbackVisibility = "student_visible";
+          // Update feedback visibility based on AI grade result
+          if (!teacherAlreadyActed && isPracticeQuestion) {
+            if (finalStatus === "success" || finalStatus === "low_effort") {
+              freshDb.responses[freshRespIdx].aiFeedbackReleasedAt = new Date().toISOString();
+              freshDb.responses[freshRespIdx].feedbackVisibility = "student_visible";
+            } else {
+              freshDb.responses[freshRespIdx].feedbackVisibility = "teacher_only";
+            }
           }
 
           if (freshGradIdx !== -1) {
@@ -5168,7 +5201,7 @@ app.post("/api/attempts/:id/force-submit", requireTeacher, async (req, res) => {
           const isPracticeQuestion = checkpoint ? !!checkpoint.isPractice : !!block.isPractice;
 
           const gradingMode = isPracticeQuestion ? "practice" : "assessment";
-          const feedbackVisibility = isPracticeQuestion ? "student_visible" : "teacher_only";
+          const feedbackVisibility = isPracticeQuestion ? (isMC ? "student_visible" : "pending") : "teacher_only";
           const gradebookCategory = isPracticeQuestion ? "practice" : "assessment";
           const maxPointsValue = Number(originalQuestion.points) || 0;
 
@@ -5299,7 +5332,9 @@ app.post("/api/attempts/:id/force-submit", requireTeacher, async (req, res) => {
                 const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
                 const confidence = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.confidence) || 0, 1));
                 const aiNeedsReview = !!geminiResult.needsTeacherReview;
-                const finalStatus = isLowEffort || confidence < 0.75 || aiNeedsReview ? "needs_review" : "success";
+                const finalStatus = isLowEffort 
+                  ? (isPracticeQuestion ? "low_effort" : "needs_review") 
+                  : (confidence < 0.75 || aiNeedsReview ? "needs_review" : "success");
 
                 const studentFeedback = isLowEffort
                   ? "Your response did not meet the minimum length or structure requirements for grading. Please resubmit with a complete written answer."
@@ -5540,11 +5575,14 @@ app.post("/api/attempts/:id/force-submit", requireTeacher, async (req, res) => {
 
                   const rulesCheck = checkLowEffortRules(responseVal);
                   const isLowEffort = rulesCheck.lowEffort || !!geminiResult.lowEffort;
+                  const isPracticeQuestion = existingResponse.gradingMode === "practice" || existingResponse.gradebookCategory === "practice";
 
                   const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
                   const confidence = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.confidence) || 0, 1));
                   const aiNeedsReview = !!geminiResult.needsTeacherReview;
-                  const finalStatus = isLowEffort || confidence < 0.75 || aiNeedsReview ? "needs_review" : "success";
+                  const finalStatus = isLowEffort 
+                    ? (isPracticeQuestion ? "low_effort" : "needs_review") 
+                    : (confidence < 0.75 || aiNeedsReview ? "needs_review" : "success");
 
                   const studentFeedback = isLowEffort
                     ? "Your response did not meet the minimum length or structure requirements for grading. Please resubmit with a complete written answer."
@@ -6471,7 +6509,9 @@ app.post("/api/ai-review/:responseId/grade", requireTeacher, async (req, res) =>
       const clampedScore = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.score) || 0, maxPoints));
       const confidence = isLowEffort ? 0 : Math.max(0, Math.min(Number(geminiResult.confidence) || 0, 1));
       const aiNeedsReview = !!geminiResult.needsTeacherReview;
-      const finalStatus = isLowEffort || confidence < 0.75 || aiNeedsReview ? "needs_review" : "success";
+      const finalStatus = isLowEffort 
+        ? (isPracticeQuestion ? "low_effort" : "needs_review") 
+        : (confidence < 0.75 || aiNeedsReview ? "needs_review" : "success");
 
       const studentFeedback = isLowEffort
         ? "Your response did not meet the minimum length or structure requirements for grading. Please resubmit with a complete written answer."
@@ -6501,9 +6541,13 @@ app.post("/api/ai-review/:responseId/grade", requireTeacher, async (req, res) =>
         freshDb.responses[freshRespIdx].isLowEffort = isLowEffort;
         if (lowEffortReason) freshDb.responses[freshRespIdx].lowEffortReason = lowEffortReason;
 
-        if (!teacherAlreadyActed && isPracticeQuestion && finalStatus === "success") {
-          freshDb.responses[freshRespIdx].aiFeedbackReleasedAt = new Date().toISOString();
-          freshDb.responses[freshRespIdx].feedbackVisibility = "student_visible";
+        if (!teacherAlreadyActed && isPracticeQuestion) {
+          if (finalStatus === "success" || finalStatus === "low_effort") {
+            freshDb.responses[freshRespIdx].aiFeedbackReleasedAt = new Date().toISOString();
+            freshDb.responses[freshRespIdx].feedbackVisibility = "student_visible";
+          } else {
+            freshDb.responses[freshRespIdx].feedbackVisibility = "teacher_only";
+          }
         }
 
         if (freshGradIdx !== -1) {
