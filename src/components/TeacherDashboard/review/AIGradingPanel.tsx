@@ -31,6 +31,10 @@ export function AIGradingPanel({
     response.feedbackReleasedAt || response.aiFeedbackReleasedAt || response.feedbackVisibleToStudent
   );
 
+  const parsedGradedAt = ai?.gradedAt ? new Date(ai.gradedAt).getTime() : 0;
+  // If it's running but has been in pending for > 2 minutes (120,000ms), let the user force trigger / retry
+  const isStalePending = status === "pending" && parsedGradedAt > 0 && (Date.now() - parsedGradedAt > 120000);
+
   const Header = (
     <div className="flex items-center justify-between border-b border-violet-100 pb-2">
       <span className="flex items-center gap-1.5 text-[12px] font-bold text-violet-700">
@@ -48,9 +52,30 @@ export function AIGradingPanel({
     return (
       <Shell>
         {Header}
-        <div className="flex min-h-[80px] flex-col items-center justify-center gap-2 py-4 text-violet-600">
-          <Loader2 className="h-5 w-5 animate-spin" />
-          <span className="text-[11px] font-semibold uppercase tracking-wide">Running AI grader…</span>
+        <div className="flex min-h-[85px] flex-col items-center justify-center gap-2 py-4 text-violet-600">
+          {isStalePending ? (
+            <div className="flex flex-col items-center gap-2.5 text-center">
+              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-700">
+                <AlertCircle className="h-4 w-4" /> AI grading appears stuck
+              </span>
+              <p className="max-w-md text-center text-[11px] leading-relaxed text-slate-600">
+                This grading pass has been pending for over 2 minutes and may have timed out. You can securely trigger a fresh grading attempt.
+              </p>
+              {review.canReviewAction && (
+                <RunButton 
+                  label="Retry grading" 
+                  onClick={() => review.reviewAction("grade", response.id)} 
+                  disabled={!!action?.loading} 
+                  icon={RotateCcw} 
+                />
+              )}
+            </div>
+          ) : (
+            <>
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <span className="text-[11px] font-semibold uppercase tracking-wide">Running AI grader…</span>
+            </>
+          )}
         </div>
       </Shell>
     );
@@ -95,6 +120,11 @@ export function AIGradingPanel({
   }
 
   const proposed = ai.parsedScore ?? ai.score;
+  const currentRegisterValue = response.score ?? response.pointsEarned;
+  // If the score is active and matches proposed, and has an accept flag
+  const isAiScoreActive = hasResult && currentRegisterValue === proposed && !!response.teacherOverride?.acceptedFromAi;
+  // Manual override is active if current final score is set, different from proposed, and not flagged as accepted AI
+  const hasManualOverride = hasResult && currentRegisterValue !== proposed && (response.teacherOverrideScore !== undefined && response.teacherOverrideScore !== null);
 
   return (
     <Shell>
@@ -138,18 +168,35 @@ export function AIGradingPanel({
       )}
 
       {review.canReviewAction && (
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-violet-100 pt-2.5">
-          <RunButton label="Re-run" onClick={() => review.reviewAction("grade", response.id)} disabled={!!action?.loading} icon={RotateCcw} subtle />
-          {status === "success" && !isReviewed && !isReleased && (
-            <button
-              type="button"
-              onClick={() => review.reviewAction("approve", response.id)}
-              disabled={!!action?.loading}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
-            >
-              <Check className="h-3.5 w-3.5" /> Accept AI score
-            </button>
-          )}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-violet-100 pt-2.5">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+            {isAiScoreActive ? (
+              <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-2 py-0.5 text-emerald-800">
+                <Check className="h-3 w-3" /> AI score active
+              </span>
+            ) : hasManualOverride ? (
+              <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-amber-800">
+                Manual score preserved ({currentRegisterValue} pts)
+              </span>
+            ) : isReviewed ? (
+              <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-0.5 text-slate-800">
+                Current score: {currentRegisterValue} pts
+              </span>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <RunButton label="Re-run" onClick={() => review.reviewAction("grade", response.id)} disabled={!!action?.loading} icon={RotateCcw} subtle />
+            {status === "success" && !isAiScoreActive && !isReleased && (
+              <button
+                type="button"
+                onClick={() => review.reviewAction("approve", response.id)}
+                disabled={!!action?.loading}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+              >
+                <Check className="h-3.5 w-3.5" /> Accept AI score
+              </button>
+            )}
+          </div>
         </div>
       )}
       {action?.error && (

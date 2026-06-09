@@ -275,6 +275,9 @@ export default function AIReview({
   const handleApprove = (item: QueueItem) =>
     apiAction(`/api/ai-review/${item.responseId}/approve`, "POST", {}, item.responseId);
 
+  const handleGrade = (item: QueueItem) =>
+    apiAction(`/api/ai-review/${item.responseId}/grade`, "POST", {}, item.responseId);
+
   const openQuickGrade = (item: QueueItem) => {
     setQuickGradeItem(item);
     setQuickScore(item.teacherOverride?.score ?? item.aiScore ?? 0);
@@ -915,6 +918,13 @@ export default function AIReview({
                                               <ThumbsUp className="w-3.5 h-3.5 animate-pulse" /> Approve AI Score
                                             </button>
                                           )}
+                                          <button
+                                            onClick={() => handleGrade(rItem)}
+                                            disabled={state === "loading"}
+                                            className="flex items-center gap-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded transition-all cursor-pointer shadow-sm font-sans"
+                                          >
+                                            <Sparkles className="w-3.5 h-3.5" /> {rItem.reviewStatus === "pending_ai" || !rItem.aiScore ? "Run AI Grader" : "Re-run AI Grader"}
+                                          </button>
                                           <button
                                             onClick={() => handleOverride(rItem)}
                                             disabled={state === "loading"}

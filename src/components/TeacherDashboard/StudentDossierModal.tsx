@@ -375,6 +375,7 @@ export default function StudentDossierModal({
     try {
       await onOverrideSave(responseId, clamped, resolvedNotes);
       setSaveSuccess((p) => ({ ...p, [responseId]: true }));
+      if (onRefresh) onRefresh();
       setTimeout(() => setSaveSuccess((p) => ({ ...p, [responseId]: false })), 4000);
     } catch (err) {
       console.error("Score override failed:", err);
@@ -401,6 +402,7 @@ export default function StudentDossierModal({
       }
       await onReviewAction(action, responseId, payload);
       setActionStates((p) => ({ ...p, [responseId]: { loading: false, success: true, error: null } }));
+      if (onRefresh) onRefresh();
       setTimeout(() => setActionStates((p) => ({ ...p, [responseId]: { loading: false, success: false, error: null } })), 2000);
     } catch (err: any) {
       setActionStates((p) => ({ ...p, [responseId]: { loading: false, success: false, error: err?.message || "Action failed" } }));

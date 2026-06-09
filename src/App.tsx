@@ -471,20 +471,22 @@ export default function App() {
   // Set Manual Override overrides
   const handleOverrideScore = async (responseId: string, score: number, notes: string) => {
     const token = await getFreshToken();
-    if (!token) return;
-    try {
-      await fetch(`/api/responses/${responseId}/override`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify({ score, notes })
-      });
-      fetchLmsPayload(currentUser, token);
-    } catch (e) {
-      console.error(e);
+    if (!token) throw new Error("Authentication token unavailable.");
+    const res = await fetch(`/api/responses/${responseId}/override`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({ score, notes })
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || errBody.message || "Manual override failed.");
     }
+    const data = await res.json();
+    fetchLmsPayload(currentUser, token);
+    return data;
   };
 
   const handleReviewAction = async (
@@ -493,20 +495,22 @@ export default function App() {
     payload?: any
   ) => {
     const token = await getFreshToken();
-    if (!token) return;
-    try {
-      await fetch(`/api/ai-review/${responseId}/${action}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
-        },
-        body: JSON.stringify(payload || {})
-      });
-      fetchLmsPayload(currentUser, token);
-    } catch (e) {
-      console.error(e);
+    if (!token) throw new Error("Authentication token unavailable.");
+    const res = await fetch(`/api/ai-review/${responseId}/${action}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify(payload || {})
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || errBody.message || `Action ${action} failed.`);
     }
+    const data = await res.json();
+    fetchLmsPayload(currentUser, token);
+    return data;
   };
 
   // Force Submit & Grade any started draft attempt

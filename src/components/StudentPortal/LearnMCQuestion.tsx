@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "motion/react";
-import { Check } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { RichContentRenderer } from "../RichContent/RichContentRenderer";
 
@@ -25,6 +25,17 @@ export interface LearnMCQuestionProps {
   selectedCorrect?: boolean;
   /** Explicitly revealed correct choice ID (revealed only upon question completion). */
   correctChoiceId?: string;
+  /** The state of the attempts for MC. */
+  attemptsState?: {
+    attemptsCount: number;
+    maxAttempts: number;
+    attemptsRemaining: number;
+    isComplete: boolean;
+    isCorrect: boolean;
+    attemptsHistory?: any[];
+  };
+  /** Whether the current block/checkpoint is a practice question. */
+  isPractice?: boolean;
 }
 
 /**
@@ -41,6 +52,8 @@ export function LearnMCQuestion({
   isSubmitted,
   selectedCorrect,
   correctChoiceId,
+  attemptsState,
+  isPractice,
 }: LearnMCQuestionProps) {
   const reduceMotion = useReducedMotion();
 
@@ -58,12 +71,35 @@ export function LearnMCQuestion({
         let showCorrect = false;
         let showIncorrect = false;
 
-        if (hasRevealedCorrect) {
-          showCorrect = isSubmitted && isThisChoiceCorrect;
-          showIncorrect = isSubmitted && isSelected && !isThisChoiceCorrect;
+        if (isPractice) {
+          if (attemptsState?.isComplete) {
+            if (hasRevealedCorrect) {
+              showCorrect = isThisChoiceCorrect;
+              showIncorrect = isSelected && !isThisChoiceCorrect;
+            } else {
+              showCorrect = isSelected && selectedCorrect === true;
+              showIncorrect = isSelected && selectedCorrect === false;
+            }
+          } else {
+            // Check history for prior failed attempts
+            const historyEntry = attemptsState?.attemptsHistory?.find(
+              (h: any) => String(h.responseValue) === String(choice.id)
+            );
+            if (historyEntry) {
+              showCorrect = historyEntry.isCorrect === true;
+              showIncorrect = historyEntry.isCorrect === false;
+            } else {
+              // Active incorrect choice before changing selection
+              if (isSelected && selectedCorrect !== undefined) {
+                showCorrect = selectedCorrect === true;
+                showIncorrect = selectedCorrect === false;
+              }
+            }
+          }
         } else {
-          showCorrect = isSubmitted && isSelected && selectedCorrect === true;
-          showIncorrect = isSubmitted && isSelected && selectedCorrect === false;
+          // Assessment mode: never reveal correct/incorrect inline
+          showCorrect = false;
+          showIncorrect = false;
         }
 
         return (
@@ -83,7 +119,7 @@ export function LearnMCQuestion({
               showCorrect
                 ? "bg-emerald-50 border-emerald-400"
                 : showIncorrect
-                ? "bg-amber-50 border-amber-300"
+                ? "bg-rose-50 border-rose-300"
                 : isSelected
                 ? "bg-indigo-50 border-indigo-500 shadow-sm"
                 : isSubmitted
@@ -97,7 +133,7 @@ export function LearnMCQuestion({
                 showCorrect
                   ? "bg-emerald-500 border-emerald-500 text-white"
                   : showIncorrect
-                  ? "bg-amber-500 border-amber-500 text-white"
+                  ? "bg-rose-500 border-rose-500 text-white"
                   : isSelected
                   ? "bg-indigo-600 border-indigo-600 text-white"
                   : "bg-slate-50 border-slate-200 text-slate-500 group-hover:border-indigo-300 group-hover:text-indigo-600",
@@ -111,6 +147,14 @@ export function LearnMCQuestion({
                   transition={{ type: "spring", stiffness: 500, damping: 22 }}
                 >
                   <Check className="w-4 h-4 stroke-[3]" />
+                </motion.span>
+              ) : showIncorrect ? (
+                <motion.span
+                  initial={reduceMotion ? false : { scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: "spring", stiffness: 500, damping: 22 }}
+                >
+                  <X className="w-4 h-4 stroke-[3]" />
                 </motion.span>
               ) : (
                 letter

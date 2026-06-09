@@ -49,6 +49,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [loading, setLoading] = useState(true);
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
   const reduceMotion = useReducedMotion();
+  const activeBlock = blocks[currentBlockIndex];
 
   // Timeline collapse (desktop). Preference is remembered per attempt.
   const [timelineCollapsed, setTimelineCollapsed] = useState<boolean>(() => {
@@ -221,7 +222,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
               maxAttempts: r.maxAttempts,
               attemptsRemaining: r.attemptsRemaining,
               isComplete: r.isComplete,
-              isCorrect: r.isCorrect
+              isCorrect: r.isCorrect,
+              attemptsHistory: r.attemptsHistory || []
             };
           }
         } else {
@@ -1075,7 +1077,8 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
               maxAttempts: data.maxAttempts,
               attemptsRemaining: data.attemptsRemaining,
               isComplete: data.isComplete,
-              isCorrect: data.isCorrect
+              isCorrect: data.isCorrect,
+              attemptsHistory: data.attemptsHistory || []
             }
           }));
         }
@@ -1294,7 +1297,6 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     );
   }
 
-  const activeBlock = blocks[currentBlockIndex];
   const totalBlocks = blocks.length;
 
   const progressPercent = studentProgression.percent;
@@ -1952,7 +1954,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                     const q = cpQuestions[step];
                     if (!q) return null;
                     const isSubmitted = !!submittedLocal[q.id];
-                    const isMc = Array.isArray(q.choices);
+                    const isMc = q.type ? q.type === "mc" : (Array.isArray(q.choices) && q.choices.length > 0);
                     const allSubmitted = cpQuestions.every((cq: any) => submittedLocal[cq.id]);
                     const canAdvance = isSubmitted && step < total - 1;
 
@@ -2002,7 +2004,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                                     handleSubmitResponse(
                                       activeBlock.id,
                                       q.id,
-                                      isMc ? selectedMCRef.current[q.id] : saTextRef.current[q.id] ?? "",
+                                      isMc ? (selectedMCRef.current[q.id] || selectedMC[q.id] || "") : (saTextRef.current[q.id] || saText[q.id] || ""),
                                       activeCheckpoint.id,
                                     )
                                   }
@@ -2090,7 +2092,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                   const isSubmitted = !!submittedLocal[q.id];
                   const isSaving = !!savingResponse[q.id];
                   const choicesMaybe = asg.scrambledChoices || q.choices;
-                  const isMc = Array.isArray(choicesMaybe);
+                  const isMc = q.type ? q.type === "mc" : (Array.isArray(choicesMaybe) && choicesMaybe.length > 0);
                   const isPracticeBlock = !!activeBlock.isPractice;
 
                   return (
@@ -2129,7 +2131,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           handleSubmitResponse(
                             activeBlock.id,
                             q.id,
-                            isMc ? selectedMCRef.current[q.id] : saTextRef.current[q.id] ?? "",
+                            isMc ? (selectedMCRef.current[q.id] || selectedMC[q.id] || "") : (saTextRef.current[q.id] || saText[q.id] || ""),
                           )
                         }
                         mcFeedback={feedbackState[q.id]}

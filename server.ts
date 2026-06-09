@@ -3901,7 +3901,10 @@ app.post("/api/attempts/:id/progress", requireAuth, async (req, res) => {
   // STRICT VIDEO LAWS ENFORCEMENT ON BACKEND
   if (runtimeSettings.restrictSeeking) {
     const driftThreshold = 3; // Maximum allowed play jump without detection
-    if (timestamp > currentMax + driftThreshold) {
+    const rate = Number(playbackRate) || 1;
+    const maxAllowedAdvance = Math.max(driftThreshold, realSecondsElapsed * rate + driftThreshold);
+
+    if (timestamp > currentMax + maxAllowedAdvance) {
       // FORWARD JUMP DETECTED - LOG TELEMETRY AND LIMIT THE TIMESTAMP ON SERVER
       const violationSignal = {
         id: "sig_" + Math.random().toString(36).substring(2, 9),
@@ -4375,7 +4378,13 @@ app.post("/api/attempts/:id/submit", requireAuth, async (req, res) => {
         attemptsCount,
         maxAttempts: resolvedMaxAttempts,
         attemptsRemaining: Math.max(0, resolvedMaxAttempts - attemptsCount),
-        isComplete
+        isComplete,
+        attemptsHistory: feedbackVisibility === "student_visible"
+          ? newResponse.attemptsHistory
+          : (newResponse.attemptsHistory || []).map((h: any) => {
+              const { isCorrect, score, ...rest } = h;
+              return rest;
+            })
       });
       return;
     }
@@ -6224,16 +6233,75 @@ app.post("/api/ai-review/:responseId/approve", requireTeacher, async (req, res) 
 
     const response = db.responses[responseIdx];
     const now = new Date().toISOString();
+
+    // Locating latest AI grading record
+    const aiRecord = (db.aiGradingRecords || []).find((g: any) => g.responseId === responseId);
+    if (!aiRecord || (aiRecord.parsedScore === undefined && aiRecord.score === undefined)) {
+      fail(res, 'VALIDATION_ERROR', 'No usable AI grading proposal found.');
+      return;
+    }
+
+    const proposedScore = aiRecord.parsedScore !== undefined ? aiRecord.parsedScore : aiRecord.score;
+    const maxPoints = response.maxPoints ?? 0;
+    const clampedScore = Math.max(0, Math.min(Number(proposedScore) || 0, maxPoints));
+
+    // Preserve previous manual score in audit metadata if one existed
+    const previousManualScore = (response.teacherOverrideScore !== undefined && response.teacherOverrideScore !== null)
+      ? response.teacherOverrideScore
+      : (response.teacherOverride?.score !== undefined && response.teacherOverride?.score !== null)
+      ? response.teacherOverride.score
+      : null;
+
+    response.score = clampedScore;
+    response.pointsEarned = clampedScore;
     response.teacherReviewedAt = now;
     response.teacherReviewedBy = teacher.id;
+    if (aiRecord.feedback !== undefined) {
+      response.studentFacingFeedback = aiRecord.feedback;
+      response.feedback = aiRecord.feedback;
+    }
+
+    // Update teacherOverride so the final score source is clear and we record AI acceptance
+    response.teacherOverrideScore = clampedScore;
+    response.teacherOverrideFeedback = response.teacherOverrideFeedback || aiRecord.feedback || "AI-proposed score accepted by teacher.";
+    response.teacherOverride = {
+      score: clampedScore,
+      notes: "AI-proposed score accepted by teacher.",
+      gradedAt: now,
+      acceptedFromAi: true,
+      previousManualScore
+    };
 
     // Update GradebookResponseEntry
     const greIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
     if (greIdx !== -1) {
       db.gradebookResponseEntries[greIdx].status = 'teacher_reviewed';
+      db.gradebookResponseEntries[greIdx].score = clampedScore;
+      db.gradebookResponseEntries[greIdx].originalAiScore = proposedScore;
       db.gradebookResponseEntries[greIdx].reviewedAt = now;
       db.gradebookResponseEntries[greIdx].reviewedBy = teacher.id;
+      db.gradebookResponseEntries[greIdx].studentFacingFeedback = aiRecord.feedback || "";
       db.gradebookResponseEntries[greIdx].updatedAt = now;
+    } else {
+      const attempt = (db.attempts || []).find((a: any) => a.id === response.attemptId);
+      if (attempt) {
+        upsertResponseGradebookEntry(
+          response,
+          attempt,
+          'teacher_reviewed',
+          'ai_short_answer',
+          aiRecord.feedback || "AI score accepted.",
+          db
+        );
+        // Ensure new entry also has metadata populated
+        const newGreIdx = (db.gradebookResponseEntries || []).findIndex((e: any) => e.responseId === responseId);
+        if (newGreIdx !== -1) {
+          db.gradebookResponseEntries[newGreIdx].originalAiScore = proposedScore;
+          db.gradebookResponseEntries[newGreIdx].reviewedAt = now;
+          db.gradebookResponseEntries[newGreIdx].reviewedBy = teacher.id;
+          db.gradebookResponseEntries[newGreIdx].studentFacingFeedback = aiRecord.feedback || "";
+        }
+      }
     }
 
     // Update attempt GradebookEntry
@@ -6438,51 +6506,71 @@ app.post("/api/ai-review/:responseId/grade", requireTeacher, async (req, res) =>
     upsertResponseGradebookEntry(response, attempt, "pending_ai", "ai_short_answer", undefined, db);
     await commitDb(db);
 
-    // Call Gemini synchronously
+    // Call Gemini synchronously with a timeout
     try {
+      const withTimeout = <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+        return new Promise<T>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error(`AI grading model response timed out after ${timeoutMs / 1000} seconds.`));
+          }, timeoutMs);
+          promise
+            .then((res) => {
+              clearTimeout(timer);
+              resolve(res);
+            })
+            .catch((err) => {
+              clearTimeout(timer);
+              reject(err);
+            });
+        });
+      };
+
       const ai = getAI();
-      const aiResponse = await ai.models.generateContent({
-        model: getAiModel(),
-        contents: promptContent,
-        config: {
-          systemInstruction:
-            "You are Veritas AI, an academic grading assistant. Output strictly valid JSON matching the provided schema. Never include model answers, answer keys, or teacher-only scoring guidance in the student-facing feedback field.",
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              score: { type: Type.NUMBER, description: "Total points earned, clamped to 0..maxScore." },
-              maxScore: { type: Type.NUMBER, description: "Maximum possible points (equals question max points)." },
-              feedback: { type: Type.STRING, description: "Student-visible explanation: what was correct, what was missing. Must NOT reproduce the model answer, answer key, or teacher-only guidance." },
-              rationale: { type: Type.STRING, description: "Teacher-facing justification grounded in the rubric. May reference internal guidance." },
-              rubricBreakdown: {
-                type: Type.ARRAY,
-                description: "Per-rubric-category scores and feedback.",
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    category: { type: Type.STRING },
-                    score: { type: Type.NUMBER },
-                    maxScore: { type: Type.NUMBER },
-                    feedback: { type: Type.STRING }
-                  },
-                  required: ["category", "score", "feedback"]
-                }
+      const aiResponse = await withTimeout(
+        ai.models.generateContent({
+          model: getAiModel(),
+          contents: promptContent,
+          config: {
+            systemInstruction:
+              "You are Veritas AI, an academic grading assistant. Output strictly valid JSON matching the provided schema. Never include model answers, answer keys, or teacher-only scoring guidance in the student-facing feedback field.",
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                score: { type: Type.NUMBER, description: "Total points earned, clamped to 0..maxScore." },
+                maxScore: { type: Type.NUMBER, description: "Maximum possible points (equals question max points)." },
+                feedback: { type: Type.STRING, description: "Student-visible explanation: what was correct, what was missing. Must NOT reproduce the model answer, answer key, or teacher-only guidance." },
+                rationale: { type: Type.STRING, description: "Teacher-facing justification grounded in the rubric. May reference internal guidance." },
+                rubricBreakdown: {
+                  type: Type.ARRAY,
+                  description: "Per-rubric-category scores and feedback.",
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      category: { type: Type.STRING },
+                      score: { type: Type.NUMBER },
+                      maxScore: { type: Type.NUMBER },
+                      feedback: { type: Type.STRING }
+                    },
+                    required: ["category", "score", "feedback"]
+                  }
+                },
+                misconceptions: {
+                  type: Type.ARRAY,
+                  description: "Specific misconceptions identified in the response. Empty array if none.",
+                  items: { type: Type.STRING }
+                },
+                confidence: { type: Type.NUMBER, description: "0.0..1.0 grading confidence." },
+                needsTeacherReview: { type: Type.BOOLEAN, description: "True if confidence < 0.75, the answer is ambiguous, or human judgment is needed." },
+                teacherNotes: { type: Type.STRING, description: "Internal teacher-only notes about grading edge cases or concerns." },
+                lowEffort: { type: Type.BOOLEAN, description: "True if the response is gibberish, a keyboard smash, extremely short, or makes no genuine academic attempt." }
               },
-              misconceptions: {
-                type: Type.ARRAY,
-                description: "Specific misconceptions identified in the response. Empty array if none.",
-                items: { type: Type.STRING }
-              },
-              confidence: { type: Type.NUMBER, description: "0.0..1.0 grading confidence." },
-              needsTeacherReview: { type: Type.BOOLEAN, description: "True if confidence < 0.75, the answer is ambiguous, or human judgment is needed." },
-              teacherNotes: { type: Type.STRING, description: "Internal teacher-only notes about grading edge cases or concerns." },
-              lowEffort: { type: Type.BOOLEAN, description: "True if the response is gibberish, a keyboard smash, extremely short, or makes no genuine academic attempt." }
-            },
-            required: ["score", "maxScore", "feedback", "rubricBreakdown", "misconceptions", "confidence", "needsTeacherReview", "teacherNotes", "lowEffort"]
+              required: ["score", "maxScore", "feedback", "rubricBreakdown", "misconceptions", "confidence", "needsTeacherReview", "teacherNotes", "lowEffort"]
+            }
           }
-        }
-      });
+        }),
+        30000 // 30 seconds timeout
+      );
 
       const rawJsonText = (aiResponse.text || "").trim();
       const geminiResult = parseAiGradingJson(rawJsonText);
@@ -6623,18 +6711,20 @@ app.post("/api/ai-review/:responseId/grade", requireTeacher, async (req, res) =>
         : "AI grading could not complete. Response queued for manual teacher review.";
 
       if (freshGradIdx !== -1) {
+        const oldRecord = freshDb.aiGradingRecords[freshGradIdx];
+        const hadSuccess = oldRecord && oldRecord.status === "success";
         freshDb.aiGradingRecords[freshGradIdx] = {
-          ...freshDb.aiGradingRecords[freshGradIdx],
-          parsedScore: 0,
-          feedback: "",
-          rationale: errorRationale,
+          ...oldRecord,
+          parsedScore: hadSuccess ? (oldRecord.parsedScore ?? 0) : 0,
+          feedback: hadSuccess ? (oldRecord.feedback ?? "") : "",
+          rationale: hadSuccess ? (oldRecord.rationale ?? "") : errorRationale,
           teacherNotes: `AI grading error: ${gErr instanceof Error ? gErr.message : String(gErr)}`,
-          misconceptions: [],
+          misconceptions: hadSuccess ? (oldRecord.misconceptions ?? []) : [],
           needsTeacherReview: true,
-          confidence: 0,
+          confidence: hadSuccess ? (oldRecord.confidence ?? 0) : 0,
           status: "failed",
           errorMessage: gErr instanceof Error ? gErr.message : String(gErr),
-          rubricBreakdown: {},
+          rubricBreakdown: hadSuccess ? (oldRecord.rubricBreakdown ?? {}) : {},
           gradedAt: new Date().toISOString()
         };
       }

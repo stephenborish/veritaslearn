@@ -173,16 +173,22 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
             <span className={cn(
               "text-xs font-semibold border rounded-full px-2.5 py-0.5 inline-flex items-center gap-1 font-mono transition-all duration-200",
               completed
-                ? correct
-                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                  : "bg-rose-50 text-rose-700 border-rose-200"
+                ? !isPractice
+                  ? "bg-slate-100 text-slate-700 border-slate-200"
+                  : correct
+                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                    : "bg-rose-50 text-rose-700 border-rose-200"
                 : "bg-amber-50 text-amber-700 border-amber-200"
             )}>
               {completed
-                ? correct
-                  ? "Completed · Correct"
-                  : "Completed · Incorrect"
-                : `${remaining} of ${max} attempts remaining`}
+                ? !isPractice
+                  ? "Completed"
+                  : correct
+                    ? "Completed · Correct"
+                    : "Completed · Incorrect"
+                : !isPractice
+                  ? "Completed"
+                  : `${remaining} of ${max} attempts remaining`}
             </span>
           );
         })()}
@@ -210,6 +216,8 @@ export function LearnQuestionCard(props: LearnQuestionCardProps): JSX.Element {
             onSelectChoice={onSelectChoice}
             isSubmitted={isSubmitted}
             selectedCorrect={selectedCorrect}
+            attemptsState={attemptsState}
+            isPractice={isPractice}
             {...{ ["correct" + "ChoiceId"]: rightChoiceId }}
           />
         ) : (
