@@ -261,6 +261,14 @@ export default function PracticeDashboard({
   const completedAssignedCount = completedList.length;
   const completionPercentage = totalAssignedCount > 0 ? Math.round((completedAssignedCount / totalAssignedCount) * 100) : 0;
 
+  const mostRecentInProgress = inProgressList
+    .slice()
+    .sort((a, b) => {
+      const aTime = new Date(a.attempt?.lastActiveAt || a.attempt?.startedAt || 0).getTime();
+      const bTime = new Date(b.attempt?.lastActiveAt || b.attempt?.startedAt || 0).getTime();
+      return bTime - aTime;
+    })[0];
+
   const getCourseLabel = (asg: any) => {
     const title = asg.courseTitle || asg.courseId || "";
     const section = asg.sectionName || asg.section || "";
@@ -489,7 +497,8 @@ export default function PracticeDashboard({
   // Performance summary is only meaningful after real data exists
   const hasRealPerformanceData =
     completedList.length > 0 ||
-    (perfData !== null && perfData.averageAccuracy !== null);
+    (perfData !== null && perfData.averageAccuracy !== null) ||
+    !!mostRecentInProgress;
 
   // ── First-time onboarding state ──────────────────────────────────────────
   if (isFirstTime) {
@@ -868,68 +877,48 @@ export default function PracticeDashboard({
               )}
             </div>
 
-            {/* Upcoming Deadlines Panel */}
+            {/* Most Recent Progress Panel */}
             <div className="p-5 flex flex-col justify-between gap-3">
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none block">Upcoming Deadlines</span>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none block">Most Recent Progress</span>
                 <div className="mt-2.5 space-y-2">
-                  {perfData && perfData.upcomingDeadlines.length > 0 ? (
-                    perfData.upcomingDeadlines.slice(0, 2).map((dl: any) => {
-                      const diffMs = new Date(dl.dueAt).getTime() - Date.now();
-                      const hoursLeft = diffMs / (1000 * 60 * 60);
-                      const daysLeft = diffMs / (1000 * 60 * 60 * 24);
-
-                      let badgeClass = "bg-slate-100 text-slate-600 border border-slate-200";
-                      let badgeText = "";
-
-                      if (hoursLeft <= 0) {
-                        badgeClass = "bg-rose-50 text-rose-700 border border-rose-200 animate-pulse";
-                        badgeText = "Overdue";
-                      } else if (hoursLeft < 24) {
-                        badgeClass = "bg-rose-50 text-rose-700 border border-rose-200 animate-pulse";
-                        badgeText = `${Math.ceil(hoursLeft)}h left`;
-                      } else if (daysLeft <= 3) {
-                        badgeClass = "bg-rose-100 text-rose-800 border border-rose-300";
-                        badgeText = `${Math.ceil(daysLeft)}d left`;
-                      } else if (daysLeft <= 7) {
-                        badgeClass = "bg-amber-50 text-amber-800 border border-amber-200";
-                        badgeText = `${Math.ceil(daysLeft)}d left`;
-                      } else {
-                        badgeClass = "bg-slate-100 text-slate-600 border border-slate-200";
-                        badgeText = `${Math.ceil(daysLeft)}d left`;
-                      }
-
-                      return (
-                        <div key={dl.id} className="flex items-start justify-between gap-2 bg-slate-50 border border-slate-100 rounded p-1.5 text-xs text-slate-700">
-                          <div className="min-w-0 flex-1">
-                            <p className="font-bold text-slate-800 text-[11px] truncate leading-tight">{dl.lessonTitle}</p>
-                            <span className="text-[9px] font-semibold text-slate-400 block mt-0.5">Due: {new Date(dl.dueAt).toLocaleDateString([], { month: "short", day: "numeric" })}</span>
-                          </div>
-                          <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded border shrink-0 ${badgeClass}`}>
-                            {badgeText}
-                          </span>
-                        </div>
-                      );
-                    })
+                  {mostRecentInProgress ? (
+                    <div className="bg-slate-50 border border-slate-100 rounded p-2.5">
+                      <p className="font-bold text-slate-800 text-[12px] truncate leading-tight mb-1">
+                        {mostRecentInProgress.asg.lessonTitle || "Untitled Lesson"}
+                      </p>
+                      <div className="flex justify-between text-[10px] text-slate-500 mb-1.5 font-semibold">
+                        <span>Segment {(mostRecentInProgress.attempt?.currentBlockIndex || 0) + 1}</span>
+                        {mostRecentInProgress.attempt?.lastActiveAt && (
+                          <span>{formatRelativeTime(mostRecentInProgress.attempt.lastActiveAt)}</span>
+                        )}
+                      </div>
+                      <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                        <motion.div
+                          className="bg-indigo-500 h-1.5 rounded-full shadow-sm"
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.max(8, Math.min(95, ((mostRecentInProgress.attempt?.currentBlockIndex || 0) + 1) * 20))}%` }}
+                          transition={{ duration: 0.8, ease: "easeOut" }}
+                        />
+                      </div>
+                    </div>
                   ) : (
-                    <div className="text-xs text-slate-400 py-2 italic font-medium">No active upcoming deadlines!</div>
+                    <div className="text-xs text-slate-400 py-2 italic font-medium">No active lessons in progress!</div>
                   )}
                 </div>
-                {perfData && perfData.upcomingDeadlines.length > 2 && (
-                  <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-wider block mt-2">
-                    + {perfData.upcomingDeadlines.length - 2} more upcoming assignments
-                  </span>
-                )}
               </div>
 
               {/* Quick Start Launcher */}
-              {nearestAssignment && (
+              {(mostRecentInProgress || nearestAssignment) && (
                 <button
-                  onClick={() => onStartAttempt(nearestAssignment.lessonId, nearestAssignment.id)}
+                  onClick={() => {
+                    const target = mostRecentInProgress || nearestAssignment;
+                    onStartAttempt(target.asg.lessonId, target.asg.id);
+                  }}
                   className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all shadow-sm active:scale-[0.98] cursor-pointer shrink-0"
                 >
                   <Play className="w-3 h-3 fill-current" />
-                  <span className="truncate">Quick Start: {nearestAssignment.lessonTitle}</span>
+                  <span className="truncate">Resume: {(mostRecentInProgress || nearestAssignment).asg.lessonTitle}</span>
                 </button>
               )}
             </div>

@@ -107,8 +107,8 @@ describe("integrity signal engine", () => {
   });
 
   it("has friendly labels and never raw underscores for known events", () => {
-    expect(signalEventLabel("fullscreen_exit")).toBe("Fullscreen exited");
-    expect(signalEventLabel("possible_ai_agent_use")).toBe("Possible AI agent use");
+    expect(signalEventLabel("fullscreen_exit")).toBe("Exited fullscreen");
+    expect(signalEventLabel("possible_ai_agent_use")).toBe("AI Guard marker appeared in response");
     expect(signalEventLabel("weird_unknown")).toBe("weird unknown");
   });
 });

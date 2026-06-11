@@ -17,6 +17,9 @@ import {
   GraduationCap,
   Layers,
   Activity as ActivityIcon,
+  BarChart,
+  Target,
+  Mail,
 } from "lucide-react";
 import { deriveIntegritySignalSummary, attentionColorClasses, attentionLabel, reliabilityLabel, signalEventLabel } from "../../lib/integritySignals";
 import {
@@ -80,11 +83,12 @@ interface StudentDossierModalProps {
   onRefresh?: () => void;
 }
 
-type DossierTab = "step" | "summary" | "timeline" | "responses" | "review" | "signals" | "activity";
+type DossierTab = "step" | "summary" | "timeline" | "responses" | "review" | "signals" | "activity" | "performance";
 
 const TABS: { id: DossierTab; label: string; icon: any }[] = [
   { id: "step", label: "Step Review", icon: ClipboardCheck },
   { id: "summary", label: "Summary", icon: GraduationCap },
+  { id: "performance", label: "Performance", icon: BarChart },
   { id: "timeline", label: "Timeline", icon: Layers },
   { id: "responses", label: "Responses", icon: MessageSquare },
   { id: "review", label: "Review", icon: ListChecks },
@@ -100,6 +104,7 @@ function sectionToTab(section?: string): DossierTab | null {
   if (section === "signals" || section === "integrity") return "signals";
   if (section === "activity") return "activity";
   if (section === "summary") return "summary";
+  if (section === "performance") return "performance";
   return null;
 }
 
@@ -766,6 +771,20 @@ export default function StudentDossierModal({
           )}
 
           {activeTab === "activity" && <ActivityTimelineCard attempt={attempt} student={student} activities={sActivities} />}
+          {activeTab === "performance" && (
+            <PerformanceTab 
+              studentId={studentId}
+              student={student}
+              attempts={attempts}
+              responses={responses}
+              lessons={lessons}
+              blocks={blocks}
+              assignments={assignments}
+              gradebookEntries={gradebookEntries}
+              gradebookResponseEntries={gradebookResponseEntries}
+              questionAssignments={questionAssignments}
+            />
+          )}
         </div>
 
         {/* ---------- Discard confirm ---------- */}
@@ -1061,6 +1080,165 @@ function ReviewCommandCenter({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Performance tab
+// ---------------------------------------------------------------------------
+function PerformanceTab({
+  studentId,
+  student,
+  attempts,
+  responses,
+  lessons,
+  blocks,
+  assignments,
+  gradebookEntries,
+  gradebookResponseEntries,
+  questionAssignments,
+}: any) {
+  const [threshold, setThreshold] = useState<number>(75);
+
+  const studentAttempts = (attempts || []).filter((a: any) => a.studentId === studentId && !a.isPreviewAttempt && a.status === "completed");
+
+  const perfItems = studentAttempts.map((attempt: any) => {
+    const lesson = (lessons || []).find((l: any) => l.id === attempt.lessonId);
+    const assignment = (assignments || []).find((a: any) => a.lessonId === attempt.lessonId);
+    
+    // We need to resolve the score for this attempt
+    const scoreParts = resolveAttemptScoreParts(
+      attempt,
+      responses || [],
+      gradebookEntries || [],
+      gradebookResponseEntries || [],
+      questionAssignments || [],
+      blocks || []
+    );
+    const maxPoints = scoreParts.maxPoints;
+    const score = scoreParts.score;
+    const percentage = maxPoints > 0 ? Math.round((score / maxPoints) * 100) : 0;
+    
+    return {
+      attempt,
+      lesson,
+      assignment,
+      maxPoints,
+      score,
+      percentage
+    };
+  }).sort((a: any, b: any) => new Date(b.attempt.completedAt || 0).getTime() - new Date(a.attempt.completedAt || 0).getTime());
+
+  const averageScore = perfItems.length > 0 
+    ? Math.round(perfItems.reduce((acc: number, item: any) => acc + item.percentage, 0) / perfItems.length)
+    : 0;
+
+  const flaggedItems = perfItems.filter((i: any) => i.percentage < threshold);
+
+  const handleMessageStudent = () => {
+    const email = student?.email || "";
+    const subject = encodeURIComponent("Check-in regarding recent VERITAS Learn assignments");
+    
+    let bodyText = `Hi ${student?.name?.split(' ')[0] || 'there'},\n\nI was reviewing your recent progress on VERITAS Learn and noticed some recent assignments where your score was below our target threshold:\n\n`;
+    
+    flaggedItems.forEach((item: any) => {
+      bodyText += `- ${item.lesson?.title || 'Unknown Lesson'}: ${item.percentage}%\n`;
+    });
+    
+    bodyText += `\nPlease let me know if you are having any trouble with this material or if you'd like to schedule some time to review it together.\n\nBest,\n`;
+    const body = encodeURIComponent(bodyText);
+    
+    window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h3 className="text-[14px] font-bold text-slate-800">Historical Performance</h3>
+          <p className="text-[12.5px] text-slate-500 mt-0.5">Review past assignment scores and identify intervention needs.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {flaggedItems.length > 0 && (
+            <button
+              onClick={handleMessageStudent}
+              className="flex items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-[11.5px] font-bold text-indigo-700 transition hover:bg-indigo-100"
+            >
+              <Mail className="h-4 w-4" /> Message Selected
+            </button>
+          )}
+          <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
+            <label className="text-[11.5px] font-semibold text-slate-600">Flag scores below <span className="font-bold text-slate-400">(%)</span></label>
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={threshold}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+              className="w-16 rounded border border-slate-300 px-2 py-1 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+            />
+          </div>
+        </div>
+      </div>
+
+      {perfItems.length === 0 ? (
+        <EmptyState label="No completed assignments found." />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+             <div className="rounded-xl border border-slate-200 bg-white p-4">
+               <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Average Score</span>
+               <span className="text-[20px] font-bold tabular-nums text-indigo-700">{averageScore}%</span>
+             </div>
+             <div className="rounded-xl border border-slate-200 bg-white p-4">
+               <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Completed Assignments</span>
+               <span className="text-[20px] font-bold tabular-nums text-slate-800">{perfItems.length}</span>
+             </div>
+             <div className="rounded-xl border border-slate-200 bg-white p-4">
+               <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Intervention Flags</span>
+               <span className={`text-[20px] font-bold tabular-nums ${perfItems.filter((i: any) => i.percentage < threshold).length > 0 ? "text-rose-600" : "text-slate-800"}`}>
+                 {perfItems.filter((i: any) => i.percentage < threshold).length}
+               </span>
+             </div>
+          </div>
+          <div className="space-y-3">
+            {perfItems.map((item: any) => {
+              const isFlagged = item.percentage < threshold;
+              return (
+                <div key={item.attempt.id} className={`flex items-center justify-between gap-4 rounded-xl border p-4 transition ${isFlagged ? "bg-rose-50 border-rose-200" : "bg-white border-slate-200"}`}>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className={`truncate text-[13px] font-bold ${isFlagged ? "text-rose-900" : "text-slate-800"}`}>
+                        {item.lesson?.title || "Unknown Lesson"}
+                      </h4>
+                      {isFlagged && (
+                        <span className="inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-rose-700 border border-rose-200">
+                          <AlertCircle className="h-2.5 w-2.5" /> Needs intervention
+                        </span>
+                      )}
+                    </div>
+                    <p className={`mt-1 text-[11.5px] font-medium ${isFlagged ? "text-rose-700/80" : "text-slate-500"}`}>
+                      Completed on {new Date(item.attempt.completedAt || item.attempt.updatedAt || Date.now()).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isFlagged ? "text-rose-600" : "text-slate-400"}`}>Score</span>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className={`text-lg font-bold tabular-nums ${isFlagged ? "text-rose-700" : "text-indigo-700"}`}>
+                        {item.score}/{item.maxPoints}
+                      </span>
+                      <span className={`text-sm font-bold ${isFlagged ? "text-rose-500" : "text-slate-400"}`}>
+                        ({item.percentage}%)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }

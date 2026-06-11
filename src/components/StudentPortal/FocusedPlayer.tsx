@@ -51,6 +51,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
   const reduceMotion = useReducedMotion();
   const activeBlock = blocks[currentBlockIndex];
+  const isCompleted = attemptData?.status === "completed";
 
   // Timeline collapse (desktop). Preference is remembered per attempt.
   const [timelineCollapsed, setTimelineCollapsed] = useState<boolean>(() => {
@@ -200,9 +201,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       setAssignments(data.questionAssignments || data.assignments || []);
       setResponses(data.responses);
 
+      const isAttemptCompleted = data.attempt.status === "completed";
       const runtimeBlocks = data.blocks || [];
       setBlocks(runtimeBlocks);
-      setCurrentBlockIndex(data.attempt.currentBlockIndex || 0);
+      setCurrentBlockIndex(isAttemptCompleted ? 0 : (data.attempt.currentBlockIndex || 0));
 
       // Restore existing submissions
       const localSub: any = {};
@@ -357,6 +359,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     severity: string,
     metadata: any = {}
   ): Promise<{ lockState?: string | null } | null> => {
+    if (isCompleted) return null;
     try {
       const authHeader = await getAuthHeader();
       if (!authHeader.Authorization) return null;
@@ -379,6 +382,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   };
 
   const flushVideoProgress = async (customTimestamp?: number) => {
+    if (isCompleted) return;
     const block = blocks[currentBlockIndex];
     if (!block || block.type !== "video") return;
 
@@ -794,6 +798,16 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   const handleBlockNavigation = async (nextIdx: number) => {
     if (nextIdx < 0 || nextIdx >= blocks.length) return;
     setNavigationError(null);
+    if (isCompleted) {
+      const targetBlock = blocks[nextIdx];
+      const savedFurthest = attemptData?.furthestVideoTimestamps?.[targetBlock?.id] || 0;
+      setCurrentBlockIndex(nextIdx);
+      setActiveCheckpoint(null);
+      updateFurthestMaxTimestamp(savedFurthest);
+      lastNativeTimeRef.current = 0;
+      setViolationBanner((prev: ViolationBanner) => ({ ...prev, show: false }));
+      return;
+    }
     setIsNavigating(true);
 
     try {
@@ -829,6 +843,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // Dedicated helper to persist draft to backend
   const persistDraftResponse = useCallback(async (questionId: string, value: string, clientUpdatedAt?: string) => {
+    if (isCompleted) return;
     if (submittedLocal[questionId]) {
       if (draftSaveTimers.current[questionId]) {
         clearTimeout(draftSaveTimers.current[questionId]);
@@ -896,9 +911,19 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     persistDraftResponseRef.current = persistDraftResponse;
   }, [persistDraftResponse]);
 
+  // Compile the list of pending SA IDs to trigger/reset polling timer
+  const pendingIndicesString = Object.entries(saGradingState)
+    .filter(([, s]) => s === "pending_ai" || s === "scoring" || s === "feedback_delayed")
+    .map(([qId]) => qId)
+    .sort()
+    .join(",");
+
   // Poll for practice SA AI grading results with intelligent backoff
   useEffect(() => {
     if (loading || !attemptId) return;
+
+    const pendingIds = pendingIndicesString.split(",").filter(Boolean);
+    if (pendingIds.length === 0) return;
 
     let errorCount = 0;
     let isCancelled = false;
@@ -906,17 +931,6 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
     let elapsedMs = 0;
 
     const poll = async () => {
-      const states = saGradingStateRef.current;
-      const pendingIds = Object.entries(states)
-        .filter(([, s]) => s === "pending_ai" || s === "scoring" || s === "feedback_delayed")
-        .map(([qId]) => qId);
-
-      if (pendingIds.length === 0) {
-        // Schedule next check loosely just in case states change
-        if (!isCancelled) pollTimer = setTimeout(poll, 2000);
-        return;
-      }
-
       try {
         const authHeader = await getAuthHeader();
         const res = await fetch(`/api/attempts/${attemptId}/sa-feedback`, { headers: authHeader });
@@ -949,7 +963,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
           } else {
              // Still pending. Check if delayed.
              anyPending = true;
-             if (elapsedMs > 25000 && states[r.questionId] !== "feedback_delayed") {
+             if (elapsedMs > 25000 && saGradingStateRef.current[r.questionId] !== "feedback_delayed") {
                 setSaGradingState((prev: any) => ({ ...prev, [r.questionId]: "feedback_delayed" }));
              }
           }
@@ -958,7 +972,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       } catch {
         errorCount++;
         if (errorCount >= 5) {
-          Object.keys(saGradingStateRef.current).forEach((qId) => {
+          pendingIds.forEach((qId) => {
             const st = saGradingStateRef.current[qId];
             if (st === "pending_ai" || st === "scoring" || st === "feedback_delayed") {
               setSaGradingState((prev: any) => ({ ...prev, [qId]: "feedback_failed" }));
@@ -983,11 +997,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
       isCancelled = true;
       if (pollTimer) clearTimeout(pollTimer);
     };
-  }, [loading, attemptId]);
+  }, [loading, attemptId, pendingIndicesString]);
 
   // Dedicated 15 seconds autosave interval for short-answer responses
   useEffect(() => {
-    if (loading || !attemptId) return;
+    if (loading || !attemptId || isCompleted) return;
 
     const saInterval = setInterval(() => {
       const textMap = saTextRef.current;
@@ -1031,6 +1045,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   };
 
   const handleSubmitResponse = async (blockId: string, questionId: string, responseVal: string, cpId?: string) => {
+    if (isCompleted) return;
     if (!responseVal || responseVal.trim() === "") return;
 
     setSavingResponse((prev: any) => ({ ...prev, [questionId]: true }));
@@ -1110,6 +1125,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
   };
 
   const handleCompleteLessonAttempt = async () => {
+    if (isCompleted) {
+      setShowCompletionScreen(true);
+      return;
+    }
     try {
       const authHeader = await getAuthHeader();
       const res = await fetch(`/api/attempts/${attemptId}/complete`, {
@@ -1121,6 +1140,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
         setNavigationError(data.error || "Unable to finish the lesson yet. Please try again.");
         return;
       }
+      await fetchData();
       setShowCompletionScreen(true);
     } catch {
       // Keep player open if complete fails
@@ -1306,6 +1326,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
   // Determine next-button disabled reason
   const getNextBlockedReason = (): string | null => {
+    if (isCompleted) return null;
     if (!activeBlock) return null;
     if (activeBlock.type === "question") {
       const blockAssignments = assignments.filter((a: any) => a.blockId === activeBlock.id);
@@ -1601,10 +1622,10 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
             <button
               onClick={handleSaveAndExit}
               className="learn-focusable inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 border border-slate-200 hover:bg-slate-50 rounded-lg px-3 py-1.5 transition cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-              title="Save your progress and exit"
+              title={isCompleted ? "Return to your dashboard" : "Save your progress and exit"}
             >
               <ArrowLeft className="w-4 h-4" />
-              <span className="hidden md:inline">Save &amp; exit</span>
+              <span className="hidden md:inline">{isCompleted ? "Return to dashboard" : "Save & exit"}</span>
             </button>
           </div>
         </div>
@@ -1954,9 +1975,9 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                     const step = Math.min(checkpointStep, Math.max(0, total - 1));
                     const q = cpQuestions[step];
                     if (!q) return null;
-                    const isSubmitted = !!submittedLocal[q.id];
+                    const isSubmitted = !!submittedLocal[q.id] || isCompleted;
                     const isMc = q.type ? q.type === "mc" : (Array.isArray(q.choices) && q.choices.length > 0);
-                    const allSubmitted = cpQuestions.every((cq: any) => submittedLocal[cq.id]);
+                    const allSubmitted = cpQuestions.every((cq: any) => submittedLocal[cq.id] || isCompleted);
                     const canAdvance = isSubmitted && step < total - 1;
 
                     return (
@@ -2090,7 +2111,7 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
 
                 {assignedSet.map((asg: any, qIdx: number) => {
                   const q = asg.selectedQuestion;
-                  const isSubmitted = !!submittedLocal[q.id];
+                  const isSubmitted = !!submittedLocal[q.id] || isCompleted;
                   const isSaving = !!savingResponse[q.id];
                   const choicesMaybe = asg.scrambledChoices || q.choices;
                   const isMc = q.type ? q.type === "mc" : (Array.isArray(choicesMaybe) && choicesMaybe.length > 0);
@@ -2223,6 +2244,11 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                       <button
                         id="main-next-button"
                         onClick={async () => {
+                          if (isCompleted) {
+                            await exitFullscreenGracefully();
+                            onExit();
+                            return;
+                          }
                           if (activeBlock?.type === "video") {
                             setNavigationError("Saving your progress…");
                             await flushVideoProgress();
@@ -2236,9 +2262,22 @@ export default function FocusedPlayer({ attemptId, user, onExit }: FocusedPlayer
                           handleCompleteLessonAttempt();
                         }}
                         disabled={isNavigating}
-                        className="learn-focusable flex items-center gap-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed px-6 py-2.5 rounded-xl transition cursor-pointer outline-none focus-visible:ring-4 focus-visible:ring-emerald-500/30 shrink-0"
+                        className={cn(
+                          "learn-focusable flex items-center gap-2 text-sm font-semibold text-white px-6 py-2.5 rounded-xl transition cursor-pointer outline-none shrink-0",
+                          isCompleted
+                            ? "bg-indigo-600 hover:bg-indigo-700 focus-visible:ring-4 focus-visible:ring-indigo-500/30"
+                            : "bg-emerald-600 hover:bg-emerald-700 focus-visible:ring-4 focus-visible:ring-emerald-500/30 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed"
+                        )}
                       >
-                        <Flag className="w-4 h-4" /> Finish lesson
+                        {isCompleted ? (
+                          <>
+                            <ArrowLeft className="w-4 h-4" /> Return to dashboard
+                          </>
+                        ) : (
+                          <>
+                            <Flag className="w-4 h-4" /> Finish lesson
+                          </>
+                        )}
                       </button>
                     )}
                   </div>

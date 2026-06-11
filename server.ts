@@ -595,7 +595,10 @@ function calcMaxPointsForAttempt(attempt: any, db: any): number {
     }
     
     if (!isPractice) {
-      const points = qa.selectedQuestion?.points ?? 0;
+      let points = Number(qa.selectedQuestion?.points) || 0;
+      if (points === 0 && qa.selectedQuestion && Array.isArray(qa.selectedQuestion.rubricCategories)) {
+        points = qa.selectedQuestion.rubricCategories.reduce((s: number, r: any) => s + (Number(r.maxPoints) || 0), 0);
+      }
       total += Number(points);
     }
   });
@@ -3795,6 +3798,8 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
   const signals = db.securitySignals.filter((s: any) => s.attemptId === id);
 
   if (user.role === "student") {
+    const isCompleted = attempt.status === "completed";
+
     // Sanitize question assignments: strip correct answer, rubrics, model answer etc.
     questionAssignments = questionAssignments.map((qa: any) => {
       if (qa.selectedQuestion) {
@@ -3805,6 +3810,28 @@ app.get("/api/attempts/:id", requireAuth, (req, res) => {
       }
       return qa;
     });
+
+    if (isCompleted) {
+      // Remove assessment questions and checkpoints after completion to prevent leaking exam questions.
+      runtimeBlocks = runtimeBlocks.filter((b: any) => {
+        if (b.type === "question" && !b.isPractice) {
+          return false;
+        }
+        return true;
+      }).map((b: any) => {
+        if (b.type === "video" && Array.isArray(b.videoCheckpoints)) {
+          return {
+            ...b,
+            videoCheckpoints: b.videoCheckpoints.filter((cp: any) => !!cp.isPractice)
+          };
+        }
+        return b;
+      });
+
+      // Filter out assignments for the removed assessment blocks to avoid exposing question text
+      const validBlockIds = new Set(runtimeBlocks.map((b: any) => b.id));
+      questionAssignments = questionAssignments.filter((qa: any) => validBlockIds.has(qa.blockId));
+    }
 
     // Sanitize responses to prevent answer key and premature feedback leaks
     responses = responses.map(sanitizeResponseForStudent);
@@ -6362,8 +6389,13 @@ app.post("/api/ai-review/:responseId/approve", requireTeacher, async (req, res) 
         qa.blockId === response.blockId && 
         (response.checkpointId ? qa.checkpointId === response.checkpointId : true)
       );
-      if (qAsg && typeof qAsg.selectedQuestion?.points === "number" && qAsg.selectedQuestion.points > 0) {
-        maxPoints = qAsg.selectedQuestion.points;
+      if (qAsg && qAsg.selectedQuestion) {
+        const sq = qAsg.selectedQuestion;
+        if (Array.isArray(sq.rubricCategories) && sq.rubricCategories.length > 0) {
+          maxPoints = sq.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+        } else {
+          maxPoints = Number(sq.points) || 0;
+        }
       }
     }
 
@@ -6496,8 +6528,13 @@ app.post("/api/ai-review/:responseId/override", requireTeacher, async (req, res)
         qa.blockId === response.blockId && 
         (response.checkpointId ? qa.checkpointId === response.checkpointId : true)
       );
-      if (qAsg && typeof qAsg.selectedQuestion?.points === "number" && qAsg.selectedQuestion.points > 0) {
-        maxPoints = qAsg.selectedQuestion.points;
+      if (qAsg && qAsg.selectedQuestion) {
+        const sq = qAsg.selectedQuestion;
+        if (Array.isArray(sq.rubricCategories) && sq.rubricCategories.length > 0) {
+          maxPoints = sq.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+        } else {
+          maxPoints = Number(sq.points) || 0;
+        }
       }
     }
 

@@ -30,8 +30,8 @@ export function ShortAnswerReviewCard({
     question?.stem || question?.description || block?.singleQuestion?.stem || block?.questionPool?.description || "No prompt text.";
   const answerText = response?.responseValue ?? "";
 
-  const resolvedParts = resolveResponseScoreParts(response);
-  const resolvedMaxPoints = maxPoints > 0 ? maxPoints : (resolvedParts.maxPoints > 0 ? resolvedParts.maxPoints : (question?.points ?? 0));
+  const resolvedParts = resolveResponseScoreParts(response, undefined, undefined, undefined, question);
+  const resolvedMaxPoints = maxPoints > 0 ? maxPoints : (resolvedParts.maxPoints > 0 ? resolvedParts.maxPoints : 0);
 
   return (
     <div className="space-y-4">

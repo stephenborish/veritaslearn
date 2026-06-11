@@ -471,8 +471,17 @@ export function resolveQuestionMaxPoints(block: any, checkpoint: any, qAssignmen
   if (response && typeof response.maxPoints === "number" && response.maxPoints > 0) {
     return response.maxPoints;
   }
-  if (qAssignment?.selectedQuestion && typeof qAssignment.selectedQuestion.points === "number" && qAssignment.selectedQuestion.points > 0) {
-    return qAssignment.selectedQuestion.points;
+  if (qAssignment?.selectedQuestion) {
+    const sq = qAssignment.selectedQuestion;
+    if (Array.isArray(sq.rubricCategories) && sq.rubricCategories.length > 0) {
+      return sq.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+    }
+    if (typeof sq.points === "number" && sq.points > 0) {
+      return sq.points;
+    }
+    if (typeof sq.points === "string" && !isNaN(Number(sq.points)) && Number(sq.points) > 0) {
+      return Number(sq.points);
+    }
   }
   
   // Resolve question definition
@@ -521,8 +530,15 @@ export function resolveResponseScoreParts(
     maxPoints = response.maxPoints;
   } else if (gradebookResponseEntry && typeof gradebookResponseEntry.maxScore === "number" && gradebookResponseEntry.maxScore > 0) {
     maxPoints = gradebookResponseEntry.maxScore;
-  } else if (qAssignment?.selectedQuestion && typeof qAssignment.selectedQuestion.points === "number" && qAssignment.selectedQuestion.points > 0) {
-    maxPoints = qAssignment.selectedQuestion.points;
+  } else if (qAssignment?.selectedQuestion) {
+    const sq = qAssignment.selectedQuestion;
+    if (Array.isArray(sq.rubricCategories) && sq.rubricCategories.length > 0) {
+      maxPoints = sq.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
+    } else if (typeof sq.points === "number" && sq.points > 0) {
+      maxPoints = sq.points;
+    } else if (typeof sq.points === "string" && !isNaN(Number(sq.points))) {
+      maxPoints = Number(sq.points);
+    }
   } else if (questionDef) {
     if (Array.isArray(questionDef.rubricCategories) && questionDef.rubricCategories.length > 0) {
       maxPoints = questionDef.rubricCategories.reduce((sum: number, r: any) => sum + (Number(r.maxPoints) || 0), 0);
